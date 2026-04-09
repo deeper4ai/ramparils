@@ -1,9 +1,8 @@
 """
 Example: run Parils from Python on the SAPS/SWGCP benchmark.
 
-Run from the repo root:
-    cd paramils
-    python3 ../examples/saps_python.py
+Expects the SAPS wrapper and instance data in the paths below.
+Adjust paths to match your local setup before running.
 """
 
 import parils
@@ -13,15 +12,13 @@ result = parils.specialize(
         "alpha": "1.189", "rho": "0.5", "ps": "0.1", "wp": "0.03"
     },
     scenario={
-        "algo":      "ruby example_saps/saps_wrapper.rb",
-        "paramfile": "example_saps/saps-params.txt",
+        "algo":      "ruby /path/to/saps_wrapper.rb",
+        "paramfile": "/path/to/saps-params.txt",
         # Pass instances as a list directly — or use "instance_file" for a path.
         "instances": [
-            "example_data/SWGCP-satisfiable-instances/SWlin2006.10286.cnf",
-            "example_data/SWGCP-satisfiable-instances/SWlin2006.19724.cnf",
-            "example_data/SWGCP-satisfiable-instances/SWlin2006.2705.cnf",
-            "example_data/SWGCP-satisfiable-instances/SWlin2006.24768.cnf",
-            "example_data/SWGCP-satisfiable-instances/SWlin2006.27490.cnf",
+            "/path/to/instances/inst1.cnf",
+            "/path/to/instances/inst2.cnf",
+            "/path/to/instances/inst3.cnf",
         ],
         "cutoff_time":   5.0,
         "tuner_timeout": 30.0,

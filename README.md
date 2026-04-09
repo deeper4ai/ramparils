@@ -53,16 +53,14 @@ pip install target/wheels/parils-*.whl
 ### CLI
 
 ```bash
-cd paramils   # paths in instance files are resolved relative to the working directory
-
 parils --scenariofile path/to/scenario.yaml
 ```
 
 **Scenario file** (`scenario.yaml`):
 
 ```yaml
-algo: "ruby example_saps/saps_wrapper.rb"   # command to invoke the target algorithm
-paramfile: "example_saps/saps-params.txt"   # parameter space definition
+algo: "ruby /path/to/solver_wrapper.rb"      # command to invoke the target algorithm
+paramfile: "/path/to/params.txt"             # parameter space definition
 instance_file: "example_data/train.txt"     # one instance path per line
 cutoff_time: 5.0                             # per-run time limit (seconds)
 tuner_timeout: 300.0                         # total wall-clock budget (seconds)
@@ -90,8 +88,8 @@ import parils
 result = parils.specialize(
     strategy={"alpha": "1.189", "rho": "0.5", "ps": "0.1", "wp": "0.03"},
     scenario={
-        "algo":         "ruby example_saps/saps_wrapper.rb",
-        "paramfile":    "example_saps/saps-params.txt",
+        "algo":         "ruby /path/to/solver_wrapper.rb",
+        "paramfile":    "/path/to/params.txt",
         # Pass instances as a list:
         "instances":    ["inst1.cnf", "inst2.cnf", "inst3.cnf"],
         # Or as a file path:
@@ -106,8 +104,7 @@ result = parils.specialize(
 print(result)
 ```
 
-`specialize()` uses FocusedILS with sensible defaults and starts from the provided `strategy`.
-See `examples/saps_python.py` for a runnable example.
+`specialize()` uses FocusedILS with sensible defaults and starts from the provided `strategy`. See `examples/saps_python.py` for a runnable example.
 
 ---
 
@@ -141,19 +138,7 @@ It must print a result line to stdout:
 #%# PARILS #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
 ```
 
-See `paramils/example_saps/saps_wrapper.rb` for a reference implementation.
-
----
-
-## Running the SAPS example
-
-```bash
-cd paramils
-../target/release/parils \
-    --scenariofile example_saps/scenario-saps-swgcp.yaml \
-    --cores 4 \
-    --cachedb /tmp/saps.db
-```
+See `examples/saps_python.py` for a runnable example.
 
 ---
 
