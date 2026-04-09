@@ -1,0 +1,53 @@
+[package]
+name = "parils"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "parils"
+path = "src/main.rs"
+
+[lib]
+name = "parils"
+
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]   # cdylib for Python .so, rlib for CLI
+
+[dependencies]
+# Parallelism
+rayon = "1"
+crossbeam = "0.8"
+
+# Persistent cache
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+
+# Random number generation
+rand = "0.8"
+
+# Serialization (config/scenario files, cache keys)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# YAML scenario files
+serde_yaml = "0.9"
+
+# Python bindings (optional feature so the crate builds without PyO3 for CLI-only use)
+[features]
+default = []
+python = ["pyo3/extension-module"]
+
+[dependencies.pyo3]
+version = "0.21"
+optional = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3

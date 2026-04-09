@@ -1,0 +1,234 @@
+//! Persistent result cache backed by SQLite.
+//!
+//! Schema (normalized to keep `results` rows compact at scale):
+//!
+//! ```sql
+//! CREATE TABLE IF NOT EXISTS instances (
+//!     id   INTEGER PRIMARY KEY,
+//!     path TEXT UNIQUE NOT NULL
+//! );
+//! CREATE TABLE IF NOT EXISTS results (
+//!     strategy_hash INTEGER NOT NULL,
+//!     instance_id   INTEGER NOT NULL,
+//!     runtime       REAL    NOT NULL,
+//!     quality       REAL    NOT NULL,
+//!     PRIMARY KEY (strategy_hash, instance_id)
+//! );
+//! ```
+//!
+//! `quality` is the best-solution value reported by the solver (used when
+//! `run_obj = quality`; for runtime-objective runs it is ignored but still
+//! stored in case the cache is shared across scenario types).
+//!
+//! The `instances` table is populated once at startup via `load_instances()`,
+//! which returns an in-memory `HashMap<String, i64>` used for all subsequent
+//! queries — no path strings appear in hot-path SQL.
+
+use std::collections::HashMap;
+use anyhow::{Context, Result};
+use rusqlite::{Connection, params};
+
+use crate::params::Config;
+
+/// A single cached solver result.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedResult {
+    pub runtime: f64,
+    pub quality: f64,
+}
+
+pub struct Cache {
+    conn: Connection,
+}
+
+impl Cache {
+    /// Open (or create) the SQLite DB at `path` and ensure the schema exists.
+    /// Pass `":memory:"` for an in-process test database.
+    pub fn open(path: &str) -> Result<Self> {
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open cache DB: {path}"))?;
+
+        conn.execute_batch("
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS instances (
+                id   INTEGER PRIMARY KEY,
+                path TEXT UNIQUE NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS results (
+                strategy_hash INTEGER NOT NULL,
+                instance_id   INTEGER NOT NULL,
+                runtime       REAL    NOT NULL,
+                quality       REAL    NOT NULL,
+                PRIMARY KEY (strategy_hash, instance_id)
+            );
+        ").context("failed to initialise cache schema")?;
+
+        Ok(Cache { conn })
+    }
+
+    /// Register all instance paths and return an in-memory `path → id` map.
+    ///
+    /// Called once at startup.  Uses `INSERT OR IGNORE` so existing rows are
+    /// left untouched, then fetches ids for every path in one query.
+    pub fn load_instances(&self, instances: &[String]) -> Result<HashMap<String, i64>> {
+        {
+            let mut stmt = self.conn.prepare_cached(
+                "INSERT OR IGNORE INTO instances (path) VALUES (?1)"
+            )?;
+            for path in instances {
+                stmt.execute(params![path])?;
+            }
+        }
+
+        if instances.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = instances.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT path, id FROM instances WHERE path IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let map = stmt
+            .query_map(rusqlite::params_from_iter(instances.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()
+            .context("failed to load instance ids")?;
+        Ok(map)
+    }
+
+    /// Bulk-fetch cached results for one strategy on a set of instances.
+    ///
+    /// Returns a map of `instance_id → CachedResult` for every cache hit;
+    /// missing keys are cache misses.
+    pub fn get_batch(
+        &self,
+        strategy_hash: u64,
+        instance_ids: &[i64],
+    ) -> Result<HashMap<i64, CachedResult>> {
+        if instance_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = instance_ids.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 2)) // ?1 = strategy_hash
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT instance_id, runtime, quality FROM results \
+             WHERE strategy_hash = ?1 AND instance_id IN ({placeholders})"
+        );
+        let hash = strategy_hash as i64;
+        let mut stmt = self.conn.prepare(&sql)?;
+        let iter = stmt.query_map(
+            rusqlite::params_from_iter(
+                std::iter::once(&hash as &dyn rusqlite::types::ToSql)
+                    .chain(instance_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql))
+            ),
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                CachedResult { runtime: row.get(1)?, quality: row.get(2)? },
+            )),
+        )?;
+        iter.collect::<rusqlite::Result<HashMap<_, _>>>()
+            .context("failed to query result cache")
+    }
+
+    /// Store a single result.
+    pub fn put(
+        &self,
+        strategy_hash: u64,
+        instance_id: i64,
+        runtime: f64,
+        quality: f64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO results (strategy_hash, instance_id, runtime, quality) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![strategy_hash as i64, instance_id, runtime, quality],
+        ).context("failed to write to result cache")?;
+        Ok(())
+    }
+}
+
+/// Deterministic u64 hash of a `Config`.
+///
+/// Keys are sorted before hashing so insertion order does not matter.
+/// Uses `std::hash::DefaultHasher` — stable within a single binary build
+/// but NOT portable across compiler versions or machines.
+pub fn hash_config(config: &Config) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut pairs: Vec<(&String, &String)> = config.iter().collect();
+    pairs.sort_unstable_by_key(|(k, _)| *k);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pairs.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open() -> Cache {
+        Cache::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn open_creates_schema() {
+        open();
+    }
+
+    #[test]
+    fn load_instances_round_trip() {
+        let cache = open();
+        let paths = vec!["a.cnf".to_string(), "b.cnf".to_string()];
+        let map = cache.load_instances(&paths).unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("a.cnf"));
+        // Idempotent
+        let map2 = cache.load_instances(&paths).unwrap();
+        assert_eq!(map["a.cnf"], map2["a.cnf"]);
+    }
+
+    #[test]
+    fn get_batch_miss_then_hit() {
+        let cache = open();
+        let paths = vec!["p1.cnf".to_string(), "p2.cnf".to_string()];
+        let ids = cache.load_instances(&paths).unwrap();
+        let id1 = ids["p1.cnf"];
+        let id2 = ids["p2.cnf"];
+
+        assert!(cache.get_batch(42, &[id1, id2]).unwrap().is_empty());
+
+        cache.put(42, id1, 1.23, 0.0).unwrap();
+        let hits = cache.get_batch(42, &[id1, id2]).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!((hits[&id1].runtime - 1.23).abs() < 1e-9);
+        assert!(!hits.contains_key(&id2));
+    }
+
+    #[test]
+    fn put_replace() {
+        let cache = open();
+        let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
+        let id = ids["x.cnf"];
+        cache.put(1, id, 2.0, 5.0).unwrap();
+        cache.put(1, id, 3.5, 7.0).unwrap();
+        let hits = cache.get_batch(1, &[id]).unwrap();
+        assert!((hits[&id].runtime - 3.5).abs() < 1e-9);
+        assert!((hits[&id].quality - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hash_config_stable_and_order_independent() {
+        let c1: Config = [("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())].into();
+        let c2: Config = [("b".to_string(), "2".to_string()), ("a".to_string(), "1".to_string())].into();
+        assert_eq!(hash_config(&c1), hash_config(&c2));
+
+        let c3: Config = [("a".to_string(), "1".to_string()), ("b".to_string(), "9".to_string())].into();
+        assert_ne!(hash_config(&c1), hash_config(&c3));
+    }
+}

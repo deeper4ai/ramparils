@@ -1,0 +1,11 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "parils"
+requires-python = ">=3.9"
+description = "ParamILS automated algorithm configuration (Rust, PyO3)"
+
+[tool.maturin]
+features = ["python"]    # enables PyO3 bindings

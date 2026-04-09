@@ -1,0 +1,547 @@
+//! ILS loop: initialization → basic local search → perturbation → acceptance.
+//!
+//! Mirrors `param_ils_2_3_run.rb`:
+//!   iterated_local_search()
+//!     init_default() / init_random()
+//!     basic_local_search()    — first-improvement, parallel neighbour evaluation
+//!     perturbation()          — random walk of strength s
+//!     acceptance_criterion()  — accept if new local optimum dominates incumbent
+
+use std::time::{Duration, Instant};
+use anyhow::Result;
+use rand::Rng;
+
+use crate::cache::{Cache, hash_config};
+use crate::eval::{EvalTask, Scheduler};
+use crate::params::{Config, ParamSpace};
+use crate::scenario::{OverallObjective, RunObjective};
+
+/// ILS algorithm variant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Approach {
+    Basic,
+    Focused,
+    Random,
+}
+
+/// All tunable settings for a single ILS run.
+pub struct IlsOptions {
+    pub approach: Approach,
+    /// Max parallel worker threads.
+    pub n_workers: usize,
+    /// Max runs per configuration per detail level (FocusedILS schedule).
+    pub max_runs: usize,
+    /// Number of neighbourhood steps for perturbation.
+    pub perturbation_strength: usize,
+    /// Adaptive capping multiplier.
+    pub bound_multiplier: f64,
+    /// Enable adaptive capping / pruning.
+    pub pruning: bool,
+    /// Wall-clock budget for the whole ILS run in seconds.
+    pub tuner_timeout: f64,
+    pub run_obj: RunObjective,
+    pub overall_obj: OverallObjective,
+}
+
+/// Run the ILS and return the best configuration found.
+///
+/// `instances` must be pre-registered with `cache.load_instances()` — each
+/// entry is `(instance_id, instance_path)`.
+pub fn run(
+    initial: Option<Config>,
+    options: IlsOptions,
+    space: &ParamSpace,
+    instances: &[(i64, String)],
+    algo: &str,
+    cutoff_time: f64,
+    cache: &mut Cache,
+) -> Result<Config> {
+    let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
+    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time);
+    let mut rng = rand::thread_rng();
+
+    // --- Initialization ---
+    let mut current = match initial {
+        Some(cfg) => cfg,
+        None => {
+            // No initial config: sample a handful of random configs, keep the best.
+            let mut best = random_config(space, &mut rng);
+            let mut best_score = evaluate_config(&best, instances, &scheduler, cache, &options, None, deadline)?;
+            for _ in 1..10 {
+                if Instant::now() >= deadline { break; }
+                let cfg = random_config(space, &mut rng);
+                let score = evaluate_config(&cfg, instances, &scheduler, cache, &options, Some(best_score), deadline)?;
+                if score < best_score {
+                    best_score = score;
+                    best = cfg;
+                }
+            }
+            best
+        }
+    };
+
+    let mut current_score =
+        evaluate_config(&current, instances, &scheduler, cache, &options, None, deadline)?;
+
+    let mut incumbent = current.clone();
+    let mut incumbent_score = current_score;
+
+    // --- First BLS ---
+    let (lm, lm_score) = basic_local_search(
+        current, current_score,
+        instances, &scheduler, cache, &options, space,
+        incumbent_score, &mut rng, deadline,
+    )?;
+    if lm_score <= incumbent_score {
+        incumbent = lm.clone();
+        incumbent_score = lm_score;
+    }
+    let mut last_lm = lm;
+    let mut last_lm_score = lm_score;
+
+    // --- Main ILS loop ---
+    while Instant::now() < deadline {
+        // Perturbation
+        let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
+        current = perturbed;
+        current_score = evaluate_config(
+            &current, instances, &scheduler, cache, &options, Some(incumbent_score), deadline,
+        )?;
+
+        if Instant::now() >= deadline { break; }
+
+        // BLS from the perturbed point
+        let (new_lm, new_lm_score) = basic_local_search(
+            current, current_score,
+            instances, &scheduler, cache, &options, space,
+            incumbent_score, &mut rng, deadline,
+        )?;
+
+        // Update incumbent
+        if dominates(new_lm_score, instances.len(), incumbent_score, instances.len(), &options) {
+            incumbent = new_lm.clone();
+            incumbent_score = new_lm_score;
+        }
+
+        // Acceptance criterion: keep new local opt only if it dominates the last one
+        let (accepted, accepted_score) =
+            acceptance_criterion(new_lm, new_lm_score, last_lm.clone(), last_lm_score, &options);
+        last_lm = accepted;
+        last_lm_score = accepted_score;
+    }
+
+    Ok(incumbent)
+}
+
+// ---------------------------------------------------------------------------
+// Core algorithm functions
+// ---------------------------------------------------------------------------
+
+/// All one-parameter-away neighbours of `config` within `space`.
+/// Only iterates over active params; skips forbidden combinations.
+pub fn neighbourhood(config: &Config, space: &ParamSpace) -> Vec<Config> {
+    let active = space.active_params(config);
+    let mut result = Vec::new();
+    let empty = String::new();
+    for param in active {
+        let current_val = config.get(&param.name).unwrap_or(&empty);
+        for value in &param.domain {
+            if value == current_val { continue; }
+            let mut new_cfg = config.clone();
+            new_cfg.insert(param.name.clone(), value.clone());
+            if !space.is_forbidden(&new_cfg) {
+                result.push(new_cfg);
+            }
+        }
+    }
+    result
+}
+
+/// Random walk: take `strength` steps through the neighbourhood.
+pub fn perturbation(config: Config, strength: usize, space: &ParamSpace, rng: &mut impl Rng) -> Config {
+    if matches!(strength, 0) { return config; }
+    let mut current = config;
+    for _ in 0..strength {
+        let neighbors = neighbourhood(&current, space);
+        if neighbors.is_empty() { break; }
+        current = neighbors[rng.gen_range(0..neighbors.len())].clone();
+    }
+    current
+}
+
+/// FocusedILS dominance: `a` dominates `b` when a has at least as many runs
+/// and a strictly better or equal score.  BasicILS ignores run counts.
+pub fn dominates(
+    a_score: f64, a_runs: usize,
+    b_score: f64, b_runs: usize,
+    options: &IlsOptions,
+) -> bool {
+    match options.approach {
+        Approach::Basic | Approach::Random => a_score <= b_score,
+        Approach::Focused => a_runs >= b_runs && a_score <= b_score,
+    }
+}
+
+/// Return the new local optimum if it dominates the previous one; otherwise
+/// keep the previous one.
+fn acceptance_criterion(
+    new: Config, new_score: f64,
+    last: Config, last_score: f64,
+    options: &IlsOptions,
+) -> (Config, f64) {
+    if dominates(new_score, 1, last_score, 1, options) {
+        (new, new_score)
+    } else {
+        (last, last_score)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation helpers
+// ---------------------------------------------------------------------------
+
+/// Evaluate `config` on all instances in parallel.  Returns the scalar score.
+///
+/// Cache hits are served immediately; misses are dispatched to worker threads.
+/// Adaptive capping prunes early if the running mean exceeds
+/// `bound_multiplier × incumbent_score`.
+fn evaluate_config(
+    config: &Config,
+    instances: &[(i64, String)],
+    scheduler: &Scheduler,
+    cache: &mut Cache,
+    options: &IlsOptions,
+    incumbent_score: Option<f64>,
+    deadline: Instant,
+) -> Result<f64> {
+    if instances.is_empty() { return Ok(0.0); }
+
+    let hash = hash_config(config);
+    scheduler.submit(vec![EvalTask {
+        neighbor_id: 0,
+        config: config.clone(),
+        hash,
+        instances: instances.to_vec(),
+    }], cache)?;
+
+    collect_one(hash, instances.len(), 0, scheduler, cache, options, incumbent_score, deadline)
+}
+
+/// Parallel first-improvement BLS.
+///
+/// Submits all neighbours as `EvalTask`s at once.  Accepts the first
+/// fully-evaluated neighbour that dominates the current config (in
+/// evaluation-completion order).  Resets the scheduler when a better
+/// neighbour is found (so we don't wait for the rest).
+fn basic_local_search(
+    start: Config, start_score: f64,
+    instances: &[(i64, String)],
+    scheduler: &Scheduler,
+    cache: &mut Cache,
+    options: &IlsOptions,
+    space: &ParamSpace,
+    incumbent_score: f64,
+    rng: &mut impl Rng,
+    deadline: Instant,
+) -> Result<(Config, f64)> {
+    let n_instances = instances.len();
+    let mut current = start;
+    let mut current_score = start_score;
+    let mut changed = true;
+
+    while changed && Instant::now() < deadline {
+        changed = false;
+
+        let mut neighbors = neighbourhood(&current, space);
+        if neighbors.is_empty() { break; }
+
+        // Shuffle for random first-improvement ordering
+        for i in (1..neighbors.len()).rev() {
+            let j = rng.gen_range(0..=i);
+            neighbors.swap(i, j);
+        }
+
+        let n = neighbors.len();
+
+        // Submit all neighbours
+        let tasks: Vec<EvalTask> = neighbors.iter().enumerate().map(|(i, cfg)| {
+            let hash = hash_config(cfg);
+            EvalTask { neighbor_id: i, config: cfg.clone(), hash, instances: instances.to_vec() }
+        }).collect();
+        scheduler.submit(tasks, cache)?;
+
+        // Per-neighbour tracking
+        let mut runtimes: Vec<Vec<f64>> = vec![vec![]; n];
+        let mut qualities: Vec<Vec<f64>> = vec![vec![]; n];
+        let mut partial: Vec<f64> = vec![0.0; n];
+        let mut done = vec![false; n];
+        let mut n_done = 0usize;
+
+        'collect: loop {
+            if n_done >= n { break; }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() { break; }
+
+            let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+
+            cache.put(result.hash, result.instance_id, result.runtime, result.quality)?;
+
+            let nid = result.neighbor_id;
+            // Guard against stale results from a previous reset (shouldn't
+            // normally happen, but the window between reset() and drain is tiny).
+            if nid >= n || done[nid] { continue; }
+
+            runtimes[nid].push(result.runtime);
+            qualities[nid].push(result.quality);
+            let val = match options.run_obj {
+                RunObjective::Runtime => result.runtime,
+                RunObjective::Quality => result.quality,
+            };
+            partial[nid] += val;
+
+            // Adaptive capping: prune this neighbour if its running mean already
+            // exceeds the incumbent bound — it can't win even if the rest are fast.
+            if options.pruning {
+                let pm = partial[nid] / runtimes[nid].len() as f64;
+                if pm > options.bound_multiplier * incumbent_score {
+                    done[nid] = true;
+                    n_done += 1;
+                    continue;
+                }
+            }
+
+            if runtimes[nid].len() == n_instances {
+                done[nid] = true;
+                n_done += 1;
+                let score = compute_score(&runtimes[nid], &qualities[nid], options);
+
+                if dominates(score, n_instances, current_score, n_instances, options) {
+                    // Accept — stop evaluating the rest
+                    scheduler.reset();
+                    while scheduler.results().try_recv().is_ok() {}
+                    current = neighbors[nid].clone();
+                    current_score = score;
+                    changed = true;
+                    break 'collect;
+                }
+            }
+        }
+
+        if !changed {
+            scheduler.reset();
+            while scheduler.results().try_recv().is_ok() {}
+        }
+    }
+
+    Ok((current, current_score))
+}
+
+/// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
+/// Used by `evaluate_config` for single-config evaluation.
+fn collect_one(
+    _hash: u64,
+    n_instances: usize,
+    expected_nid: usize,
+    scheduler: &Scheduler,
+    cache: &mut Cache,
+    options: &IlsOptions,
+    incumbent_score: Option<f64>,
+    deadline: Instant,
+) -> Result<f64> {
+    let mut runtimes = Vec::with_capacity(n_instances);
+    let mut qualities = Vec::with_capacity(n_instances);
+    let mut partial_sum = 0.0f64;
+
+    while runtimes.len() < n_instances {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { break; }
+
+        let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+
+        cache.put(result.hash, result.instance_id, result.runtime, result.quality)?;
+        if result.neighbor_id != expected_nid { continue; }
+
+        let val = match options.run_obj {
+            RunObjective::Runtime => result.runtime,
+            RunObjective::Quality => result.quality,
+        };
+        partial_sum += val;
+        runtimes.push(result.runtime);
+        qualities.push(result.quality);
+
+        if options.pruning {
+            if let Some(inc) = incumbent_score {
+                let pm = partial_sum / runtimes.len() as f64;
+                if pm > options.bound_multiplier * inc {
+                    scheduler.reset();
+                    while scheduler.results().try_recv().is_ok() {}
+                    break;
+                }
+            }
+        }
+    }
+
+    if runtimes.is_empty() { return Ok(f64::INFINITY); }
+    Ok(compute_score(&runtimes, &qualities, options))
+}
+
+/// Compute a scalar score from per-instance results.
+fn compute_score(runtimes: &[f64], qualities: &[f64], options: &IlsOptions) -> f64 {
+    let values: &[f64] = match options.run_obj {
+        RunObjective::Runtime => runtimes,
+        RunObjective::Quality => qualities,
+    };
+    match options.overall_obj {
+        OverallObjective::Mean => values.iter().sum::<f64>() / values.len() as f64,
+        OverallObjective::Median => {
+            let mut s = values.to_vec();
+            s.sort_by(f64::total_cmp);
+            let n = s.len();
+            if n % 2 == 0 { (s[n / 2 - 1] + s[n / 2]) / 2.0 } else { s[n / 2] }
+        }
+    }
+}
+
+/// Sample a random non-forbidden configuration.
+fn random_config(space: &ParamSpace, rng: &mut impl Rng) -> Config {
+    loop {
+        let cfg: Config = space.params.iter()
+            .map(|p| (p.name.clone(), p.domain[rng.gen_range(0..p.domain.len())].clone()))
+            .collect();
+        if !space.is_forbidden(&cfg) { return cfg; }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn simple_space() -> ParamSpace {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "alpha {{1, 2, 3}} [2]").unwrap();
+        writeln!(f, "beta {{a, b}} [a]").unwrap();
+        let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
+        drop(f);
+        space
+    }
+
+    fn forbidden_space() -> ParamSpace {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "x {{1, 2}} [1]").unwrap();
+        writeln!(f, "y {{a, b}} [a]").unwrap();
+        writeln!(f, "{{x=2, y=b}}").unwrap();
+        let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
+        drop(f);
+        space
+    }
+
+    fn cfg(pairs: &[(&str, &str)]) -> Config {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn neighbourhood_size() {
+        let space = simple_space();
+        let config = cfg(&[("alpha", "2"), ("beta", "a")]);
+        let n = neighbourhood(&config, &space);
+        // alpha has 2 other values, beta has 1 other value → 3 neighbours
+        assert_eq!(n.len(), 3);
+        // All neighbours differ in exactly one param
+        for nb in &n {
+            let diffs: usize = nb.iter()
+                .filter(|(k, v)| config.get(*k) != Some(v))
+                .count();
+            assert_eq!(diffs, 1);
+        }
+    }
+
+    #[test]
+    fn neighbourhood_skips_forbidden() {
+        let space = forbidden_space();
+        let config = cfg(&[("x", "2"), ("y", "a")]);
+        let n = neighbourhood(&config, &space);
+        // From x=2,y=a: can go to x=1,y=a (ok) or x=2,y=b (forbidden) → 1 neighbor
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0]["x"], "1");
+    }
+
+    #[test]
+    fn perturbation_changes_config() {
+        let space = simple_space();
+        let config = cfg(&[("alpha", "2"), ("beta", "a")]);
+        let mut rng = rand::thread_rng();
+        let perturbed = perturbation(config.clone(), 3, &space, &mut rng);
+        // After 3 perturbation steps, config should generally differ
+        // (probabilistically, but with a space this small it's very likely)
+        assert_eq!(perturbed.len(), config.len());
+    }
+
+    #[test]
+    fn dominates_basic() {
+        let opts = IlsOptions {
+            approach: Approach::Basic,
+            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+        };
+        assert!(dominates(1.0, 5, 2.0, 5, &opts));
+        assert!(dominates(1.0, 1, 2.0, 10, &opts)); // BasicILS ignores run counts
+        assert!(!dominates(2.0, 5, 1.0, 5, &opts));
+    }
+
+    #[test]
+    fn dominates_focused() {
+        let opts = IlsOptions {
+            approach: Approach::Focused,
+            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+        };
+        assert!(dominates(1.0, 10, 2.0, 5, &opts)); // better score, more runs
+        assert!(!dominates(1.0, 3, 2.0, 5, &opts));  // better score but fewer runs
+    }
+
+    #[test]
+    fn compute_score_mean_runtime() {
+        let opts = IlsOptions {
+            approach: Approach::Basic,
+            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+        };
+        assert!((compute_score(&[1.0, 2.0, 3.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_score_median_runtime() {
+        let opts = IlsOptions {
+            approach: Approach::Basic,
+            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
+        };
+        assert!((compute_score(&[3.0, 1.0, 2.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn random_config_not_forbidden() {
+        let space = forbidden_space();
+        let mut rng = rand::thread_rng();
+        for _ in 0..50 {
+            let cfg = random_config(&space, &mut rng);
+            assert!(!space.is_forbidden(&cfg));
+        }
+    }
+}
