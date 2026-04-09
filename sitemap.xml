@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://deeper4ai.github.io/parils/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
     <url>
-         <loc>https://deeper4ai.github.io/parils/installation/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/installation/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
     <url>
-         <loc>https://deeper4ai.github.io/parils/reference/params/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/reference/params/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
     <url>
-         <loc>https://deeper4ai.github.io/parils/reference/protocol/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/reference/protocol/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
     <url>
-         <loc>https://deeper4ai.github.io/parils/usage/cli/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/usage/cli/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
     <url>
-         <loc>https://deeper4ai.github.io/parils/usage/python/</loc>
+         <loc>https://deeper4ai.github.io/ramparils/usage/python/</loc>
          <lastmod>2026-04-09</lastmod>
     </url>
 </urlset>
