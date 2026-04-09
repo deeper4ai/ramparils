@@ -1,5 +1,6 @@
 site_name: Parils
 site_description: Parallel automated algorithm configuration via Iterated Local Search
+site_url: https://deeper4ai.github.io/parils/
 repo_url: https://github.com/deeper4ai/parils
 repo_name: deeper4ai/parils
 
