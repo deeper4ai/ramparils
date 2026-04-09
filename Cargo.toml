@@ -45,6 +45,7 @@ python = ["pyo3/extension-module"]
 [dependencies.pyo3]
 version = "0.21"
 optional = true
+features = ["abi3-py39"]
 
 [dev-dependencies]
 tempfile = "3"

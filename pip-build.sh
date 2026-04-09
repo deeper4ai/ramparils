@@ -12,12 +12,10 @@ fi
 source "$VENV/bin/activate"
 
 echo "Installing/updating dependencies ..."
-pip install -q maturin mkdocs mkdocs-material "mkdocstrings[python]"
+pip install -q maturin ziglang
 
-echo "Building Python extension ..."
-maturin develop --features python -q
+echo "Building manylinux wheel (abi3, x86_64) ..."
+maturin build --release --features python --zig -i python
 
-echo "Deploying docs to gh-pages ..."
-mkdocs gh-deploy --remote-name public
-
-echo "Done. https://deeper4ai.github.io/parils/"
+echo "Done. Wheel in target/wheels/"
+ls "$REPO_ROOT/target/wheels/"
