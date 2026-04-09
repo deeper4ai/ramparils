@@ -138,7 +138,7 @@ fn run_specialize(
 }
 
 #[pymodule]
-fn parils(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _parils(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(specialize, m)?)?;
     Ok(())
 }
