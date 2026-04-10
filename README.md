@@ -128,7 +128,7 @@ The target algorithm is invoked as:
 It must print a result line to stdout:
 
 ```
-#%# PARILS #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
+#%# RamParIls #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
 ```
 
 See `examples/saps_python.py` for a runnable example.
@@ -142,3 +142,7 @@ cargo test
 ```
 
 25 unit tests covering the parameter space parser, SQLite cache, scheduler, and ILS core functions.
+
+## Acknowledgements
+
+This project is part of [DEEPER](https://deeper4ai.github.io/) and supported by the [DEEPER grant](https://www.renaissancephilanthropy.org/deeper-exploratory-engine-for-precise-expert-reasoning) from Renaissance Philanthropy.

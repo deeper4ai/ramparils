@@ -31,3 +31,7 @@ solver calls.
 - [Python API](usage/python.md)
 - [Parameter file format](reference/params.md)
 - [Solver wrapper protocol](reference/protocol.md)
+
+## Acknowledgements
+
+This project is part of [DEEPER](https://deeper4ai.github.io/) and supported by the [DEEPER grant](https://www.renaissancephilanthropy.org/deeper-exploratory-engine-for-precise-expert-reasoning) from Renaissance Philanthropy.
