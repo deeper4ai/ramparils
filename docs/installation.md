@@ -1,41 +1,36 @@
 # Installation
 
-## Prerequisites
+## Python extension (pip)
 
-- **Rust 1.75+** — install via [rustup](https://rustup.rs)
-- **Python 3.9+** and `maturin` (Python extension only)
+```bash
+pip install ramparils
+```
 
 ## CLI binary
 
+Clone the repo and build with Cargo:
+
 ```bash
+git clone https://github.com/deeper4ai/ramparils.git
+cd ramparils
 cargo build --release
-# binary at target/release/parils
+# binary at target/release/ramparils
 ```
 
-## Python extension
+Requires [Rust 1.85+](https://rustup.rs).
 
-Install [maturin](https://github.com/PyO3/maturin), then build and install into the current
-Python environment:
+## Python extension (from source)
 
 ```bash
+git clone https://github.com/deeper4ai/ramparils.git
+cd ramparils
 pip install maturin
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop --features python
+maturin develop --features python
 ```
-
-Or build a wheel for distribution:
-
-```bash
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --features python --release
-pip install target/wheels/parils-*.whl
-```
-
-!!! note "Python 3.13+"
-    `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` is required on Python 3.13+ until PyO3 0.22 is
-    released.
 
 ## Verify
 
 ```python
-import parils
-help(parils.specialize)
+import ramparils
+help(ramparils.specialize)
 ```

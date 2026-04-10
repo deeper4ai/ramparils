@@ -1,7 +1,7 @@
 # CLI
 
 ```bash
-parils --scenariofile path/to/scenario.yaml
+ramparils --scenariofile path/to/scenario.yaml
 ```
 
 ## Scenario file
@@ -32,7 +32,7 @@ overall_obj: mean                         # mean | median
 | `--bm F` | `10.0` | Adaptive capping bound multiplier |
 | `--ps N` | `4` | Perturbation strength |
 | `--pruning` | `true` | Enable adaptive capping |
-| `--cachedb PATH` | `paramils_cache.db` | SQLite cache file |
+| `--cachedb PATH` | `ramparils_cache.db` | SQLite cache file |
 | `--numRun N` | `0` | Run index (reserved, future random seed) |
 
 ## Output

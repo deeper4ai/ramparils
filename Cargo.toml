@@ -1,14 +1,14 @@
 [package]
-name = "parils"
-version = "0.1.1"
+name = "ramparils"
+version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "parils"
+name = "ramparils"
 path = "src/main.rs"
 
 [lib]
-name = "parils"
+name = "ramparils"
 
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]   # cdylib for Python .so, rlib for CLI

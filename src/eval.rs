@@ -210,7 +210,7 @@ impl Scheduler {
 /// ```
 /// The solver must print a result line to stdout:
 /// ```text
-/// #%# PARILS #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
+/// #%# RamParIls #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
 /// ```
 ///
 /// On crash or missing result line, returns `(cutoff_time, 0.0)`.
@@ -249,7 +249,7 @@ pub(crate) fn run_solver_inner(
 
 fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64) {
     for line in output.lines() {
-        let rest = match line.strip_prefix("#%# PARILS #%# ") {
+        let rest = match line.strip_prefix("#%# RamParIls #%# ") {
             Some(r) => r,
             None => continue,
         };
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn parse_ok_line() {
         let (rt, q) = parse_solver_output(
-            "some preamble\n#%# PARILS #%# OK, 1.23, 42.0\n",
+            "some preamble\n#%# RamParIls #%# OK, 1.23, 42.0\n",
             10.0,
         );
         assert!((rt - 1.23).abs() < 1e-9);
@@ -284,13 +284,13 @@ mod tests {
 
     #[test]
     fn parse_timeout_line() {
-        let (rt, _) = parse_solver_output("#%# PARILS #%# TIMEOUT, 5.0, 0.0", 10.0);
+        let (rt, _) = parse_solver_output("#%# RamParIls #%# TIMEOUT, 5.0, 0.0", 10.0);
         assert!((rt - 5.0).abs() < 1e-9);
     }
 
     #[test]
     fn parse_caps_at_cutoff() {
-        let (rt, _) = parse_solver_output("#%# PARILS #%# OK, 99.9, 0.0", 10.0);
+        let (rt, _) = parse_solver_output("#%# RamParIls #%# OK, 99.9, 0.0", 10.0);
         assert!((rt - 10.0).abs() < 1e-9);
     }
 

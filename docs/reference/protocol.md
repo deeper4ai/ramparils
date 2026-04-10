@@ -1,6 +1,6 @@
 # Solver wrapper protocol
 
-Parils communicates with the target algorithm via a simple subprocess protocol.
+RamParILS communicates with the target algorithm via a simple subprocess protocol.
 
 ## Invocation
 
@@ -26,7 +26,7 @@ ruby /path/to/saps_wrapper.rb /data/inst1.cnf 5.0 -alpha 1.189 -rho 0.5 -ps 0.1 
 The solver must print a result line to **stdout**:
 
 ```
-#%# PARILS #%# <status>, <runtime>, <quality>
+#%# RamParIls #%# <status>, <runtime>, <quality>
 ```
 
 | Field | Values | Description |
@@ -43,13 +43,13 @@ If no result line is found, the run is treated as a timeout: runtime is set to `
 Successful run:
 
 ```
-#%# PARILS #%# OK, 1.23, 0.0
+#%# RamParIls #%# OK, 1.23, 0.0
 ```
 
 Timeout:
 
 ```
-#%# PARILS #%# TIMEOUT, 5.0, 0.0
+#%# RamParIls #%# TIMEOUT, 5.0, 0.0
 ```
 
 ## Minimal wrapper skeleton
@@ -60,5 +60,5 @@ instance, cutoff, *params = ARGV
 
 # ... run your solver here ...
 
-puts "#%# PARILS #%# OK, #{runtime}, 0.0"
+puts "#%# RamParIls #%# OK, #{runtime}, 0.0"
 ```

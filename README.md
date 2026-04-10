@@ -1,4 +1,4 @@
-# Parils
+# RamParILS
 
 A parallel Rust rewrite of [ParamILS](https://www.cs.ubc.ca/labs/algorithms/Projects/ParamILS/) — automated algorithm configuration via Iterated Local Search.
 
@@ -6,45 +6,38 @@ Used as the inner tuner in [Grackle](https://github.com/ai4reason/grackle), a st
 
 ## What it does
 
-Given a target algorithm with configurable parameters, Parils finds the parameter setting that minimises runtime (or maximises solution quality) on a set of training instances.
+Given a target algorithm with configurable parameters, RamParILS finds the parameter setting that minimises runtime (or maximises solution quality) on a set of training instances.
 It evaluates `(configuration, instance)` pairs in parallel across all available CPU cores and caches results in a persistent SQLite database so repeated runs on the same benchmark never redo solver calls.
 
 ## Key differences from the Ruby ParamILS
 
-| | Ruby ParamILS | Parils |
+| | Ruby ParamILS | RamParILS |
 |---|---|---|
 | Evaluation | Sequential | Parallel over all `(neighbor, instance)` pairs |
 | Cache | In-memory, per-run | Persistent SQLite, shared across runs |
 | Python API | subprocess call | Native extension via PyO3 |
+| Non-deterministic algorithms (multiple seeds) | Supported | Not (yet) supported |
 
 ---
 
-## Building
+## Installation
 
-### Prerequisites
+### Python extension (pip)
 
-- Rust 1.75+ (`rustup` recommended)
-- Python 3.9+ and `maturin` (Python extension only)
+```bash
+pip install ramparils
+```
 
 ### CLI binary
 
+Clone the repo and build with Cargo ([Rust 1.85+](https://rustup.rs) required):
+
 ```bash
+git clone https://github.com/deeper4ai/ramparils.git
+cd ramparils
 cargo build --release
-# binary at target/release/parils
+# binary at target/release/ramparils
 ```
-
-### Python extension
-
-```bash
-pip install maturin
-# Build and install into the current environment:
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop --features python
-# Or build a wheel:
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --features python --release
-pip install target/wheels/parils-*.whl
-```
-
-> **Note:** `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` is needed on Python 3.13+ until PyO3 0.22 is released.
 
 ---
 
@@ -53,7 +46,7 @@ pip install target/wheels/parils-*.whl
 ### CLI
 
 ```bash
-parils --scenariofile path/to/scenario.yaml
+ramparils --scenariofile path/to/scenario.yaml
 ```
 
 **Scenario file** (`scenario.yaml`):
@@ -83,9 +76,9 @@ overall_obj: mean                            # mean | median
 ### Python
 
 ```python
-import parils
+import ramparils
 
-result = parils.specialize(
+result = ramparils.specialize(
     strategy={"alpha": "1.189", "rho": "0.5", "ps": "0.1", "wp": "0.03"},
     scenario={
         "algo":         "ruby /path/to/solver_wrapper.rb",

@@ -3,13 +3,13 @@
 use anyhow::Result;
 use clap::Parser;
 
-use parils::cache::Cache;
-use parils::ils::{self, Approach, IlsOptions};
-use parils::params::ParamSpace;
-use parils::scenario::{self, Scenario};
+use ramparils::cache::Cache;
+use ramparils::ils::{self, Approach, IlsOptions};
+use ramparils::params::ParamSpace;
+use ramparils::scenario::{self, Scenario};
 
 #[derive(Parser, Debug)]
-#[command(name = "parils", about = "Automated algorithm configuration via ILS")]
+#[command(name = "ramparils", about = "Automated algorithm configuration via ILS")]
 struct Args {
     /// Scenario file (defines algo, paramfile, instances, cutoff_time, …)
     #[arg(long)]

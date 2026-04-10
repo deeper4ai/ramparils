@@ -3,17 +3,17 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "parils"
+name = "ramparils"
 requires-python = ">=3.9"
 classifiers = ["Programming Language :: Python :: 3"]
-version = "0.1.1"
+version = "0.1.0"
 description = "ParamILS automated algorithm configuration (Rust, PyO3)"
 readme = "README.md"
 
 [project.urls]
-Repository = "https://github.com/deeper4ai/parils"
-Documentation = "https://deeper4ai.github.io/parils/"
+Repository = "https://github.com/deeper4ai/ramparils"
+Documentation = "https://deeper4ai.github.io/ramparils/"
 
 [tool.maturin]
 features = ["python"]    # enables PyO3 bindings
-module-name = "parils._parils"
+module-name = "ramparils._ramparils"

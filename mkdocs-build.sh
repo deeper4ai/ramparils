@@ -17,7 +17,7 @@ pip install -q maturin mkdocs mkdocs-material "mkdocstrings[python]"
 echo "Building Python extension ..."
 maturin develop --features python -q
 
-echo "Deploying docs to gh-pages ..."
-mkdocs gh-deploy --remote-name public
+echo "Building docs ..."
+mkdocs build
 
-echo "Done. https://deeper4ai.github.io/ramparils/"
+echo "Done. Site in site/"

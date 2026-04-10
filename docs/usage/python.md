@@ -1,21 +1,21 @@
 # Python API
 
 ```python
-import parils
+import ramparils
 ```
 
 The module exposes a single function.
 
 ## specialize
 
-::: parils.specialize
+::: ramparils.specialize
 
 ## Example
 
 ```python
-import parils
+import ramparils
 
-result = parils.specialize(
+result = ramparils.specialize(
     strategy={
         "alpha": "1.189",
         "rho":   "0.5",
@@ -32,7 +32,7 @@ result = parils.specialize(
         "cutoff_time":   5.0,
         "tuner_timeout": 120.0,
     },
-    cache_db="/tmp/parils_cache.db",
+    cache_db="/tmp/ramparils_cache.db",
     cores=8,
 )
 
