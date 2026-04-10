@@ -321,10 +321,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#python-extension-pip" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Python extension (pip)
       
     </span>
   </a>
@@ -343,10 +343,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#python-extension" class="md-nav__link">
+  <a href="#python-extension-from-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Python extension
+        Python extension (from source)
       
     </span>
   </a>
@@ -629,10 +629,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#python-extension-pip" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Python extension (pip)
       
     </span>
   </a>
@@ -651,10 +651,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#python-extension" class="md-nav__link">
+  <a href="#python-extension-from-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Python extension
+        Python extension (from source)
       
     </span>
   </a>
@@ -693,28 +693,23 @@
 
 
 <h1 id="installation">Installation</h1>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li><strong>Rust 1.75+</strong> — install via <a href="https://rustup.rs">rustup</a></li>
-<li><strong>Python 3.9+</strong> and <code>maturin</code> (Python extension only)</li>
-</ul>
+<h2 id="python-extension-pip">Python extension (pip)</h2>
+<pre><code class="language-bash">pip install ramparils
+</code></pre>
 <h2 id="cli-binary">CLI binary</h2>
-<pre><code class="language-bash">cargo build --release
+<p>Clone the repo and build with Cargo:</p>
+<pre><code class="language-bash">git clone https://github.com/deeper4ai/ramparils.git
+cd ramparils
+cargo build --release
 # binary at target/release/ramparils
 </code></pre>
-<h2 id="python-extension">Python extension</h2>
-<p>Install <a href="https://github.com/PyO3/maturin">maturin</a>, then build and install into the current
-Python environment:</p>
-<pre><code class="language-bash">pip install maturin
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop --features python
+<p>Requires <a href="https://rustup.rs">Rust 1.85+</a>.</p>
+<h2 id="python-extension-from-source">Python extension (from source)</h2>
+<pre><code class="language-bash">git clone https://github.com/deeper4ai/ramparils.git
+cd ramparils
+pip install maturin
+maturin develop --features python
 </code></pre>
-<p>Or build a wheel for distribution:</p>
-<pre><code class="language-bash">PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --features python --release
-pip install target/wheels/ramparils-*.whl
-</code></pre>
-<p>!!! note "Python 3.13+"
-    <code>PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1</code> is required on Python 3.13+ until PyO3 0.22 is
-    released.</p>
 <h2 id="verify">Verify</h2>
 <pre><code class="language-python">import ramparils
 help(ramparils.specialize)

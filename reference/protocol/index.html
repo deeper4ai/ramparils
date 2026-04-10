@@ -709,7 +709,7 @@
 </code></pre>
 <h2 id="output">Output</h2>
 <p>The solver must print a result line to <strong>stdout</strong>:</p>
-<pre><code>#%# PARILS #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;
+<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;
 </code></pre>
 <table>
 <thead>
@@ -741,10 +741,10 @@
 If no result line is found, the run is treated as a timeout: runtime is set to <code>cutoff_time</code>.</p>
 <h2 id="examples">Examples</h2>
 <p>Successful run:</p>
-<pre><code>#%# PARILS #%# OK, 1.23, 0.0
+<pre><code>#%# RamParIls #%# OK, 1.23, 0.0
 </code></pre>
 <p>Timeout:</p>
-<pre><code>#%# PARILS #%# TIMEOUT, 5.0, 0.0
+<pre><code>#%# RamParIls #%# TIMEOUT, 5.0, 0.0
 </code></pre>
 <h2 id="minimal-wrapper-skeleton">Minimal wrapper skeleton</h2>
 <pre><code class="language-ruby">#!/usr/bin/env ruby
@@ -752,7 +752,7 @@ instance, cutoff, *params = ARGV
 
 # ... run your solver here ...
 
-puts &quot;#%# PARILS #%# OK, #{runtime}, 0.0&quot;
+puts &quot;#%# RamParIls #%# OK, #{runtime}, 0.0&quot;
 </code></pre>
 
 
