@@ -39,12 +39,13 @@ pub struct CachedResult {
 
 pub struct Cache {
     conn: Connection,
+    pub debug: bool,
 }
 
 impl Cache {
     /// Open (or create) the SQLite DB at `path` and ensure the schema exists.
     /// Pass `":memory:"` for an in-process test database.
-    pub fn open(path: &str) -> Result<Self> {
+    pub fn open(path: &str, debug: bool) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open cache DB: {path}"))?;
 
@@ -64,7 +65,8 @@ impl Cache {
             );
         ").context("failed to initialise cache schema")?;
 
-        Ok(Cache { conn })
+        crate::debug_line(debug, &format!("[{:8.2}s] cache: opened path={path}", crate::t()));
+        Ok(Cache { conn, debug })
     }
 
     /// Register all instance paths and return an in-memory `path → id` map.
@@ -98,6 +100,7 @@ impl Cache {
             })?
             .collect::<rusqlite::Result<HashMap<_, _>>>()
             .context("failed to load instance ids")?;
+        crate::debug_line(self.debug, &format!("[{:8.2}s] cache: load_instances n={}", crate::t(), map.len()));
         Ok(map)
     }
 
@@ -133,8 +136,9 @@ impl Cache {
                 CachedResult { runtime: row.get(1)?, quality: row.get(2)? },
             )),
         )?;
-        iter.collect::<rusqlite::Result<HashMap<_, _>>>()
-            .context("failed to query result cache")
+        let result = iter.collect::<rusqlite::Result<HashMap<_, _>>>()
+            .context("failed to query result cache")?;
+        Ok(result)
     }
 
     /// Store a single result.
@@ -173,7 +177,7 @@ mod tests {
     use super::*;
 
     fn open() -> Cache {
-        Cache::open(":memory:").unwrap()
+        Cache::open(":memory:", false).unwrap()
     }
 
     #[test]

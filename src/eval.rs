@@ -103,13 +103,14 @@ pub struct Scheduler {
     result_rx: Receiver<TaskResult>,
     stop: Arc<AtomicBool>,
     cutoff_time: f64,
+    debug: bool,
     _workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Scheduler {
     /// Spawn `n_workers` worker threads.  Each loops waiting for `WorkItem`s,
     /// runs the solver, and sends `TaskResult`s back.
-    pub fn new(n_workers: usize, algo: String, cutoff_time: f64) -> Self {
+    pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: bool, debug_wrapper: bool, debug_solver: bool) -> Self {
         let (work_tx, work_rx) = unbounded::<WorkItem>();
         let (result_tx, result_rx) = unbounded::<TaskResult>();
         let stop = Arc::new(AtomicBool::new(false));
@@ -128,7 +129,7 @@ impl Scheduler {
                             continue;
                         }
                         let (runtime, quality) =
-                            run_solver_inner(&algo, &item.config, &item.instance_path, item.cutoff_time);
+                            run_solver_inner(&algo, &item.config, item.hash, &item.instance_path, item.cutoff_time, debug_wrapper, debug_solver);
                         // Still send the result even if stop was set mid-call;
                         // ILS drains these as part of the reset() protocol.
                         let _ = result_tx.send(TaskResult {
@@ -143,7 +144,8 @@ impl Scheduler {
             })
             .collect();
 
-        Scheduler { work_tx, result_tx, result_rx, stop, cutoff_time, _workers: workers }
+        crate::debug_line(debug, &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()));
+        Scheduler { work_tx, result_tx, result_rx, stop, cutoff_time, debug, _workers: workers }
     }
 
     /// Dispatch one batch of tasks.
@@ -155,12 +157,14 @@ impl Scheduler {
     pub fn submit(&self, tasks: Vec<EvalTask>, cache: &Cache) -> Result<()> {
         self.stop.store(false, Ordering::Relaxed);
 
+        let (mut n_hits, mut n_misses) = (0usize, 0usize);
         for task in tasks {
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
             let hits: HashMap<i64, CachedResult> = cache.get_batch(task.hash, &ids)?;
 
             for (instance_id, instance_path) in task.instances {
                 if let Some(cached) = hits.get(&instance_id) {
+                    n_hits += 1;
                     let _ = self.result_tx.send(TaskResult {
                         neighbor_id: task.neighbor_id,
                         instance_id,
@@ -169,6 +173,7 @@ impl Scheduler {
                         quality: cached.quality,
                     });
                 } else {
+                    n_misses += 1;
                     let _ = self.work_tx.send(WorkItem {
                         neighbor_id: task.neighbor_id,
                         config: task.config.clone(),
@@ -180,6 +185,7 @@ impl Scheduler {
                 }
             }
         }
+        crate::debug_line(self.debug, &format!("[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}", crate::t(), n_hits + n_misses));
         Ok(())
     }
 
@@ -195,6 +201,7 @@ impl Scheduler {
     /// any in-flight results before the next `submit()`.
     pub fn reset(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        crate::debug_line(self.debug, &format!("[{:8.2}s] eval: reset", crate::t()));
     }
 }
 
@@ -221,8 +228,11 @@ impl Scheduler {
 pub(crate) fn run_solver_inner(
     algo: &str,
     config: &Config,
+    hash: u64,
     instance: &str,
     cutoff_time: f64,
+    debug_wrapper: bool,
+    debug_solver: bool,
 ) -> (f64, f64) {
     let mut pairs: Vec<(&String, &String)> = config.iter().collect();
     pairs.sort_unstable_by_key(|(k, _)| *k);
@@ -233,18 +243,21 @@ pub(crate) fn run_solver_inner(
         .join(" ");
 
     let cmd = format!("{algo} {instance} {cutoff_time} {paramstring}");
+    crate::debug_line(debug_wrapper, &format!("[{:8.2}s] wrapper: {cmd}", crate::t()));
 
     let output = std::process::Command::new("sh")
         .args(["-c", &cmd])
         .output();
 
-    match output {
+    let (runtime, quality) = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_solver_output(&stdout, cutoff_time)
         }
         Err(_) => (cutoff_time, 0.0),
-    }
+    };
+    crate::debug_line(debug_solver, &format!("[{:8.2}s] solver: hash={hash:016x} instance={instance} runtime={runtime:.6} quality={quality:.6}", crate::t()));
+    (runtime, quality)
 }
 
 fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64) {
@@ -304,7 +317,7 @@ mod tests {
     #[test]
     fn scheduler_cache_hit_path() {
         // All results pre-cached → no solver calls needed.
-        let cache = Cache::open(":memory:").unwrap();
+        let cache = Cache::open(":memory:", false).unwrap();
         let paths = vec!["i1.cnf".to_string(), "i2.cnf".to_string()];
         let id_map = cache.load_instances(&paths).unwrap();
 
@@ -316,7 +329,7 @@ mod tests {
         cache.put(hash, id1, 0.5, 0.0).unwrap();
         cache.put(hash, id2, 1.0, 0.0).unwrap();
 
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0);
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, false, false);
         sched.submit(vec![EvalTask {
             neighbor_id: 7,
             config,
@@ -339,8 +352,8 @@ mod tests {
 
     #[test]
     fn scheduler_reset_drains_cleanly() {
-        let cache = Cache::open(":memory:").unwrap();
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0);
+        let cache = Cache::open(":memory:", false).unwrap();
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, false, false);
 
         // Submit empty batch (nothing to do) then reset immediately.
         sched.submit(vec![], &cache).unwrap();

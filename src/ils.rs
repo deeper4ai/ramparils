@@ -16,13 +16,19 @@ use crate::eval::{EvalTask, Scheduler};
 use crate::params::{Config, ParamSpace};
 use crate::scenario::{OverallObjective, RunObjective};
 
-fn fmt_config(cfg: &Config, space: &ParamSpace) -> String {
-    let active = space.active_params(cfg);
-    let mut pairs: Vec<(&str, &str)> = active.iter()
-        .filter_map(|p| cfg.get(&p.name).map(|v| (p.name.as_str(), v.as_str())))
+
+fn print_diff(to_stderr: bool, prev: &Config, next: &Config, space: &ParamSpace) {
+    let active: std::collections::HashSet<String> = space.active_params(next)
+        .into_iter().map(|p| p.name.clone()).collect();
+    let mut changes: Vec<String> = active.iter()
+        .filter_map(|k| {
+            let a = prev.get(k).map(|s| s.as_str()).unwrap_or("-");
+            let b = next.get(k).map(|s| s.as_str()).unwrap_or("-");
+            if a != b { Some(format!("           {k}: {a} -> {b}")) } else { None }
+        })
         .collect();
-    pairs.sort_by_key(|(k, _)| *k);
-    pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
+    changes.sort();
+    for line in changes { crate::debug_line(to_stderr, &line); }
 }
 
 /// ILS algorithm variant.
@@ -50,6 +56,10 @@ pub struct IlsOptions {
     pub overall_obj: OverallObjective,
     /// Print debug output (new incumbents, etc.)
     pub debug: bool,
+    /// Print every solver wrapper invocation.
+    pub debug_wrapper: bool,
+    /// Print every solver result.
+    pub debug_solver: bool,
 }
 
 /// Run the ILS and return the best configuration found.
@@ -64,9 +74,9 @@ pub fn run(
     algo: &str,
     cutoff_time: f64,
     cache: &mut Cache,
-) -> Result<Config> {
+) -> Result<(Config, f64)> {
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
-    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time);
+    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug, options.debug_wrapper, options.debug_solver);
     let mut rng = rand::thread_rng();
     let n_total = instances.len();
 
@@ -78,11 +88,24 @@ pub fn run(
 
     // --- Initialization ---
     if options.debug {
-        let cfg_str = match &initial {
-            Some(cfg) => fmt_config(cfg, space),
-            None => "(random)".to_string(),
+        let t = crate::t();
+        let approach_str = match options.approach {
+            Approach::Basic => "basic", Approach::Focused => "focused", Approach::Random => "random",
         };
-        eprintln!("[debug] initial config: {cfg_str}");
+        let d = options.debug;
+        crate::debug_line(d, &format!("[{t:8.2}s] ils: starting approach={approach_str} instances={n_total} timeout={:.0}s", options.tuner_timeout));
+        crate::debug_line(d, &format!("[{t:8.2}s] ils: initial config:"));
+        match &initial {
+            Some(cfg) => {
+                let active = space.active_params(cfg);
+                let mut pairs: Vec<(&str, &str)> = active.iter()
+                    .filter_map(|p| cfg.get(&p.name).map(|v| (p.name.as_str(), v.as_str())))
+                    .collect();
+                pairs.sort_by_key(|(k, _)| *k);
+                for (k, v) in pairs { crate::debug_line(d, &format!("           {k}: {v}")); }
+            }
+            None => crate::debug_line(d, "           (random)"),
+        }
     }
     let mut current = match initial {
         Some(cfg) => cfg,
@@ -116,10 +139,13 @@ pub fn run(
         incumbent_score, &mut rng, deadline,
     )?;
     if lm_score <= incumbent_score {
+        let old = incumbent.clone();
         incumbent = lm.clone();
         incumbent_score = lm_score;
         if options.debug {
-            eprintln!("[debug] new incumbent (init): score={incumbent_score:.6} instances={n_runs}");
+            let hash = hash_config(&incumbent);
+            crate::debug_line(options.debug, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
+            print_diff(options.debug, &old, &incumbent, space);
         }
     }
     let mut last_lm = lm;
@@ -129,6 +155,7 @@ pub fn run(
     while Instant::now() < deadline {
         // Perturbation
         let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
+        crate::debug_line(options.debug, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
         current = perturbed;
         current_score = evaluate_config(
             &current, &instances[..n_runs], &scheduler, cache, &options, Some(incumbent_score), deadline,
@@ -137,6 +164,10 @@ pub fn run(
         if Instant::now() >= deadline { break; }
 
         // BLS from the perturbed point — evaluate neighbours on n_runs instances
+        if options.debug {
+            let nb = neighbourhood(&current, space).len();
+            crate::debug_line(options.debug, &format!("[{:8.2}s] ils: bls neighborhood={nb} instances={n_runs} incumbent={incumbent_score:.6}", crate::t()));
+        }
         let (new_lm, new_lm_score) = basic_local_search(
             current, current_score,
             instances, n_runs, &scheduler, cache, &options, space,
@@ -145,10 +176,13 @@ pub fn run(
 
         // Update incumbent
         if new_lm_score <= incumbent_score {
+            let old = incumbent.clone();
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
             if options.debug {
-                eprintln!("[debug] new incumbent: score={incumbent_score:.6} instances={n_runs}");
+                let hash = hash_config(&incumbent);
+                crate::debug_line(options.debug, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
+                print_diff(options.debug, &old, &incumbent, space);
             }
         } else if options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
@@ -170,7 +204,7 @@ pub fn run(
         last_lm_score = accepted_score;
     }
 
-    Ok(incumbent)
+    Ok((incumbent, incumbent_score))
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +568,7 @@ mod tests {
     fn dominates_basic() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false,
+            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -547,7 +581,7 @@ mod tests {
     fn dominates_focused() {
         let opts = IlsOptions {
             approach: Approach::Focused,
-            n_workers: 1, perturbation_strength: 4, debug: false,
+            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -559,7 +593,7 @@ mod tests {
     fn compute_score_mean_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false,
+            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -570,7 +604,7 @@ mod tests {
     fn compute_score_median_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false,
+            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
         };

@@ -98,7 +98,7 @@ fn run_specialize(
     };
     anyhow::ensure!(!instance_paths.is_empty(), "instance list is empty");
 
-    let mut cache = Cache::open(&cache_db)?;
+    let mut cache = Cache::open(&cache_db, false)?;
     let id_map = cache.load_instances(&instance_paths)?;
     let instances: Vec<(i64, String)> = instance_paths.iter()
         .map(|p| (id_map[p], p.clone()))
@@ -119,9 +119,11 @@ fn run_specialize(
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
         debug: false,
+        debug_wrapper: false,
+        debug_solver: false,
     };
 
-    let result = ils::run(
+    let (result, _) = ils::run(
         Some(strategy),
         options,
         &space,
