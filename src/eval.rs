@@ -254,18 +254,21 @@ pub(crate) fn run_solver_inner(
         .args(["-c", &cmd])
         .output();
 
-    let (runtime, quality, status) = match output {
+    let (runtime, quality, status, result_line) = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_solver_output(&stdout, cutoff_time)
         }
-        Err(_) => (cutoff_time, 0.0, "UNKNOWN".to_string()),
+        Err(_) => (cutoff_time, 0.0, "UNKNOWN".to_string(),
+                   format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, 0.0")),
     };
-    crate::debug_line(debug_solver, &format!("[{:8.2}s] solver: hash={hash:016x} instance={instance} runtime={runtime:.6} quality={quality:.6} status={status}", crate::t()));
+    let iname = std::path::Path::new(instance)
+        .file_name().and_then(|n| n.to_str()).unwrap_or(instance);
+    crate::debug_line(debug_solver, &format!("[{:8.2}s] solver: {hash:016x} @ {iname} {result_line}", crate::t()));
     (runtime, quality, status)
 }
 
-fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String) {
+fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String, String) {
     for line in output.lines() {
         let rest = match line.strip_prefix("#%# RamParIls #%# ") {
             Some(r) => r,
@@ -279,10 +282,11 @@ fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String) {
         let quality = parts.next().and_then(|s| s.trim().parse::<f64>().ok());
 
         if let (Some(st), Some(rt), Some(q)) = (status, runtime, quality) {
-            return (rt.min(cutoff_time), q, st);
+            return (rt.min(cutoff_time), q, st, line.to_string());
         }
     }
-    (cutoff_time, 0.0, "UNKNOWN".to_string()) // no result line — treat as timeout/crash
+    let fallback = format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, 0.0");
+    (cutoff_time, 0.0, "UNKNOWN".to_string(), fallback)
 }
 
 #[cfg(test)]
@@ -292,34 +296,36 @@ mod tests {
 
     #[test]
     fn parse_ok_line() {
-        let (rt, q, st) = parse_solver_output(
+        let (rt, q, st, raw) = parse_solver_output(
             "some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n",
             10.0,
         );
         assert!((rt - 1.23).abs() < 1e-9);
         assert!((q - 42.0).abs() < 1e-9);
         assert_eq!(st, "Theorem");
+        assert!(raw.contains("Theorem"));
     }
 
     #[test]
     fn parse_timeout_line() {
-        let (rt, _, st) = parse_solver_output("#%# RamParIls #%# Timeout, 5.0, 0.0", 10.0);
+        let (rt, _, st, _) = parse_solver_output("#%# RamParIls #%# Timeout, 5.0, 0.0", 10.0);
         assert!((rt - 5.0).abs() < 1e-9);
         assert_eq!(st, "Timeout");
     }
 
     #[test]
     fn parse_caps_at_cutoff() {
-        let (rt, _, _) = parse_solver_output("#%# RamParIls #%# Theorem, 99.9, 0.0", 10.0);
+        let (rt, _, _, _) = parse_solver_output("#%# RamParIls #%# Theorem, 99.9, 0.0", 10.0);
         assert!((rt - 10.0).abs() < 1e-9);
     }
 
     #[test]
     fn parse_missing_returns_cutoff() {
-        let (rt, q, st) = parse_solver_output("no result here", 5.0);
+        let (rt, q, st, raw) = parse_solver_output("no result here", 5.0);
         assert!((rt - 5.0).abs() < 1e-9);
         assert!((q - 0.0).abs() < 1e-9);
         assert_eq!(st, "UNKNOWN");
+        assert!(raw.contains("UNKNOWN"));
     }
 
     #[test]
