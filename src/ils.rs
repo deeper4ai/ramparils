@@ -195,6 +195,10 @@ pub fn run(
                 incumbent_score = evaluate_config(
                     &incumbent, &instances[..n_runs], &scheduler, cache, &options, None, deadline,
                 )?;
+                crate::debug_line(options.debug, &format!(
+                    "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
+                    crate::t()
+                ));
             }
         }
 
@@ -384,6 +388,10 @@ fn basic_local_search(
             if options.pruning {
                 let pm = partial[nid] / runtimes[nid].len() as f64;
                 if pm > options.bound_multiplier * incumbent_score {
+                    crate::debug_line(options.debug_wrapper, &format!(
+                        "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
+                        crate::t(), options.bound_multiplier * incumbent_score
+                    ));
                     done[nid] = true;
                     n_done += 1;
                     continue;
@@ -399,6 +407,10 @@ fn basic_local_search(
                     // Accept — stop evaluating the rest
                     scheduler.reset();
                     while scheduler.results().try_recv().is_ok() {}
+                    crate::debug_line(options.debug, &format!(
+                        "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
+                        crate::t()
+                    ));
                     current = neighbors[nid].clone();
                     current_score = score;
                     changed = true;
@@ -410,6 +422,10 @@ fn basic_local_search(
         if !changed {
             scheduler.reset();
             while scheduler.results().try_recv().is_ok() {}
+            crate::debug_line(options.debug, &format!(
+                "[{:8.2}s] ils: bls local optimum score={current_score:.6}",
+                crate::t()
+            ));
         }
     }
 
