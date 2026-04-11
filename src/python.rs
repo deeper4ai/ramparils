@@ -125,7 +125,7 @@ fn run_specialize(
 
     let (result, _) = ils::run(
         Some(strategy),
-        options,
+        &options,
         &space,
         &instances,
         &scenario.algo,

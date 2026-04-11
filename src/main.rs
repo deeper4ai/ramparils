@@ -35,9 +35,21 @@ struct Args {
     #[arg(long = "pruning", default_value_t = true)]
     pruning: bool,
 
-    /// Enable iterative deepening (not yet implemented)
+    /// Enable iterative deepening
     #[arg(long = "id", default_value_t = false)]
     iterative_deepening: bool,
+
+    /// Iterative deepening: instance-count growth factor (0 < λ_n ≤ 1)
+    #[arg(long = "lambda-n", default_value_t = 0.5)]
+    lambda_n: f64,
+
+    /// Iterative deepening: cutoff-time growth factor (0 < λ_c ≤ 1)
+    #[arg(long = "lambda-c", default_value_t = 0.5)]
+    lambda_c: f64,
+
+    /// Iterative deepening: per-phase timeout growth factor (0 < λ_t ≤ 1)
+    #[arg(long = "lambda-t", default_value_t = 0.5)]
+    lambda_t: f64,
 
     /// Path to the result cache database (shared across runs)
     #[arg(long = "cachedb", default_value = "paramils_cache.db")]
@@ -163,15 +175,30 @@ fn main() -> Result<()> {
     let initial = space.default_config();
 
     // Run ILS
-    let (result, best_score) = ils::run(
-        Some(initial),
-        options,
-        &space,
-        &instances,
-        &scenario.algo,
-        scenario.cutoff_time,
-        &mut cache,
-    )?;
+    let (result, best_score) = if args.iterative_deepening {
+        ils::iterative_deepening_ils(
+            Some(initial),
+            &options,
+            &space,
+            &instances,
+            &scenario.algo,
+            scenario.cutoff_time,
+            &mut cache,
+            args.lambda_n,
+            args.lambda_c,
+            args.lambda_t,
+        )?
+    } else {
+        ils::run(
+            Some(initial),
+            &options,
+            &space,
+            &instances,
+            &scenario.algo,
+            scenario.cutoff_time,
+            &mut cache,
+        )?
+    };
 
     ramparils::debug_line(main_debug, &format!("[{:8.2}s] ils: best score: {best_score:.6}", ramparils::t()));
 
