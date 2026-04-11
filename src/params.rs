@@ -80,7 +80,22 @@ impl ParamSpace {
             }
 
             if !has_bracket {
-                continue; // has pipe but no bracket — skip malformed lines
+                // Might be a standalone condition line: "name | parent in {values}"
+                // (condition declared separately from the param definition, as used by some
+                // param files like params-eprover.txt)
+                if has_pipe {
+                    let pipe_idx = line.find('|').unwrap();
+                    let name_part = line[..pipe_idx].trim();
+                    if !name_part.contains('{') && !name_part.is_empty() {
+                        let cond_str = line[pipe_idx + 1..].trim();
+                        if let Some(cond) = parse_condition_str(cond_str) {
+                            if let Some(p) = params.iter_mut().find(|p| p.name == name_part) {
+                                p.condition = Some(cond);
+                            }
+                        }
+                    }
+                }
+                continue;
             }
 
             // Param line: name {domain} [default] | optional condition
@@ -131,26 +146,11 @@ impl ParamSpace {
                 );
             }
 
-            let condition = cond_str
-                .map(|cond| -> Result<Condition> {
-                    let in_pos = cond.find(" in ").with_context(|| {
-                        format!("line {}: malformed condition '{cond}'", lineno + 1)
-                    })?;
-                    let parent = cond[..in_pos].trim().to_string();
-                    let vals_open = cond.find('{').with_context(|| {
-                        format!("line {}: missing '{{' in condition", lineno + 1)
-                    })?;
-                    let vals_close = cond.find('}').with_context(|| {
-                        format!("line {}: missing '}}' in condition", lineno + 1)
-                    })?;
-                    let allowed_values: Vec<String> = cond[vals_open + 1..vals_close]
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    Ok(Condition { parent, allowed_values })
+            let condition = cond_str.map(|cond| {
+                parse_condition_str(cond).with_context(|| {
+                    format!("line {}: malformed condition '{cond}'", lineno + 1)
                 })
-                .transpose()?;
+            }).transpose()?;
 
             params.push(Param { name, domain, default, condition });
         }
@@ -211,6 +211,22 @@ impl ParamSpace {
         }
         false
     }
+}
+
+/// Parse `"parent in {val1, val2, ...}"` into a `Condition`.  Returns `None`
+/// if the string doesn't match that pattern.
+fn parse_condition_str(cond: &str) -> Option<Condition> {
+    let in_pos = cond.find(" in ")?;
+    let parent = cond[..in_pos].trim().to_string();
+    let vals_open = cond.find('{')?;
+    let vals_close = cond.rfind('}')?;
+    let allowed_values: Vec<String> = cond[vals_open + 1..vals_close]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parent.is_empty() || allowed_values.is_empty() { return None; }
+    Some(Condition { parent, allowed_values })
 }
 
 fn strip_comment(line: &str) -> &str {
