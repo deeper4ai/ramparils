@@ -112,13 +112,13 @@ fn run_specialize(
     let options = IlsOptions {
         approach: Approach::Focused,
         n_workers,
-        max_runs: 10,
         perturbation_strength: 4,
         bound_multiplier: 10.0,
         pruning: true,
         tuner_timeout: scenario.tuner_timeout,
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
+        debug: false,
     };
 
     let result = ils::run(

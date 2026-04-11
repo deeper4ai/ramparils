@@ -23,10 +23,6 @@ struct Args {
     #[arg(long = "approach", default_value = "focused")]
     approach: String,
 
-    /// Max runs per configuration per detail level
-    #[arg(long = "N", default_value_t = 10)]
-    max_runs: usize,
-
     /// Perturbation strength (neighbourhood steps per perturbation)
     #[arg(long = "ps", default_value_t = 4)]
     perturbation_strength: usize,
@@ -50,6 +46,10 @@ struct Args {
     /// Number of parallel worker threads (0 = all available cores)
     #[arg(long = "cores", default_value_t = 0)]
     cores: usize,
+
+    /// Print debug output (new incumbents and their quality)
+    #[arg(long = "debug", default_value_t = false)]
+    debug: bool,
 }
 
 fn main() -> Result<()> {
@@ -83,13 +83,13 @@ fn main() -> Result<()> {
     let options = IlsOptions {
         approach,
         n_workers,
-        max_runs: args.max_runs,
         perturbation_strength: args.perturbation_strength,
         bound_multiplier: args.bound_multiplier,
         pruning: args.pruning,
         tuner_timeout: scenario.tuner_timeout,
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
+        debug: args.debug,
     };
 
     // Start from the parameter space's default configuration

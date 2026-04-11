@@ -16,6 +16,15 @@ use crate::eval::{EvalTask, Scheduler};
 use crate::params::{Config, ParamSpace};
 use crate::scenario::{OverallObjective, RunObjective};
 
+fn fmt_config(cfg: &Config, space: &ParamSpace) -> String {
+    let active = space.active_params(cfg);
+    let mut pairs: Vec<(&str, &str)> = active.iter()
+        .filter_map(|p| cfg.get(&p.name).map(|v| (p.name.as_str(), v.as_str())))
+        .collect();
+    pairs.sort_by_key(|(k, _)| *k);
+    pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")
+}
+
 /// ILS algorithm variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Approach {
@@ -29,8 +38,6 @@ pub struct IlsOptions {
     pub approach: Approach,
     /// Max parallel worker threads.
     pub n_workers: usize,
-    /// Max runs per configuration per detail level (FocusedILS schedule).
-    pub max_runs: usize,
     /// Number of neighbourhood steps for perturbation.
     pub perturbation_strength: usize,
     /// Adaptive capping multiplier.
@@ -41,6 +48,8 @@ pub struct IlsOptions {
     pub tuner_timeout: f64,
     pub run_obj: RunObjective,
     pub overall_obj: OverallObjective,
+    /// Print debug output (new incumbents, etc.)
+    pub debug: bool,
 }
 
 /// Run the ILS and return the best configuration found.
@@ -59,18 +68,32 @@ pub fn run(
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
     let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time);
     let mut rng = rand::thread_rng();
+    let n_total = instances.len();
+
+    // FocusedILS starts with 1 instance and grows; Basic/Random use all instances immediately.
+    let mut n_runs = match options.approach {
+        Approach::Focused => 1,
+        _ => n_total,
+    };
 
     // --- Initialization ---
+    if options.debug {
+        let cfg_str = match &initial {
+            Some(cfg) => fmt_config(cfg, space),
+            None => "(random)".to_string(),
+        };
+        eprintln!("[debug] initial config: {cfg_str}");
+    }
     let mut current = match initial {
         Some(cfg) => cfg,
         None => {
             // No initial config: sample a handful of random configs, keep the best.
             let mut best = random_config(space, &mut rng);
-            let mut best_score = evaluate_config(&best, instances, &scheduler, cache, &options, None, deadline)?;
+            let mut best_score = evaluate_config(&best, &instances[..n_runs], &scheduler, cache, &options, None, deadline)?;
             for _ in 1..10 {
                 if Instant::now() >= deadline { break; }
                 let cfg = random_config(space, &mut rng);
-                let score = evaluate_config(&cfg, instances, &scheduler, cache, &options, Some(best_score), deadline)?;
+                let score = evaluate_config(&cfg, &instances[..n_runs], &scheduler, cache, &options, Some(best_score), deadline)?;
                 if score < best_score {
                     best_score = score;
                     best = cfg;
@@ -81,7 +104,7 @@ pub fn run(
     };
 
     let mut current_score =
-        evaluate_config(&current, instances, &scheduler, cache, &options, None, deadline)?;
+        evaluate_config(&current, &instances[..n_runs], &scheduler, cache, &options, None, deadline)?;
 
     let mut incumbent = current.clone();
     let mut incumbent_score = current_score;
@@ -89,12 +112,15 @@ pub fn run(
     // --- First BLS ---
     let (lm, lm_score) = basic_local_search(
         current, current_score,
-        instances, &scheduler, cache, &options, space,
+        instances, n_runs, &scheduler, cache, &options, space,
         incumbent_score, &mut rng, deadline,
     )?;
     if lm_score <= incumbent_score {
         incumbent = lm.clone();
         incumbent_score = lm_score;
+        if options.debug {
+            eprintln!("[debug] new incumbent (init): score={incumbent_score:.6} instances={n_runs}");
+        }
     }
     let mut last_lm = lm;
     let mut last_lm_score = lm_score;
@@ -105,22 +131,36 @@ pub fn run(
         let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
         current = perturbed;
         current_score = evaluate_config(
-            &current, instances, &scheduler, cache, &options, Some(incumbent_score), deadline,
+            &current, &instances[..n_runs], &scheduler, cache, &options, Some(incumbent_score), deadline,
         )?;
 
         if Instant::now() >= deadline { break; }
 
-        // BLS from the perturbed point
+        // BLS from the perturbed point — evaluate neighbours on n_runs instances
         let (new_lm, new_lm_score) = basic_local_search(
             current, current_score,
-            instances, &scheduler, cache, &options, space,
+            instances, n_runs, &scheduler, cache, &options, space,
             incumbent_score, &mut rng, deadline,
         )?;
 
         // Update incumbent
-        if dominates(new_lm_score, instances.len(), incumbent_score, instances.len(), &options) {
+        if new_lm_score <= incumbent_score {
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
+            if options.debug {
+                eprintln!("[debug] new incumbent: score={incumbent_score:.6} instances={n_runs}");
+            }
+        } else if options.approach == Approach::Focused {
+            // Incumbent survived — increase fidelity for the next round (up to all instances).
+            // This is the bounded increase mechanism: challengers that fail against the
+            // current incumbent push it to be evaluated on one more instance.
+            let next = (n_runs + 1).min(n_total);
+            if next > n_runs {
+                n_runs = next;
+                incumbent_score = evaluate_config(
+                    &incumbent, &instances[..n_runs], &scheduler, cache, &options, None, deadline,
+                )?;
+            }
         }
 
         // Acceptance criterion: keep new local opt only if it dominates the last one
@@ -236,6 +276,7 @@ fn evaluate_config(
 fn basic_local_search(
     start: Config, start_score: f64,
     instances: &[(i64, String)],
+    n_runs: usize,
     scheduler: &Scheduler,
     cache: &mut Cache,
     options: &IlsOptions,
@@ -244,7 +285,8 @@ fn basic_local_search(
     rng: &mut impl Rng,
     deadline: Instant,
 ) -> Result<(Config, f64)> {
-    let n_instances = instances.len();
+    let eval_instances = &instances[..n_runs];
+    let n_instances = n_runs;
     let mut current = start;
     let mut current_score = start_score;
     let mut changed = true;
@@ -263,10 +305,10 @@ fn basic_local_search(
 
         let n = neighbors.len();
 
-        // Submit all neighbours
+        // Submit all neighbours (evaluated on the first n_runs instances only)
         let tasks: Vec<EvalTask> = neighbors.iter().enumerate().map(|(i, cfg)| {
             let hash = hash_config(cfg);
-            EvalTask { neighbor_id: i, config: cfg.clone(), hash, instances: instances.to_vec() }
+            EvalTask { neighbor_id: i, config: cfg.clone(), hash, instances: eval_instances.to_vec() }
         }).collect();
         scheduler.submit(tasks, cache)?;
 
@@ -492,7 +534,7 @@ mod tests {
     fn dominates_basic() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            n_workers: 1, perturbation_strength: 4, debug: false,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -505,7 +547,7 @@ mod tests {
     fn dominates_focused() {
         let opts = IlsOptions {
             approach: Approach::Focused,
-            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            n_workers: 1, perturbation_strength: 4, debug: false,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -517,7 +559,7 @@ mod tests {
     fn compute_score_mean_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            n_workers: 1, perturbation_strength: 4, debug: false,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -528,7 +570,7 @@ mod tests {
     fn compute_score_median_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, max_runs: 10, perturbation_strength: 4,
+            n_workers: 1, perturbation_strength: 4, debug: false,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
         };
