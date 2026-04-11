@@ -70,6 +70,12 @@ overall_obj: mean                            # mean | median
 | `--bm F` | `10.0` | adaptive capping bound multiplier |
 | `--ps N` | `4` | perturbation strength |
 | `--cachedb PATH` | `paramils_cache.db` | SQLite cache file |
+| `--id` | `false` | iterative deepening (exponential phase schedule) |
+| `--lambda-n/c/t F` | `0.5` | iterative deepening growth factors for instances / cutoff / timeout |
+| `--debug` | `false` | print new incumbents and scores to stderr |
+| `--debug-log PATH` | *(off)* | write debug output to a file |
+| `--debug-wrapper` | `false` | print every solver invocation |
+| `--debug-solver` | `false` | print every solver result |
 
 **Output:** the best configuration found, printed as `-param1 val1 -param2 val2 …` (active parameters only, alphabetically sorted).
 

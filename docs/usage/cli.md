@@ -23,17 +23,40 @@ overall_obj: mean                         # mean | median
 
 ## Flags
 
+### Core
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--scenariofile PATH` | *(required)* | Scenario YAML file |
 | `--cores N` | all cores | Parallel worker threads (`0` = auto) |
 | `--approach` | `focused` | `basic` \| `focused` \| `random` |
-| `--N N` | `10` | Max runs per config per detail level |
 | `--bm F` | `10.0` | Adaptive capping bound multiplier |
 | `--ps N` | `4` | Perturbation strength |
 | `--pruning` | `true` | Enable adaptive capping |
 | `--cachedb PATH` | `ramparils_cache.db` | SQLite cache file |
 | `--numRun N` | `0` | Run index (reserved, future random seed) |
+
+### Iterative deepening
+
+Runs multiple ILS phases with an exponential schedule, each seeding the next.
+Early phases use fewer instances and a shorter cutoff to filter the space cheaply;
+later phases refine the best region with the full budget.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id` | `false` | Enable iterative deepening |
+| `--lambda-n F` | `0.5` | Instance-count growth factor per phase |
+| `--lambda-c F` | `0.5` | Cutoff-time growth factor per phase |
+| `--lambda-t F` | `0.5` | Per-phase timeout growth factor |
+
+### Debug
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--debug` | `false` | Print new incumbents and scores to stderr |
+| `--debug-log PATH` | *(off)* | Write debug output to a file (independent of `--debug`) |
+| `--debug-wrapper` | `false` | Print every solver wrapper invocation |
+| `--debug-solver` | `false` | Print every solver result line |
 
 ## Output
 
