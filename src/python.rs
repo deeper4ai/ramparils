@@ -19,12 +19,13 @@ use crate::scenario::{self, OverallObjective, RunObjective, Scenario};
 ///
 /// Returns the improved strategy as a `dict[str, str]`.
 #[pyfunction]
-#[pyo3(signature = (strategy, scenario, cache_db, cores=0))]
+#[pyo3(signature = (strategy, scenario, cache_db, cores=0, debug_log=None))]
 fn specialize(
     strategy: HashMap<String, String>,
     scenario: &Bound<'_, PyDict>,
     cache_db: String,
     cores: usize,
+    debug_log: Option<String>,
 ) -> PyResult<HashMap<String, String>> {
     let s = extract_scenario(scenario)?;
     // Accept either `instances=[...]` (list of paths) or `instance_file="..."`.
@@ -32,7 +33,7 @@ fn specialize(
         .get_item("instances")?
         .map(|v| v.extract::<Vec<String>>())
         .transpose()?;
-    run_specialize(strategy, s, instance_override, cache_db, cores)
+    run_specialize(strategy, s, instance_override, cache_db, cores, debug_log)
         .map_err(|e| PyRuntimeError::new_err(format!("{e:#}")))
 }
 
@@ -90,6 +91,27 @@ fn run_specialize(
     instance_override: Option<Vec<String>>,
     cache_db: String,
     cores: usize,
+    debug_log: Option<String>,
+) -> anyhow::Result<HashMap<String, String>> {
+    if let Some(ref path) = debug_log {
+        crate::init_log_file(path)?;
+    }
+
+    let result = run_specialize_inner(strategy, scenario, instance_override, cache_db, cores);
+
+    if debug_log.is_some() {
+        crate::close_log_file();
+    }
+
+    result
+}
+
+fn run_specialize_inner(
+    strategy: HashMap<String, String>,
+    scenario: Scenario,
+    instance_override: Option<Vec<String>>,
+    cache_db: String,
+    cores: usize,
 ) -> anyhow::Result<HashMap<String, String>> {
     let space = ParamSpace::from_file(&scenario.paramfile)?;
     let instance_paths = match instance_override {
@@ -109,6 +131,7 @@ fn run_specialize(
     } else {
         cores
     };
+    let debug = crate::any_debug_active();
     let options = IlsOptions {
         approach: Approach::Focused,
         n_workers,
@@ -118,7 +141,7 @@ fn run_specialize(
         tuner_timeout: scenario.tuner_timeout,
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
-        debug: false,
+        debug,
         debug_wrapper: false,
         debug_solver: false,
     };

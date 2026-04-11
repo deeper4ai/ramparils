@@ -15,12 +15,14 @@ pub mod ils;       // ILS loop: local search, perturbation, acceptance
 // ---------------------------------------------------------------------------
 
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 static START: OnceLock<Instant> = OnceLock::new();
-static LOG_FILE: OnceLock<Mutex<std::io::LineWriter<std::fs::File>>> = OnceLock::new();
+// Mutable so it can be opened, closed, and re-opened between Python `specialize()` calls.
+static LOG_FILE: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> =
+    LazyLock::new(|| Mutex::new(None));
 /// Set to true when `--debug` is passed — controls stderr output.
 static DEBUG_STDERR: AtomicBool = AtomicBool::new(false);
 
@@ -34,17 +36,22 @@ pub fn enable_debug_stderr() {
     DEBUG_STDERR.store(true, Ordering::Relaxed);
 }
 
-/// Open the debug log file (`--debug-log`).
+/// Open (or replace) the debug log file (`--debug-log` / `specialize(debug_log=…)`).
 pub fn init_log_file(path: &str) -> anyhow::Result<()> {
     let file = std::fs::File::create(path)
         .map_err(|e| anyhow::anyhow!("failed to open debug log {path}: {e}"))?;
-    LOG_FILE.get_or_init(|| Mutex::new(std::io::LineWriter::new(file)));
+    *LOG_FILE.lock().unwrap() = Some(std::io::LineWriter::new(file));
     Ok(())
+}
+
+/// Close and discard the current debug log file (used after each Python `specialize()` call).
+pub fn close_log_file() {
+    *LOG_FILE.lock().unwrap() = None;
 }
 
 /// Returns true if any debug destination (stderr or file) is active.
 pub fn any_debug_active() -> bool {
-    DEBUG_STDERR.load(Ordering::Relaxed) || LOG_FILE.get().is_some()
+    DEBUG_STDERR.load(Ordering::Relaxed) || LOG_FILE.lock().unwrap().is_some()
 }
 
 /// Write a debug line when `enabled` is true.
@@ -56,8 +63,8 @@ pub fn any_debug_active() -> bool {
 pub fn debug_line(enabled: bool, line: &str) {
     if !enabled { return; }
     if DEBUG_STDERR.load(Ordering::Relaxed) { eprintln!("{line}"); }
-    if let Some(f) = LOG_FILE.get() {
-        if let Ok(mut f) = f.lock() { let _ = writeln!(f, "{line}"); }
+    if let Ok(mut guard) = LOG_FILE.lock() {
+        if let Some(f) = guard.as_mut() { let _ = writeln!(f, "{line}"); }
     }
 }
 

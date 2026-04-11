@@ -13,6 +13,7 @@ def specialize(
     scenario: dict,
     cache_db: str,
     cores: int = 0,
+    debug_log: Optional[str] = None,
 ) -> dict[str, str]:
     """Specialize a strategy on a set of benchmark instances using FocusedILS.
 
@@ -56,6 +57,10 @@ def specialize(
             Use ``":memory:"`` for an in-process cache that is not persisted.
         cores: Number of parallel worker threads.  ``0`` (default) uses all
             available CPU cores.
+        debug_log: Optional path to a log file.  When set, structured debug
+            output (new incumbents, scores, timing) is written to this file,
+            mirroring the ``--debug-log`` CLI flag.  The file is created (or
+            overwritten) at the start of each call and closed when it returns.
 
     Returns:
         The best configuration found, as ``{name: value}`` strings.
@@ -78,11 +83,18 @@ def specialize(
         ...     },
         ...     cache_db="/tmp/ramparils_cache.db",
         ...     cores=8,
+        ...     debug_log="/tmp/ramparils.log",
         ... )
         >>> print(result)
         {'alpha': '1.256', 'rho': '0.5'}
     """
-    return _specialize(strategy=strategy, scenario=scenario, cache_db=cache_db, cores=cores)
+    return _specialize(
+        strategy=strategy,
+        scenario=scenario,
+        cache_db=cache_db,
+        cores=cores,
+        debug_log=debug_log,
+    )
 
 
 __all__ = ["specialize"]
