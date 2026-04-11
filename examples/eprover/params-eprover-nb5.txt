@@ -1,0 +1,41 @@
+condense {0,1} [1]
+defcnf {none,0,3,4,6,8,12,24} [4]
+der {none,std,strong,agg,stragg} [stragg]
+ext_sup_max_depth {-1,0,1} [0]
+fool_unroll {true,false} [true]
+forwardcntxtsr {0,1} [1]
+fwdemod {0,1,2} [1]
+heur0 {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19} [0]
+heur1 {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19} [1]
+heur2 {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19} [2]
+heur3 {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19} [3]
+ho_order_kind {lfho,lambda} [lfho]
+inverse_recognition {false,true} [false]
+lift_lambdas {true,false} [true]
+local_rw {false,true} [true]
+neg_ext {off,all} [all]
+no_eq_unfolding {0,1} [1]
+pos_ext {off,all} [all]
+prefer {0,1} [0]
+presat {0,1} [1]
+replace_inj_defs {false,true} [false]
+satcheck {none,ConjMinMinFreq} [ConjMinMinFreq]
+sel {SelectMaxLComplexAvoidAppVar,SelectComplexExceptUniqMaxHorn,PSelectComplexExceptUniqMaxHorn,SelectMaxLComplexAPPNTNp,SelectMaxLComplexAvoidPosPred,SelectNewComplexAHP,SelectComplexG,SelectCQIPrecWNTNp,SelectNoLiterals} [SelectMaxLComplexAvoidAppVar]
+simparamod {none,normal,oriented} [normal]
+slots {1,2,3,4} [4]
+sos_input_types {0,1} [1]
+splaggr {0,1} [0]
+splcl {0,4,7} [0]
+srd {0,1} [0]
+strong_rw_inst {0,1} [1]
+tord {LPO4,KBO6} [KBO6]
+tord_const {0,1} [1]
+tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq,invfreqrank} [invfreq]
+tord_weight {invfreqrank,precrank10,precrank20,arity,aritymax0} [precrank10]
+
+tord_weight | tord in {KBO6}
+tord_const | tord in {KBO6}
+heur1 | slots in {2,3,4}
+heur2 | slots in {3,4}
+heur3 | slots in {4}
+

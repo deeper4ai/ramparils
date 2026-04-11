@@ -7,11 +7,16 @@
 //!     id   INTEGER PRIMARY KEY,
 //!     path TEXT UNIQUE NOT NULL
 //! );
+//! CREATE TABLE IF NOT EXISTS statuses (
+//!     id     INTEGER PRIMARY KEY,
+//!     status TEXT UNIQUE NOT NULL
+//! );
 //! CREATE TABLE IF NOT EXISTS results (
 //!     strategy_hash INTEGER NOT NULL,
 //!     instance_id   INTEGER NOT NULL,
 //!     runtime       REAL    NOT NULL,
 //!     quality       REAL    NOT NULL,
+//!     status_id     INTEGER NOT NULL DEFAULT 0,
 //!     PRIMARY KEY (strategy_hash, instance_id)
 //! );
 //! ```
@@ -19,6 +24,11 @@
 //! `quality` is the best-solution value reported by the solver (used when
 //! `run_obj = quality`; for runtime-objective runs it is ignored but still
 //! stored in case the cache is shared across scenario types).
+//!
+//! `status` holds the raw solver status string (e.g. `Theorem`, `Timeout`,
+//! `sat`).  Status strings are interned into the `statuses` table so the hot
+//! `results` rows only carry an integer FK.  `status_id = 0` means `UNKNOWN`
+//! (used for rows inserted before status tracking was introduced).
 //!
 //! The `instances` table is populated once at startup via `load_instances()`,
 //! which returns an in-memory `HashMap<String, i64>` used for all subsequent
@@ -31,15 +41,18 @@ use rusqlite::{Connection, params};
 use crate::params::Config;
 
 /// A single cached solver result.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CachedResult {
     pub runtime: f64,
     pub quality: f64,
+    pub status: String,
 }
 
 pub struct Cache {
     conn: Connection,
     pub debug: bool,
+    /// In-memory intern map: status string → statuses.id.
+    status_cache: HashMap<String, i64>,
 }
 
 impl Cache {
@@ -56,6 +69,11 @@ impl Cache {
                 id   INTEGER PRIMARY KEY,
                 path TEXT UNIQUE NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS statuses (
+                id     INTEGER PRIMARY KEY,
+                status TEXT UNIQUE NOT NULL
+            );
+            INSERT OR IGNORE INTO statuses (id, status) VALUES (0, 'UNKNOWN');
             CREATE TABLE IF NOT EXISTS results (
                 strategy_hash INTEGER NOT NULL,
                 instance_id   INTEGER NOT NULL,
@@ -65,8 +83,18 @@ impl Cache {
             );
         ").context("failed to initialise cache schema")?;
 
+        // Migration: add status_id to existing DBs that predate status tracking.
+        // Existing rows get status_id = 0 ('UNKNOWN').
+        match conn.execute_batch(
+            "ALTER TABLE results ADD COLUMN status_id INTEGER NOT NULL DEFAULT 0"
+        ) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(anyhow::anyhow!(e).context("failed to add status_id column")),
+        }
+
         crate::debug_line(debug, &format!("[{:8.2}s] cache: opened path={path}", crate::t()));
-        Ok(Cache { conn, debug })
+        Ok(Cache { conn, debug, status_cache: HashMap::new() })
     }
 
     /// Register all instance paths and return an in-memory `path → id` map.
@@ -121,8 +149,9 @@ impl Cache {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT instance_id, runtime, quality FROM results \
-             WHERE strategy_hash = ?1 AND instance_id IN ({placeholders})"
+            "SELECT r.instance_id, r.runtime, r.quality, s.status \
+             FROM results r JOIN statuses s ON r.status_id = s.id \
+             WHERE r.strategy_hash = ?1 AND r.instance_id IN ({placeholders})"
         );
         let hash = strategy_hash as i64;
         let mut stmt = self.conn.prepare(&sql)?;
@@ -133,7 +162,7 @@ impl Cache {
             ),
             |row| Ok((
                 row.get::<_, i64>(0)?,
-                CachedResult { runtime: row.get(1)?, quality: row.get(2)? },
+                CachedResult { runtime: row.get(1)?, quality: row.get(2)?, status: row.get(3)? },
             )),
         )?;
         let result = iter.collect::<rusqlite::Result<HashMap<_, _>>>()
@@ -143,18 +172,42 @@ impl Cache {
 
     /// Store a single result.
     pub fn put(
-        &self,
+        &mut self,
         strategy_hash: u64,
         instance_id: i64,
         runtime: f64,
         quality: f64,
+        status: &str,
     ) -> Result<()> {
+        let status_id = self.intern_status(status)?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO results (strategy_hash, instance_id, runtime, quality) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![strategy_hash as i64, instance_id, runtime, quality],
+            "INSERT OR REPLACE INTO results \
+             (strategy_hash, instance_id, runtime, quality, status_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![strategy_hash as i64, instance_id, runtime, quality, status_id],
         ).context("failed to write to result cache")?;
         Ok(())
+    }
+
+    /// Intern a status string and return its integer id.
+    ///
+    /// Uses an in-memory map to avoid a SQL round-trip for repeated statuses
+    /// (there are typically only a handful of distinct values per run).
+    pub fn intern_status(&mut self, status: &str) -> Result<i64> {
+        if let Some(&id) = self.status_cache.get(status) {
+            return Ok(id);
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO statuses (status) VALUES (?1)",
+            params![status],
+        ).context("failed to intern status")?;
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM statuses WHERE status = ?1",
+            params![status],
+            |row| row.get(0),
+        ).context("failed to fetch status id")?;
+        self.status_cache.insert(status.to_string(), id);
+        Ok(id)
     }
 }
 
@@ -199,7 +252,7 @@ mod tests {
 
     #[test]
     fn get_batch_miss_then_hit() {
-        let cache = open();
+        let mut cache = open();
         let paths = vec!["p1.cnf".to_string(), "p2.cnf".to_string()];
         let ids = cache.load_instances(&paths).unwrap();
         let id1 = ids["p1.cnf"];
@@ -207,23 +260,33 @@ mod tests {
 
         assert!(cache.get_batch(42, &[id1, id2]).unwrap().is_empty());
 
-        cache.put(42, id1, 1.23, 0.0).unwrap();
+        cache.put(42, id1, 1.23, 0.0, "Theorem").unwrap();
         let hits = cache.get_batch(42, &[id1, id2]).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[&id1].runtime - 1.23).abs() < 1e-9);
+        assert_eq!(hits[&id1].status, "Theorem");
         assert!(!hits.contains_key(&id2));
     }
 
     #[test]
     fn put_replace() {
-        let cache = open();
+        let mut cache = open();
         let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
         let id = ids["x.cnf"];
-        cache.put(1, id, 2.0, 5.0).unwrap();
-        cache.put(1, id, 3.5, 7.0).unwrap();
+        cache.put(1, id, 2.0, 5.0, "Theorem").unwrap();
+        cache.put(1, id, 3.5, 7.0, "Timeout").unwrap();
         let hits = cache.get_batch(1, &[id]).unwrap();
         assert!((hits[&id].runtime - 3.5).abs() < 1e-9);
         assert!((hits[&id].quality - 7.0).abs() < 1e-9);
+        assert_eq!(hits[&id].status, "Timeout");
+    }
+
+    #[test]
+    fn intern_status_unknown_default() {
+        let cache = open();
+        // The UNKNOWN row (id=0) is pre-inserted by the schema setup.
+        let hits = cache.get_batch(999, &[]).unwrap();
+        assert!(hits.is_empty()); // nothing stored yet — just verifying open() succeeded
     }
 
     #[test]

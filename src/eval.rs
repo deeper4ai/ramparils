@@ -58,6 +58,7 @@ pub struct TaskResult {
     pub hash: u64,
     pub runtime: f64,
     pub quality: f64,
+    pub status: String,
 }
 
 /// Aggregated result for one config across all instances.
@@ -128,7 +129,7 @@ impl Scheduler {
                             // Drain without processing when stopped.
                             continue;
                         }
-                        let (runtime, quality) =
+                        let (runtime, quality, status) =
                             run_solver_inner(&algo, &item.config, item.hash, &item.instance_path, item.cutoff_time, debug_wrapper, debug_solver);
                         // Still send the result even if stop was set mid-call;
                         // ILS drains these as part of the reset() protocol.
@@ -138,6 +139,7 @@ impl Scheduler {
                             hash: item.hash,
                             runtime,
                             quality,
+                            status,
                         });
                     }
                 })
@@ -171,6 +173,7 @@ impl Scheduler {
                         hash: task.hash,
                         runtime: cached.runtime,
                         quality: cached.quality,
+                        status: cached.status.clone(),
                     });
                 } else {
                     n_misses += 1;
@@ -209,7 +212,7 @@ impl Scheduler {
 // Solver subprocess
 // ---------------------------------------------------------------------------
 
-/// Invoke the solver and return `(runtime, quality)`.
+/// Invoke the solver and return `(runtime, quality, status)`.
 ///
 /// Command format:
 /// ```text
@@ -217,10 +220,12 @@ impl Scheduler {
 /// ```
 /// The solver must print a result line to stdout:
 /// ```text
-/// #%# RamParIls #%# <OK|TIMEOUT|CRASHED>, <runtime>, <quality>
+/// #%# RamParIls #%# <status>, <runtime>, <quality>
 /// ```
+/// where `<status>` is the raw solver status string (e.g. `Theorem`,
+/// `Timeout`, `sat`, `CRASHED`).
 ///
-/// On crash or missing result line, returns `(cutoff_time, 0.0)`.
+/// On crash or missing result line, returns `(cutoff_time, 0.0, "UNKNOWN")`.
 ///
 /// # Security note
 /// The algo string is passed to `sh -c` for shell compatibility.
@@ -233,7 +238,7 @@ pub(crate) fn run_solver_inner(
     cutoff_time: f64,
     debug_wrapper: bool,
     debug_solver: bool,
-) -> (f64, f64) {
+) -> (f64, f64, String) {
     let mut pairs: Vec<(&String, &String)> = config.iter().collect();
     pairs.sort_unstable_by_key(|(k, _)| *k);
     let paramstring = pairs
@@ -249,18 +254,18 @@ pub(crate) fn run_solver_inner(
         .args(["-c", &cmd])
         .output();
 
-    let (runtime, quality) = match output {
+    let (runtime, quality, status) = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_solver_output(&stdout, cutoff_time)
         }
-        Err(_) => (cutoff_time, 0.0),
+        Err(_) => (cutoff_time, 0.0, "UNKNOWN".to_string()),
     };
-    crate::debug_line(debug_solver, &format!("[{:8.2}s] solver: hash={hash:016x} instance={instance} runtime={runtime:.6} quality={quality:.6}", crate::t()));
-    (runtime, quality)
+    crate::debug_line(debug_solver, &format!("[{:8.2}s] solver: hash={hash:016x} instance={instance} runtime={runtime:.6} quality={quality:.6} status={status}", crate::t()));
+    (runtime, quality, status)
 }
 
-fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64) {
+fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String) {
     for line in output.lines() {
         let rest = match line.strip_prefix("#%# RamParIls #%# ") {
             Some(r) => r,
@@ -269,15 +274,15 @@ fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64) {
 
         // Format: status, runtime, quality
         let mut parts = rest.splitn(3, ',');
-        let _status = parts.next();
+        let status = parts.next().map(|s| s.trim().to_string());
         let runtime = parts.next().and_then(|s| s.trim().parse::<f64>().ok());
         let quality = parts.next().and_then(|s| s.trim().parse::<f64>().ok());
 
-        if let (Some(rt), Some(q)) = (runtime, quality) {
-            return (rt.min(cutoff_time), q);
+        if let (Some(st), Some(rt), Some(q)) = (status, runtime, quality) {
+            return (rt.min(cutoff_time), q, st);
         }
     }
-    (cutoff_time, 0.0) // no result line — treat as timeout/crash
+    (cutoff_time, 0.0, "UNKNOWN".to_string()) // no result line — treat as timeout/crash
 }
 
 #[cfg(test)]
@@ -287,31 +292,34 @@ mod tests {
 
     #[test]
     fn parse_ok_line() {
-        let (rt, q) = parse_solver_output(
-            "some preamble\n#%# RamParIls #%# OK, 1.23, 42.0\n",
+        let (rt, q, st) = parse_solver_output(
+            "some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n",
             10.0,
         );
         assert!((rt - 1.23).abs() < 1e-9);
         assert!((q - 42.0).abs() < 1e-9);
+        assert_eq!(st, "Theorem");
     }
 
     #[test]
     fn parse_timeout_line() {
-        let (rt, _) = parse_solver_output("#%# RamParIls #%# TIMEOUT, 5.0, 0.0", 10.0);
+        let (rt, _, st) = parse_solver_output("#%# RamParIls #%# Timeout, 5.0, 0.0", 10.0);
         assert!((rt - 5.0).abs() < 1e-9);
+        assert_eq!(st, "Timeout");
     }
 
     #[test]
     fn parse_caps_at_cutoff() {
-        let (rt, _) = parse_solver_output("#%# RamParIls #%# OK, 99.9, 0.0", 10.0);
+        let (rt, _, _) = parse_solver_output("#%# RamParIls #%# Theorem, 99.9, 0.0", 10.0);
         assert!((rt - 10.0).abs() < 1e-9);
     }
 
     #[test]
     fn parse_missing_returns_cutoff() {
-        let (rt, q) = parse_solver_output("no result here", 5.0);
+        let (rt, q, st) = parse_solver_output("no result here", 5.0);
         assert!((rt - 5.0).abs() < 1e-9);
         assert!((q - 0.0).abs() < 1e-9);
+        assert_eq!(st, "UNKNOWN");
     }
 
     #[test]
@@ -326,8 +334,9 @@ mod tests {
         let id1 = id_map["i1.cnf"];
         let id2 = id_map["i2.cnf"];
 
-        cache.put(hash, id1, 0.5, 0.0).unwrap();
-        cache.put(hash, id2, 1.0, 0.0).unwrap();
+        let mut cache = cache;
+        cache.put(hash, id1, 0.5, 0.0, "Theorem").unwrap();
+        cache.put(hash, id2, 1.0, 0.0, "Theorem").unwrap();
 
         let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, false, false);
         sched.submit(vec![EvalTask {
