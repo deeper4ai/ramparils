@@ -212,6 +212,10 @@ impl Scheduler {
 // Solver subprocess
 // ---------------------------------------------------------------------------
 
+/// Quality penalty returned for failed/interrupted runs (no result line).
+/// Matches the grackle wrapper convention: penalty=10_000_000 for unsolved.
+const UNKNOWN_QUALITY: f64 = 10_000_000.0;
+
 /// Invoke the solver and return `(runtime, quality, status)`.
 ///
 /// Command format:
@@ -259,8 +263,8 @@ pub(crate) fn run_solver_inner(
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_solver_output(&stdout, cutoff_time)
         }
-        Err(_) => (cutoff_time, 0.0, "UNKNOWN".to_string(),
-                   format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, 0.0")),
+        Err(_) => (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(),
+                   format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}")),
     };
     let iname = std::path::Path::new(instance)
         .file_name().and_then(|n| n.to_str()).unwrap_or(instance);
@@ -285,8 +289,8 @@ fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String, Str
             return (rt.min(cutoff_time), q, st, line.to_string());
         }
     }
-    let fallback = format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, 0.0");
-    (cutoff_time, 0.0, "UNKNOWN".to_string(), fallback)
+    let fallback = format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}");
+    (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(), fallback)
 }
 
 #[cfg(test)]
@@ -323,7 +327,7 @@ mod tests {
     fn parse_missing_returns_cutoff() {
         let (rt, q, st, raw) = parse_solver_output("no result here", 5.0);
         assert!((rt - 5.0).abs() < 1e-9);
-        assert!((q - 0.0).abs() < 1e-9);
+        assert!((q - UNKNOWN_QUALITY).abs() < 1e-9);
         assert_eq!(st, "UNKNOWN");
         assert!(raw.contains("UNKNOWN"));
     }
