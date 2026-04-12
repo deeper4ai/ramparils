@@ -139,7 +139,7 @@ pub fn run(
         instances, n_runs, &scheduler, cache, &options, space,
         incumbent_score, &mut rng, deadline,
     )?;
-    if lm_score <= incumbent_score {
+    if lm_score < incumbent_score {
         let old = incumbent.clone();
         incumbent = lm.clone();
         incumbent_score = lm_score;
@@ -176,7 +176,7 @@ pub fn run(
         )?;
 
         // Update incumbent
-        if new_lm_score <= incumbent_score {
+        if new_lm_score < incumbent_score {
             let old = incumbent.clone();
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
@@ -248,16 +248,20 @@ pub fn perturbation(config: Config, strength: usize, space: &ParamSpace, rng: &m
     current
 }
 
-/// FocusedILS dominance: `a` dominates `b` when a has at least as many runs
-/// and a strictly better or equal score.  BasicILS ignores run counts.
+/// `a` dominates `b` when `a` is strictly better (lower score).
+/// FocusedILS also requires at least as many runs.  BasicILS ignores run counts.
+///
+/// Strict `<` (not `≤`) is intentional: ties do not count as improvement.
+/// This lets FocusedILS grow `n_runs` when the incumbent survives a tie
+/// instead of endlessly replacing it with an equal-scoring challenger.
 pub fn dominates(
     a_score: f64, a_runs: usize,
     b_score: f64, b_runs: usize,
     options: &IlsOptions,
 ) -> bool {
     match options.approach {
-        Approach::Basic | Approach::Random => a_score <= b_score,
-        Approach::Focused => a_runs >= b_runs && a_score <= b_score,
+        Approach::Basic | Approach::Random => a_score < b_score,
+        Approach::Focused => a_runs >= b_runs && a_score < b_score,
     }
 }
 
@@ -694,9 +698,10 @@ mod tests {
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
-        assert!(dominates(1.0, 5, 2.0, 5, &opts));
-        assert!(dominates(1.0, 1, 2.0, 10, &opts)); // BasicILS ignores run counts
-        assert!(!dominates(2.0, 5, 1.0, 5, &opts));
+        assert!(dominates(1.0, 5, 2.0, 5, &opts));   // strictly better
+        assert!(dominates(1.0, 1, 2.0, 10, &opts));  // BasicILS ignores run counts
+        assert!(!dominates(2.0, 5, 1.0, 5, &opts));  // worse
+        assert!(!dominates(1.0, 5, 1.0, 5, &opts));  // tie — does NOT dominate
     }
 
     #[test]
@@ -707,8 +712,9 @@ mod tests {
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
-        assert!(dominates(1.0, 10, 2.0, 5, &opts)); // better score, more runs
+        assert!(dominates(1.0, 10, 2.0, 5, &opts));  // strictly better score, more runs
         assert!(!dominates(1.0, 3, 2.0, 5, &opts));  // better score but fewer runs
+        assert!(!dominates(1.0, 10, 1.0, 5, &opts)); // tie — does NOT dominate
     }
 
     #[test]
