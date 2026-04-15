@@ -372,7 +372,9 @@ fn basic_local_search(
                 Err(_) => break,
             };
 
-            cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+            if result.status != "UNKNOWN" {
+                cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+            }
 
             let nid = result.neighbor_id;
             // Guard against stale results from a previous reset (shouldn't
@@ -461,7 +463,9 @@ fn collect_one(
             Err(_) => break,
         };
 
-        cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+        if result.status != "UNKNOWN" {
+            cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+        }
         if result.neighbor_id != expected_nid { continue; }
 
         let val = match options.run_obj {

@@ -35,7 +35,7 @@ result = ramparils.specialize(
         "paramfile":     str(HERE / "params-eprover-nb5.txt"),
         "instance_file": str(HERE / "instances-bushy010.txt"),
         "cutoff_time":   1.0,
-        "tuner_timeout": 3600.0,
+        "tuner_timeout": 600.0,
         "run_obj":       "quality",
         "overall_obj":   "mean",
     },
