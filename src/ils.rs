@@ -55,12 +55,7 @@ pub struct IlsOptions {
     pub tuner_timeout: f64,
     pub run_obj: RunObjective,
     pub overall_obj: OverallObjective,
-    /// Print debug output (new incumbents, etc.)
-    pub debug: bool,
-    /// Print every solver wrapper invocation.
-    pub debug_wrapper: bool,
-    /// Print every solver result.
-    pub debug_solver: bool,
+    pub debug: crate::DebugOptions,
 }
 
 /// Run the ILS and return the best configuration found.
@@ -77,7 +72,7 @@ pub fn run(
     cache: &mut Cache,
 ) -> Result<(Config, f64)> {
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
-    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug, options.debug_wrapper, options.debug_solver);
+    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug);
     let mut rng = rand::thread_rng();
     let n_total = instances.len();
 
@@ -88,12 +83,12 @@ pub fn run(
     };
 
     // --- Initialization ---
-    if options.debug {
+    if options.debug.main {
         let t = crate::t();
+        let d = true;
         let approach_str = match options.approach {
             Approach::Basic => "basic", Approach::Focused => "focused", Approach::Random => "random",
         };
-        let d = options.debug;
         crate::debug_line(d, &format!("[{t:8.2}s] ils: starting approach={approach_str} instances={n_total} timeout={:.0}s", options.tuner_timeout));
         crate::debug_line(d, &format!("[{t:8.2}s] ils: initial config:"));
         match &initial {
@@ -143,10 +138,10 @@ pub fn run(
         let old = incumbent.clone();
         incumbent = lm.clone();
         incumbent_score = lm_score;
-        if options.debug {
+        if options.debug.main {
             let hash = hash_config(&incumbent);
-            crate::debug_line(options.debug, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
-            print_diff(options.debug, &old, &incumbent, space);
+            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
+            print_diff(options.debug.main, &old, &incumbent, space);
         }
     }
     let mut last_lm = lm;
@@ -156,7 +151,7 @@ pub fn run(
     while Instant::now() < deadline {
         // Perturbation
         let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
-        crate::debug_line(options.debug, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
+        crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
         current = perturbed;
         current_score = evaluate_config(
             &current, &instances[..n_runs], &scheduler, cache, &options, Some(incumbent_score), deadline,
@@ -165,9 +160,9 @@ pub fn run(
         if Instant::now() >= deadline { break; }
 
         // BLS from the perturbed point — evaluate neighbours on n_runs instances
-        if options.debug {
+        if options.debug.main {
             let nb = neighbourhood(&current, space).len();
-            crate::debug_line(options.debug, &format!("[{:8.2}s] ils: bls neighborhood={nb} instances={n_runs} incumbent={incumbent_score:.6}", crate::t()));
+            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: bls neighborhood={nb} instances={n_runs} incumbent={incumbent_score:.6}", crate::t()));
         }
         let (new_lm, new_lm_score) = basic_local_search(
             current, current_score,
@@ -180,10 +175,10 @@ pub fn run(
             let old = incumbent.clone();
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
-            if options.debug {
+            if options.debug.main {
                 let hash = hash_config(&incumbent);
-                crate::debug_line(options.debug, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
-                print_diff(options.debug, &old, &incumbent, space);
+                crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
+                print_diff(options.debug.main, &old, &incumbent, space);
             }
         } else if options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
@@ -195,7 +190,7 @@ pub fn run(
                 incumbent_score = evaluate_config(
                     &incumbent, &instances[..n_runs], &scheduler, cache, &options, None, deadline,
                 )?;
-                crate::debug_line(options.debug, &format!(
+                crate::debug_line(options.debug.main, &format!(
                     "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
                     crate::t()
                 ));
@@ -394,7 +389,7 @@ fn basic_local_search(
             if options.pruning {
                 let pm = partial[nid] / runtimes[nid].len() as f64;
                 if pm > options.bound_multiplier * incumbent_score {
-                    crate::debug_line(options.debug_wrapper, &format!(
+                    crate::debug_line(options.debug.wrapper, &format!(
                         "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
                         crate::t(), options.bound_multiplier * incumbent_score
                     ));
@@ -413,7 +408,7 @@ fn basic_local_search(
                     // Accept — stop evaluating the rest
                     scheduler.reset();
                     while scheduler.results().try_recv().is_ok() {}
-                    crate::debug_line(options.debug, &format!(
+                    crate::debug_line(options.debug.main, &format!(
                         "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
                         crate::t()
                     ));
@@ -428,7 +423,7 @@ fn basic_local_search(
         if !changed {
             scheduler.reset();
             while scheduler.results().try_recv().is_ok() {}
-            crate::debug_line(options.debug, &format!(
+            crate::debug_line(options.debug.main, &format!(
                 "[{:8.2}s] ils: bls local optimum score={current_score:.6}",
                 crate::t()
             ));
@@ -550,13 +545,13 @@ pub fn iterative_deepening_ils(
         (n, c, t)
     }).collect();
 
-    if options.debug {
-        crate::debug_line(options.debug, &format!(
+    if options.debug.main {
+        crate::debug_line(options.debug.main, &format!(
             "[{:8.2}s] id: {} phases  λ_n={lambda_n} λ_c={lambda_c} λ_t={lambda_t}",
             crate::t(), num_depths
         ));
         for (i, (n, c, t)) in schedule.iter().enumerate() {
-            crate::debug_line(options.debug, &format!(
+            crate::debug_line(options.debug.main, &format!(
                 "[{:8.2}s] id:   phase {} n={n} cutoff={c:.1}s timeout={t:.1}s",
                 crate::t(), i + 1
             ));
@@ -571,8 +566,8 @@ pub fn iterative_deepening_ils(
         let elapsed = start.elapsed().as_secs_f64();
         let phase_remaining = t - elapsed;
         if phase_remaining <= 0.0 {
-            if options.debug {
-                crate::debug_line(options.debug, &format!(
+            if options.debug.main {
+                crate::debug_line(options.debug.main, &format!(
                     "[{:8.2}s] id: phase {}/{} skipped (budget exhausted)",
                     crate::t(), depth + 1, num_depths
                 ));
@@ -580,8 +575,8 @@ pub fn iterative_deepening_ils(
             break;
         }
 
-        if options.debug {
-            crate::debug_line(options.debug, &format!(
+        if options.debug.main {
+            crate::debug_line(options.debug.main, &format!(
                 "[{:8.2}s] id: starting phase {}/{} n={n} cutoff={c:.1}s remaining={phase_remaining:.1}s",
                 crate::t(), depth + 1, num_depths
             ));
@@ -600,8 +595,8 @@ pub fn iterative_deepening_ils(
             cache,
         )?;
 
-        if options.debug {
-            crate::debug_line(options.debug, &format!(
+        if options.debug.main {
+            crate::debug_line(options.debug.main, &format!(
                 "[{:8.2}s] id: phase {}/{} done — score={score:.6}",
                 crate::t(), depth + 1, num_depths
             ));
@@ -698,7 +693,7 @@ mod tests {
     fn dominates_basic() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
+            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -712,7 +707,7 @@ mod tests {
     fn dominates_focused() {
         let opts = IlsOptions {
             approach: Approach::Focused,
-            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
+            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -725,7 +720,7 @@ mod tests {
     fn compute_score_mean_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
+            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -736,7 +731,7 @@ mod tests {
     fn compute_score_median_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: false, debug_wrapper: false, debug_solver: false,
+            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
         };

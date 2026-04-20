@@ -5,6 +5,7 @@ use clap::Parser;
 
 use ramparils::cache::Cache;
 use ramparils::ils::{self, Approach, IlsOptions};
+use ramparils::DebugOptions;
 use ramparils::params::ParamSpace;
 use ramparils::scenario::{self, RunObjective, OverallObjective, Scenario};
 
@@ -74,6 +75,10 @@ struct Args {
     /// Write debug output to this file (independent of --debug)
     #[arg(long = "debug-log")]
     debug_log: Option<String>,
+
+    /// Write crash reports (failed solver runs) to this file
+    #[arg(long = "error-log")]
+    error_log: Option<String>,
 }
 
 fn sh(cmd: &str) -> String {
@@ -126,6 +131,7 @@ fn main() -> Result<()> {
 
     if args.debug { ramparils::enable_debug_stderr(); }
     if let Some(ref path) = args.debug_log { ramparils::init_log_file(path)?; }
+    if let Some(ref path) = args.error_log { ramparils::init_error_log(path)?; }
     // Main debug is active when either output destination is configured.
     let main_debug = ramparils::any_debug_active();
     print_debug_header();
@@ -164,9 +170,7 @@ fn main() -> Result<()> {
         tuner_timeout: scenario.tuner_timeout,
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
-        debug: main_debug,
-        debug_wrapper: args.debug_wrapper,
-        debug_solver: args.debug_solver,
+        debug: DebugOptions { main: main_debug, wrapper: args.debug_wrapper, solver: args.debug_solver },
     };
 
     print_debug_scenario(&scenario, instances.len(), n_workers, &args.approach);
