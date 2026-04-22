@@ -4,7 +4,11 @@
 import ramparils
 ```
 
-The module exposes a single function.
+The Python extension provides a single function, `specialize`, that runs FocusedILS from an
+initial strategy and returns the best configuration found within the time budget.  It is a
+native Rust extension built with PyO3, so there is no subprocess overhead — the ILS loop,
+parallel evaluation, and SQLite cache all run in-process.  All tuning options are passed as
+fields in the `scenario` dict, matching the YAML keys documented in the [CLI reference](cli.md).
 
 ## specialize
 
@@ -23,6 +27,7 @@ result = ramparils.specialize(
         "wp":    "0.03",
     },
     scenario={
+        # Required
         "algo":          "ruby /path/to/saps_wrapper.rb",
         "paramfile":     "/path/to/saps.params",
         "instances":     [
@@ -31,9 +36,12 @@ result = ramparils.specialize(
         ],
         "cutoff_time":   5.0,
         "tuner_timeout": 120.0,
+        # Optional — defaults shown
+        "cache_db":      "/tmp/ramparils_cache.db",
+        "cores":         0,       # 0 = all available
+        "approach":      "focused",
+        "debug":         False,
     },
-    cache_db="/tmp/ramparils_cache.db",
-    cores=8,
 )
 
 print("Best config found:")
