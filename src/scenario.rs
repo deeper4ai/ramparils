@@ -24,7 +24,7 @@
 //! lambda_t: 0.5
 //! cores: 0                    # 0 = all available
 //! num_run: 0
-//! cache_db: paramils_cache.db
+//! cache_db: ":memory:"          # use a file path to persist across runs
 //! debug: false
 //! debug_wrapper: false
 //! debug_solver: false
@@ -57,7 +57,7 @@ fn default_perturbation_strength() -> usize { 4 }
 fn default_bound_multiplier() -> f64 { 10.0 }
 fn default_pruning() -> bool { true }
 fn default_lambda() -> f64 { 0.5 }
-fn default_cache_db() -> String { "paramils_cache.db".to_string() }
+fn default_cache_db() -> String { ":memory:".to_string() }
 fn default_run_obj() -> RunObjective { RunObjective::Runtime }
 fn default_overall_obj() -> OverallObjective { OverallObjective::Mean }
 

@@ -67,7 +67,7 @@ Exactly one of the following must be supplied to specify instances:
 | `lambda_t` | `0.5` | Iterative deepening timeout factor. |
 | `cores` | `0` | Parallel workers; `0` uses all available cores. |
 | `num_run` | `0` | Run index / random seed (reserved). |
-| `cache_db` | `"paramils_cache.db"` | Path to the SQLite cache. Use `":memory:"` for an in-process cache. |
+| `cache_db` | `":memory:"` | Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. |
 | `debug` | `False` | Print new incumbents and scores to stderr. |
 | `debug_wrapper` | `False` | Print every solver invocation. |
 | `debug_solver` | `False` | Print every solver result. |

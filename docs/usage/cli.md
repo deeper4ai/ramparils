@@ -33,7 +33,7 @@ lambda_c:              0.5
 lambda_t:              0.5
 cores:                 0         # 0 = all available
 num_run:               0
-cache_db:              paramils_cache.db
+cache_db:              ":memory:"    # use a file path to persist across runs
 debug:                 false
 debug_wrapper:         false
 debug_solver:          false
@@ -86,7 +86,7 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | Field | Default | Description |
 |-------|---------|-------------|
 | `cores` | `0` | Number of parallel worker threads. `0` uses all available CPU cores. Set to a specific number to limit parallelism on shared machines. |
-| `cache_db` | `paramils_cache.db` | Path to the SQLite cache file. Created if it does not exist. Use the same path across runs on the same benchmark to share cached results. Use `:memory:` for an in-process cache that is not persisted. |
+| `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. |
 | `num_run` | `0` | Run index, reserved for future use as a random seed. Has no effect currently. |
 
 ### Debug

@@ -89,7 +89,7 @@ fn extract_scenario(d: &Bound<'_, PyDict>) -> PyResult<Scenario> {
         lambda_t:              opt_f64("lambda_t")?.unwrap_or(0.5),
         cores:                 opt_usize("cores")?.unwrap_or(0),
         num_run:               opt_u64("num_run")?.unwrap_or(0),
-        cache_db:              opt_str("cache_db")?.unwrap_or_else(|| "paramils_cache.db".to_string()),
+        cache_db:              opt_str("cache_db")?.unwrap_or_else(|| ":memory:".to_string()),
         debug:                 opt_bool("debug")?.unwrap_or(false),
         debug_wrapper:         opt_bool("debug_wrapper")?.unwrap_or(false),
         debug_solver:          opt_bool("debug_solver")?.unwrap_or(false),

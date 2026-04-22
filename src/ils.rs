@@ -407,7 +407,11 @@ fn basic_local_search(
                 if dominates(score, n_instances, current_score, n_instances, options) {
                     // Accept — stop evaluating the rest
                     scheduler.reset();
-                    while scheduler.results().try_recv().is_ok() {}
+                    while let Ok(r) = scheduler.results().try_recv() {
+                if r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                }
+            }
                     crate::debug_line(options.debug.main, &format!(
                         "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
                         crate::t()
@@ -422,7 +426,11 @@ fn basic_local_search(
 
         if !changed {
             scheduler.reset();
-            while scheduler.results().try_recv().is_ok() {}
+            while let Ok(r) = scheduler.results().try_recv() {
+                if r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                }
+            }
             crate::debug_line(options.debug.main, &format!(
                 "[{:8.2}s] ils: bls local optimum score={current_score:.6}",
                 crate::t()
@@ -476,7 +484,11 @@ fn collect_one(
                 let pm = partial_sum / runtimes.len() as f64;
                 if pm > options.bound_multiplier * inc {
                     scheduler.reset();
-                    while scheduler.results().try_recv().is_ok() {}
+                    while let Ok(r) = scheduler.results().try_recv() {
+                if r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                }
+            }
                     break;
                 }
             }
