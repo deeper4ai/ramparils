@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction - RamParILS</title>
+        <title>Solver protocol - RamParILS</title>
 
 
         <!-- Custom HTML head -->
@@ -12,34 +12,34 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -106,7 +106,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,13 +141,13 @@
                     <h1 class="menu-title">RamParILS</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
                         <a href="https://github.com/deeper4ai/ramparils" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/deeper4ai/ramparils/edit/main/docs/docs/index.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                        <a href="https://github.com/deeper4ai/ramparils/edit/main/docs/docs/reference/protocol.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -181,53 +181,57 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="ramparils"><a class="header" href="#ramparils">RamParILS</a></h1>
-<p>A parallel Rust rewrite of <a href="https://www.cs.ubc.ca/labs/algorithms/Projects/ParamILS/">ParamILS</a> —
-automated algorithm configuration via Iterated Local Search.</p>
-<p>Used as the inner tuner in <a href="https://github.com/ai4reason/grackle">Grackle</a>, a strategy portfolio
-invention system for automated reasoning solvers.</p>
-<h2 id="what-it-does"><a class="header" href="#what-it-does">What it does</a></h2>
-<p>Given a target algorithm with configurable parameters, RamParILS searches for the parameter
-setting that minimises runtime (or maximises solution quality) on a set of training instances.
-It uses <strong>FocusedILS</strong> by default — an adaptive variant of Iterated Local Search that compares
-configurations after each solver run rather than after a fixed number, so poor configurations are
-filtered in one or two calls while promising ones receive the full evaluation budget.
-Each local search step evaluates all neighbours of the current configuration <strong>in parallel</strong> across
-all available CPU cores, and results are stored in a <strong>persistent SQLite cache</strong> so that repeated
-runs on the same benchmark never redo solver calls.</p>
-<h2 id="key-differences-from-ruby-paramils"><a class="header" href="#key-differences-from-ruby-paramils">Key differences from Ruby ParamILS</a></h2>
-<div class="table-wrapper"><table><thead><tr><th></th><th>Ruby ParamILS</th><th>RamParILS</th></tr></thead><tbody>
-<tr><td>Evaluation</td><td>Sequential</td><td>Parallel over all <code>(neighbor, instance)</code> pairs</td></tr>
-<tr><td>Cache</td><td>In-memory, per-run</td><td>Persistent SQLite, shared across runs</td></tr>
-<tr><td>Python API</td><td>subprocess call</td><td>Native extension via PyO3</td></tr>
-<tr><td>Non-deterministic algorithms (multiple seeds)</td><td>Supported</td><td>Not (yet) supported</td></tr>
+                        <h1 id="solver-wrapper-protocol"><a class="header" href="#solver-wrapper-protocol">Solver wrapper protocol</a></h1>
+<p>RamParILS communicates with the target algorithm via a simple subprocess protocol.</p>
+<h2 id="invocation"><a class="header" href="#invocation">Invocation</a></h2>
+<p>The solver is invoked as a shell command:</p>
+<pre><code>&lt;algo&gt; &lt;instance&gt; &lt;cutoff_time&gt; -param1 val1 -param2 val2 …
+</code></pre>
+<ul>
+<li><code>&lt;algo&gt;</code> — the command from the scenario's <code>algo</code> field (passed to <code>sh -c</code>)</li>
+<li><code>&lt;instance&gt;</code> — path to the instance file</li>
+<li><code>&lt;cutoff_time&gt;</code> — per-run time limit in seconds</li>
+<li><code>-param val</code> pairs — active parameters in alphabetical order</li>
+</ul>
+<p>Example:</p>
+<pre><code>ruby /path/to/saps_wrapper.rb /data/inst1.cnf 5.0 -alpha 1.189 -rho 0.5 -ps 0.1 -wp 0.03
+</code></pre>
+<h2 id="output"><a class="header" href="#output">Output</a></h2>
+<p>The solver must print a result line to <strong>stdout</strong>:</p>
+<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Values</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>status</code></td><td><code>OK</code>, <code>TIMEOUT</code>, <code>CRASHED</code></td><td>Outcome of the run</td></tr>
+<tr><td><code>runtime</code></td><td>float</td><td>Actual runtime in seconds (capped to <code>cutoff_time</code>)</td></tr>
+<tr><td><code>quality</code></td><td>float</td><td>Solution quality (used when <code>run_obj: quality</code>)</td></tr>
 </tbody></table>
 </div>
-<p>The parallel evaluation is the primary motivation for the rewrite: on a machine with 60 cores,
-a single local search step that would take 60 × <code>cutoff_time</code> seconds sequentially completes in
-roughly <code>cutoff_time</code> seconds.  The persistent cache compounds this advantage across Grackle's
-many short tuning runs on overlapping problem sets — a strategy evaluated in one run is never
-re-evaluated in another.</p>
-<h2 id="quick-links"><a class="header" href="#quick-links">Quick links</a></h2>
-<ul>
-<li><a href="installation.html">Installation</a></li>
-<li><a href="usage/cli.html">CLI usage</a></li>
-<li><a href="usage/python.html">Python API</a></li>
-<li><a href="reference/algorithm.html">Algorithm</a></li>
-<li><a href="reference/params.html">Parameter file format</a></li>
-<li><a href="reference/protocol.html">Solver wrapper protocol</a></li>
-</ul>
-<h2 id="acknowledgements"><a class="header" href="#acknowledgements">Acknowledgements</a></h2>
-<p>This project is part of <a href="https://deeper4ai.github.io/">DEEPER</a> and supported by the <a href="https://www.renaissancephilanthropy.org/deeper-exploratory-engine-for-precise-expert-reasoning">DEEPER grant</a> from Renaissance Philanthropy.</p>
+<p>The result line may appear anywhere in stdout — other output is ignored.
+If no result line is found, the run is treated as a timeout: runtime is set to <code>cutoff_time</code>.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<p>Successful run:</p>
+<pre><code>#%# RamParIls #%# OK, 1.23, 0.0
+</code></pre>
+<p>Timeout:</p>
+<pre><code>#%# RamParIls #%# TIMEOUT, 5.0, 0.0
+</code></pre>
+<h2 id="minimal-wrapper-skeleton"><a class="header" href="#minimal-wrapper-skeleton">Minimal wrapper skeleton</a></h2>
+<pre><code class="language-ruby">#!/usr/bin/env ruby
+instance, cutoff, *params = ARGV
+
+# ... run your solver here ...
+
+puts "#%# RamParIls #%# OK, #{runtime}, 0.0"
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-
-                            <a rel="next prefetch" href="installation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
+                            <a rel="prev" href="../reference/params.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
                             </a>
+
 
                         <div style="clear: both"></div>
                     </nav>
@@ -235,10 +239,10 @@ re-evaluated in another.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-
-                    <a rel="next prefetch" href="installation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
+                    <a rel="prev" href="../reference/params.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
                     </a>
+
             </nav>
 
         </div>
@@ -251,13 +255,13 @@ re-evaluated in another.</p>
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
 
