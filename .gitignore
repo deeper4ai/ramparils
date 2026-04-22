@@ -13,3 +13,4 @@ site/
 *.log
 diagrams/**/*.png
 diagrams/**/*.svg
+book/
