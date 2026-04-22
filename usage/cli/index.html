@@ -402,24 +402,85 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#scenario-file" class="md-nav__link">
+  <a href="#scenario-file-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Scenario file
+        Scenario file reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Scenario file reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required fields
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#flags" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Flags
+        Objective
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#iterative-deepening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Iterative deepening
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#debug" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -537,6 +598,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/algorithm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/params/" class="md-nav__link">
         
   
@@ -620,24 +709,85 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#scenario-file" class="md-nav__link">
+  <a href="#scenario-file-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Scenario file
+        Scenario file reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Scenario file reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required fields
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#flags" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Flags
+        Objective
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#iterative-deepening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Iterative deepening
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#debug" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -675,81 +825,242 @@
 <h1 id="cli">CLI</h1>
 <pre><code class="language-bash">ramparils --scenariofile path/to/scenario.yaml
 </code></pre>
-<h2 id="scenario-file">Scenario file</h2>
-<p>All tuning parameters are set in a YAML file:</p>
-<pre><code class="language-yaml">algo: &quot;ruby /path/to/solver_wrapper.rb&quot;   # command to invoke the target algorithm
-paramfile: &quot;/path/to/params.txt&quot;          # parameter space definition
-instance_file: &quot;data/train.txt&quot;           # one instance path per line
-cutoff_time: 5.0                          # per-run time limit (seconds)
-tuner_timeout: 300.0                      # total wall-clock budget (seconds)
-run_obj: runtime                          # runtime | quality
-overall_obj: mean                         # mean | median
+<p>All tuning options — instances, cutoff times, algorithm settings, cache location, debug flags —
+live in a single YAML scenario file.  The CLI has no other flags: every knob is a field in the
+YAML, making scenarios self-contained, reproducible, and easy to share.</p>
+<hr />
+<h2 id="scenario-file-reference">Scenario file reference</h2>
+<pre><code class="language-yaml"># Required
+algo:          &quot;ruby /path/to/solver_wrapper.rb&quot;
+paramfile:     &quot;/path/to/solver.params&quot;
+instance_file: &quot;data/train.txt&quot;
+cutoff_time:   5.0
+tuner_timeout: 300.0
+
+# Optional — shown with defaults
+run_obj:               runtime   # runtime | quality
+overall_obj:           mean      # mean | median
+approach:              focused   # focused | basic | random
+perturbation_strength: 4
+bound_multiplier:      10.0
+pruning:               true
+iterative_deepening:   false
+lambda_n:              0.5
+lambda_c:              0.5
+lambda_t:              0.5
+cores:                 0         # 0 = all available
+num_run:               0
+cache_db:              paramils_cache.db
+debug:                 false
+debug_wrapper:         false
+debug_solver:          false
+debug_log:             ~         # path or null
+error_log:             ~         # path or null
 </code></pre>
-<p><code>test_instance_file</code> is an optional second file of instance paths used for final evaluation
-(reserved for future use).</p>
-<h2 id="flags">Flags</h2>
+<h3 id="required-fields">Required fields</h3>
 <table>
 <thead>
 <tr>
-<th>Flag</th>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>algo</code></td>
+<td>string</td>
+<td>Shell command used to invoke the target algorithm. Invoked as <code>&lt;algo&gt; &lt;instance&gt; &lt;cutoff_time&gt; -p1 v1 …</code> via <code>sh -c</code>.</td>
+</tr>
+<tr>
+<td><code>paramfile</code></td>
+<td>string</td>
+<td>Path to the <code>.params</code> file describing the parameter space (domains, defaults, conditionals, forbidden combinations).</td>
+</tr>
+<tr>
+<td><code>instance_file</code></td>
+<td>string</td>
+<td>Path to a text file listing training instance paths, one per line. Blank lines and <code>#</code> comments are ignored. Mutually exclusive with <code>instances</code> (Python only).</td>
+</tr>
+<tr>
+<td><code>cutoff_time</code></td>
+<td>float</td>
+<td>Per-run time limit in seconds. Passed to the target algorithm; the solver wrapper is expected to respect it.</td>
+</tr>
+<tr>
+<td><code>tuner_timeout</code></td>
+<td>float</td>
+<td>Total wall-clock budget for the tuner in seconds. RamParILS stops launching new evaluations once this is exceeded and returns the best configuration found.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="objective">Objective</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
 <th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>--scenariofile PATH</code></td>
-<td><em>(required)</em></td>
-<td>Scenario YAML file</td>
+<td><code>run_obj</code></td>
+<td><code>runtime</code></td>
+<td>What a single run optimises: <code>runtime</code> (minimise) or <code>quality</code> (maximise). Use <code>quality</code> when the algorithm always runs to completion and returns a solution value.</td>
 </tr>
 <tr>
-<td><code>--cores N</code></td>
-<td>all cores</td>
-<td>Parallel worker threads (<code>0</code> = auto)</td>
-</tr>
-<tr>
-<td><code>--approach</code></td>
-<td><code>focused</code></td>
-<td><code>basic</code> | <code>focused</code> | <code>random</code></td>
-</tr>
-<tr>
-<td><code>--N N</code></td>
-<td><code>10</code></td>
-<td>Max runs per config per detail level</td>
-</tr>
-<tr>
-<td><code>--bm F</code></td>
-<td><code>10.0</code></td>
-<td>Adaptive capping bound multiplier</td>
-</tr>
-<tr>
-<td><code>--ps N</code></td>
-<td><code>4</code></td>
-<td>Perturbation strength</td>
-</tr>
-<tr>
-<td><code>--pruning</code></td>
-<td><code>true</code></td>
-<td>Enable adaptive capping</td>
-</tr>
-<tr>
-<td><code>--cachedb PATH</code></td>
-<td><code>ramparils_cache.db</code></td>
-<td>SQLite cache file</td>
-</tr>
-<tr>
-<td><code>--numRun N</code></td>
-<td><code>0</code></td>
-<td>Run index (reserved, future random seed)</td>
+<td><code>overall_obj</code></td>
+<td><code>mean</code></td>
+<td>How per-run results are aggregated across instances: <code>mean</code> or <code>median</code>. <code>median</code> is more robust to outliers but ignores magnitude.</td>
 </tr>
 </tbody>
 </table>
+<h3 id="algorithm">Algorithm</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>approach</code></td>
+<td><code>focused</code></td>
+<td>ILS variant. <code>focused</code> (default) uses adaptive dominance-based comparison and is typically 5–20× more efficient than <code>basic</code>. <code>basic</code> evaluates every configuration on exactly N instances. <code>random</code> samples uniformly — useful as a baseline. See <a href="../../reference/algorithm/">Algorithm</a>.</td>
+</tr>
+<tr>
+<td><code>perturbation_strength</code></td>
+<td><code>4</code></td>
+<td>Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum.</td>
+</tr>
+<tr>
+<td><code>bound_multiplier</code></td>
+<td><code>10.0</code></td>
+<td>Adaptive capping threshold. A configuration is abandoned early if its accumulated runtime exceeds <code>bound_multiplier × incumbent_runtime</code>. Lower values prune more aggressively (faster but riskier); higher values are more conservative.</td>
+</tr>
+<tr>
+<td><code>pruning</code></td>
+<td><code>true</code></td>
+<td>Enable adaptive capping. Disable only for debugging or when <code>run_obj: quality</code> and pruning is not meaningful.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="iterative-deepening">Iterative deepening</h3>
+<p>Runs multiple ILS phases with an exponential schedule.  Early phases use fewer instances and a
+shorter cutoff to rapidly explore the space; later phases refine the best region with the full
+budget.  Useful when the training set is large or <code>cutoff_time</code> is long.
+See <a href="../../reference/algorithm/#iterative-deepening">Iterative deepening</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iterative_deepening</code></td>
+<td><code>false</code></td>
+<td>Enable iterative deepening.</td>
+</tr>
+<tr>
+<td><code>lambda_n</code></td>
+<td><code>0.5</code></td>
+<td>Fraction of training instances used in the first phase. Doubles each phase toward 1.0.</td>
+</tr>
+<tr>
+<td><code>lambda_c</code></td>
+<td><code>0.5</code></td>
+<td>Fraction of <code>cutoff_time</code> used in the first phase. Doubles each phase toward the full cutoff.</td>
+</tr>
+<tr>
+<td><code>lambda_t</code></td>
+<td><code>0.5</code></td>
+<td>Fraction of <code>tuner_timeout</code> allocated to the first phase. Doubles each phase.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="execution">Execution</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cores</code></td>
+<td><code>0</code></td>
+<td>Number of parallel worker threads. <code>0</code> uses all available CPU cores. Set to a specific number to limit parallelism on shared machines.</td>
+</tr>
+<tr>
+<td><code>cache_db</code></td>
+<td><code>paramils_cache.db</code></td>
+<td>Path to the SQLite cache file. Created if it does not exist. Use the same path across runs on the same benchmark to share cached results. Use <code>:memory:</code> for an in-process cache that is not persisted.</td>
+</tr>
+<tr>
+<td><code>num_run</code></td>
+<td><code>0</code></td>
+<td>Run index, reserved for future use as a random seed. Has no effect currently.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="debug">Debug</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>debug</code></td>
+<td><code>false</code></td>
+<td>Print structured debug output to stderr: new incumbents, scores, and timing.</td>
+</tr>
+<tr>
+<td><code>debug_wrapper</code></td>
+<td><code>false</code></td>
+<td>Print one line per solver wrapper invocation (instance, parameters). Verbose; useful for tracing evaluation order.</td>
+</tr>
+<tr>
+<td><code>debug_solver</code></td>
+<td><code>false</code></td>
+<td>Print one line per solver result (status, runtime, quality). Verbose; useful for diagnosing wrapper output.</td>
+</tr>
+<tr>
+<td><code>debug_log</code></td>
+<td><code>null</code></td>
+<td>Write debug output to this file in addition to (or instead of) stderr. Independent of <code>debug</code> — file logging can be active without stderr logging.</td>
+</tr>
+<tr>
+<td><code>error_log</code></td>
+<td><code>null</code></td>
+<td>Write details of failed solver runs (non-zero exit, missing result line) to this file for post-hoc diagnosis.</td>
+</tr>
+<tr>
+<td><code>test_instance_file</code></td>
+<td><code>null</code></td>
+<td>Reserved for future use.</td>
+</tr>
+</tbody>
+</table>
+<hr />
 <h2 id="output">Output</h2>
-<p>The best configuration found, printed as <code>-param1 val1 -param2 val2 …</code>
+<p>The best configuration found is printed to stdout as <code>-param1 val1 -param2 val2 …</code>
 (active parameters only, alphabetically sorted):</p>
 <pre><code>-alpha 1.256 -ps 0.1 -rho 0.5 -wp 0.03
 </code></pre>
-<p>This format is directly compatible with Grackle's strategy parsing.</p>
+<p>This format is directly compatible with Grackle's strategy parsing.
+Inactive conditional parameters are omitted — they are irrelevant given the active parameter values.</p>
 
 
 
