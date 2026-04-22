@@ -11,3 +11,5 @@ site/
 *.dbcache-shm
 *.dbcache-wal
 *.log
+diagrams/**/*.png
+diagrams/**/*.svg

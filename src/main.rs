@@ -1,84 +1,20 @@
-//! CLI entry point — mirrors `param_ils_2_3_run.rb` flags for drop-in compatibility.
+//! CLI entry point.
 
 use anyhow::Result;
 use clap::Parser;
 
 use ramparils::cache::Cache;
 use ramparils::ils::{self, Approach, IlsOptions};
-use ramparils::DebugOptions;
 use ramparils::params::ParamSpace;
-use ramparils::scenario::{self, RunObjective, OverallObjective, Scenario};
+use ramparils::scenario::{RunObjective, OverallObjective, Scenario};
+use ramparils::DebugOptions;
 
 #[derive(Parser, Debug)]
 #[command(name = "ramparils", about = "Automated algorithm configuration via ILS")]
 struct Args {
-    /// Scenario file (defines algo, paramfile, instances, cutoff_time, …)
+    /// Scenario file (YAML): defines algo, instances, cutoff, tuner knobs, …
     #[arg(long)]
     scenariofile: String,
-
-    /// Run index (reserved for future use as a random seed)
-    #[arg(long = "numRun", default_value_t = 0)]
-    num_run: u64,
-
-    /// ILS approach: basic | focused | random
-    #[arg(long = "approach", default_value = "focused")]
-    approach: String,
-
-    /// Perturbation strength (neighbourhood steps per perturbation)
-    #[arg(long = "ps", default_value_t = 4)]
-    perturbation_strength: usize,
-
-    /// Bound multiplier for adaptive capping
-    #[arg(long = "bm", default_value_t = 10.0)]
-    bound_multiplier: f64,
-
-    /// Enable adaptive capping / pruning
-    #[arg(long = "pruning", default_value_t = true)]
-    pruning: bool,
-
-    /// Enable iterative deepening
-    #[arg(long = "id", default_value_t = false)]
-    iterative_deepening: bool,
-
-    /// Iterative deepening: instance-count growth factor (0 < λ_n ≤ 1)
-    #[arg(long = "lambda-n", default_value_t = 0.5)]
-    lambda_n: f64,
-
-    /// Iterative deepening: cutoff-time growth factor (0 < λ_c ≤ 1)
-    #[arg(long = "lambda-c", default_value_t = 0.5)]
-    lambda_c: f64,
-
-    /// Iterative deepening: per-phase timeout growth factor (0 < λ_t ≤ 1)
-    #[arg(long = "lambda-t", default_value_t = 0.5)]
-    lambda_t: f64,
-
-    /// Path to the result cache database (shared across runs)
-    #[arg(long = "cachedb", default_value = "paramils_cache.db")]
-    cache_db: String,
-
-    /// Number of parallel worker threads (0 = all available cores)
-    #[arg(long = "cores", default_value_t = 0)]
-    cores: usize,
-
-    /// Print debug output (new incumbents and their quality)
-    #[arg(long = "debug", default_value_t = false)]
-    debug: bool,
-
-    /// Print every solver wrapper invocation
-    #[arg(long = "debug-wrapper", default_value_t = false)]
-    debug_wrapper: bool,
-
-    /// Print every solver result
-    #[arg(long = "debug-solver", default_value_t = false)]
-    debug_solver: bool,
-
-    /// Write debug output to this file (independent of --debug)
-    #[arg(long = "debug-log")]
-    debug_log: Option<String>,
-
-    /// Write crash reports (failed solver runs) to this file
-    #[arg(long = "error-log")]
-    error_log: Option<String>,
 }
 
 fn sh(cmd: &str) -> String {
@@ -91,7 +27,7 @@ fn sh(cmd: &str) -> String {
 fn print_debug_header() {
     if !ramparils::any_debug_active() { return; }
     let t = ramparils::t();
-    let d = true; // header always goes to all active destinations
+    let d = true;
     let sep = "-".repeat(60);
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] binary:  {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
@@ -105,7 +41,7 @@ fn print_debug_header() {
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
 
-fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize, approach: &str) {
+fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
     if !ramparils::any_debug_active() { return; }
     let t = ramparils::t();
     let d = true;
@@ -116,12 +52,12 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize, appr
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] algo:       {}", s.algo));
     ramparils::debug_line(d, &format!("[{t:8.2}s] paramfile:  {}", s.paramfile));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] instances:  {} ({n_instances} loaded)", s.instance_file));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] instances:  {} ({n_instances} loaded)", s.instance_source_label()));
     ramparils::debug_line(d, &format!("[{t:8.2}s] test:       {test}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] cutoff:     {}s", s.cutoff_time));
     ramparils::debug_line(d, &format!("[{t:8.2}s] timeout:    {}s", s.tuner_timeout));
     ramparils::debug_line(d, &format!("[{t:8.2}s] objective:  {run_obj} / {overall_obj}"));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] approach:   {approach}"));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] approach:   {}", s.approach));
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
@@ -129,57 +65,56 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize, appr
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    if args.debug { ramparils::enable_debug_stderr(); }
-    if let Some(ref path) = args.debug_log { ramparils::init_log_file(path)?; }
-    if let Some(ref path) = args.error_log { ramparils::init_error_log(path)?; }
-    // Main debug is active when either output destination is configured.
+    let scenario = Scenario::from_file(&args.scenariofile)?;
+
+    if scenario.debug { ramparils::enable_debug_stderr(); }
+    if let Some(ref path) = scenario.debug_log { ramparils::init_log_file(path)?; }
+    if let Some(ref path) = scenario.error_log { ramparils::init_error_log(path)?; }
     let main_debug = ramparils::any_debug_active();
     print_debug_header();
 
-    // Load scenario and parameter space
-    let scenario = Scenario::from_file(&args.scenariofile)?;
     let space = ParamSpace::from_file(&scenario.paramfile)?;
 
-    // Load and register instances
-    let instance_paths = scenario::load_instances(&scenario.instance_file)?;
-    anyhow::ensure!(!instance_paths.is_empty(), "instance file is empty: {}", scenario.instance_file);
+    let instance_paths = scenario.instance_paths()?;
+    anyhow::ensure!(!instance_paths.is_empty(), "instance list is empty");
 
-    let mut cache = Cache::open(&args.cache_db, main_debug)?;
+    let mut cache = Cache::open(&scenario.cache_db, main_debug)?;
     let id_map = cache.load_instances(&instance_paths)?;
     let instances: Vec<(i64, String)> = instance_paths.iter()
         .map(|p| (id_map[p], p.clone()))
         .collect();
 
-    // Build ILS options
-    let approach = match args.approach.to_lowercase().as_str() {
+    let approach = match scenario.approach.to_lowercase().as_str() {
         "basic"  => Approach::Basic,
         "random" => Approach::Random,
         _        => Approach::Focused,
     };
-    let n_workers = if args.cores == 0 {
+    let n_workers = if scenario.cores == 0 {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
     } else {
-        args.cores
+        scenario.cores
     };
     let options = IlsOptions {
         approach,
         n_workers,
-        perturbation_strength: args.perturbation_strength,
-        bound_multiplier: args.bound_multiplier,
-        pruning: args.pruning,
+        perturbation_strength: scenario.perturbation_strength,
+        bound_multiplier: scenario.bound_multiplier,
+        pruning: scenario.pruning,
         tuner_timeout: scenario.tuner_timeout,
         run_obj: scenario.run_obj.clone(),
         overall_obj: scenario.overall_obj.clone(),
-        debug: DebugOptions { main: main_debug, wrapper: args.debug_wrapper, solver: args.debug_solver },
+        debug: DebugOptions {
+            main: main_debug,
+            wrapper: scenario.debug_wrapper,
+            solver: scenario.debug_solver,
+        },
     };
 
-    print_debug_scenario(&scenario, instances.len(), n_workers, &args.approach);
+    print_debug_scenario(&scenario, instances.len(), n_workers);
 
-    // Start from the parameter space's default configuration
     let initial = space.default_config();
 
-    // Run ILS
-    let (result, best_score) = if args.iterative_deepening {
+    let (result, best_score) = if scenario.iterative_deepening {
         ils::iterative_deepening_ils(
             Some(initial),
             &options,
@@ -188,9 +123,9 @@ fn main() -> Result<()> {
             &scenario.algo,
             scenario.cutoff_time,
             &mut cache,
-            args.lambda_n,
-            args.lambda_c,
-            args.lambda_t,
+            scenario.lambda_n,
+            scenario.lambda_c,
+            scenario.lambda_t,
         )?
     } else {
         ils::run(
@@ -206,8 +141,6 @@ fn main() -> Result<()> {
 
     ramparils::debug_line(main_debug, &format!("[{:8.2}s] ils: best score: {best_score:.6}", ramparils::t()));
 
-    // Print result: only active params, sorted, in -key value format
-    // (compatible with Grackle's strategy parsing)
     let active = space.active_params(&result);
     let mut pairs: Vec<(&String, &String)> = active.iter()
         .filter_map(|p| result.get(&p.name).map(|v| (&p.name, v)))
