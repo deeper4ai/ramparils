@@ -10,3 +10,4 @@
   - [Algorithm](reference/algorithm.md)
   - [Parameter file](reference/params.md)
   - [Solver protocol](reference/protocol.md)
+  - [Glossary](reference/glossary.md)
