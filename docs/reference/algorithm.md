@@ -38,6 +38,12 @@ better performance on all of them.  In practice this means poor configurations a
 one or two runs while promising ones receive the full evaluation budget — typically 5–20× fewer
 total solver calls than BasicILS for the same search quality.
 
+RamParILS starts FocusedILS at `initial_fidelity` instances per configuration and increases that
+global fidelity by `fidelity_step`, up to the number of available instances. With W workers and
+fidelity F, the current scheduler can approximately evaluate `ceil(W/F)` different neighbors at
+once. Increasing F therefore uses more workers on instances of the same neighbor and reduces
+speculative work on neighbors that may become irrelevant after the first improving move.
+
 **Random** (`approach: random`) samples configurations uniformly at random rather than following
 a local search trajectory.  Useful as a baseline or when the parameter space has no exploitable
 structure.

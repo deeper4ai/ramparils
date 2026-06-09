@@ -58,6 +58,13 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
     ramparils::debug_line(d, &format!("[{t:8.2}s] timeout:    {}s", s.tuner_timeout));
     ramparils::debug_line(d, &format!("[{t:8.2}s] objective:  {run_obj} / {overall_obj}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] approach:   {}", s.approach));
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] fidelity:   initial={} step={}",
+            s.initial_fidelity, s.fidelity_step
+        ),
+    );
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
@@ -98,6 +105,8 @@ fn main() -> Result<()> {
         approach,
         n_workers,
         perturbation_strength: scenario.perturbation_strength,
+        initial_fidelity: scenario.initial_fidelity,
+        fidelity_step: scenario.fidelity_step,
         bound_multiplier: scenario.bound_multiplier,
         pruning: scenario.pruning,
         tuner_timeout: scenario.tuner_timeout,

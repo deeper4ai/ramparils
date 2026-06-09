@@ -25,6 +25,8 @@ run_obj:               runtime   # runtime | quality
 overall_obj:           mean      # mean | median
 approach:              focused   # focused | basic | random
 perturbation_strength: 4
+initial_fidelity:      1
+fidelity_step:         1
 bound_multiplier:      10.0
 pruning:               true
 iterative_deepening:   false
@@ -64,6 +66,8 @@ error_log:             ~         # path or null
 |-------|---------|-------------|
 | `approach` | `focused` | ILS variant. `focused` (default) uses adaptive dominance-based comparison and is typically 5–20× more efficient than `basic`. `basic` evaluates every configuration on exactly N instances. `random` samples uniformly — useful as a baseline. See [Algorithm](../reference/algorithm.md). |
 | `perturbation_strength` | `4` | Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum. |
+| `initial_fidelity` | `1` | Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count. |
+| `fidelity_step` | `1` | Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of `0` are treated as `1`. |
 | `bound_multiplier` | `10.0` | Adaptive capping threshold. A configuration is abandoned early if its accumulated runtime exceeds `bound_multiplier × incumbent_runtime`. Lower values prune more aggressively (faster but riskier); higher values are more conservative. |
 | `pruning` | `true` | Enable adaptive capping. Disable only for debugging or when `run_obj: quality` and pruning is not meaningful. |
 

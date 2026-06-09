@@ -16,6 +16,8 @@
 //! overall_obj: mean           # mean | median
 //! approach: focused           # focused | basic | random
 //! perturbation_strength: 4
+//! initial_fidelity: 1
+//! fidelity_step: 1
 //! bound_multiplier: 10.0
 //! pruning: true
 //! iterative_deepening: false
@@ -54,6 +56,7 @@ pub enum OverallObjective {
 
 fn default_approach() -> String { "focused".to_string() }
 fn default_perturbation_strength() -> usize { 4 }
+fn default_fidelity() -> usize { 1 }
 fn default_bound_multiplier() -> f64 { 10.0 }
 fn default_pruning() -> bool { true }
 fn default_lambda() -> f64 { 0.5 }
@@ -105,6 +108,14 @@ pub struct Scenario {
     /// Neighbourhood steps per perturbation.
     #[serde(default = "default_perturbation_strength")]
     pub perturbation_strength: usize,
+
+    /// Initial number of instances used to evaluate each configuration.
+    #[serde(default = "default_fidelity")]
+    pub initial_fidelity: usize,
+
+    /// Number of instances added when FocusedILS increases evaluation fidelity.
+    #[serde(default = "default_fidelity")]
+    pub fidelity_step: usize,
 
     /// Adaptive capping multiplier.
     #[serde(default = "default_bound_multiplier")]

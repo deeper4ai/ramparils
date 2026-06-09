@@ -50,6 +50,8 @@ def specialize(
             - **test_instance_file** (*str*) — reserved for future use.
             - **approach** (*str*, default ``"focused"``) — ``"focused"``, ``"basic"``, or ``"random"``.
             - **perturbation_strength** (*int*, default ``4``) — neighbourhood steps per perturbation.
+            - **initial_fidelity** (*int*, default ``1``) — initial instances per configuration in FocusedILS.
+            - **fidelity_step** (*int*, default ``1``) — instances added at each FocusedILS fidelity increase.
             - **bound_multiplier** (*float*, default ``10.0``) — adaptive capping multiplier.
             - **pruning** (*bool*, default ``True``) — enable adaptive capping.
             - **iterative_deepening** (*bool*, default ``False``) — enable iterative deepening.

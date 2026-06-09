@@ -59,6 +59,8 @@ Exactly one of the following must be supplied to specify instances:
 | `overall_obj` | `"mean"` | `"mean"` or `"median"`. |
 | `approach` | `"focused"` | `"focused"`, `"basic"`, or `"random"`. |
 | `perturbation_strength` | `4` | Neighbourhood steps per perturbation. |
+| `initial_fidelity` | `1` | Initial instances per configuration in FocusedILS, capped by the instance count. |
+| `fidelity_step` | `1` | Instances added at each FocusedILS fidelity increase. |
 | `bound_multiplier` | `10.0` | Adaptive capping multiplier. |
 | `pruning` | `True` | Enable adaptive capping. |
 | `iterative_deepening` | `False` | Enable iterative deepening. |

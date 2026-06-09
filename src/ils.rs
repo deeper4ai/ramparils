@@ -47,6 +47,10 @@ pub struct IlsOptions {
     pub n_workers: usize,
     /// Number of neighbourhood steps for perturbation.
     pub perturbation_strength: usize,
+    /// Initial number of instances used to evaluate each configuration.
+    pub initial_fidelity: usize,
+    /// Number of instances added when FocusedILS increases fidelity.
+    pub fidelity_step: usize,
     /// Adaptive capping multiplier.
     pub bound_multiplier: f64,
     /// Enable adaptive capping / pruning.
@@ -76,9 +80,9 @@ pub fn run(
     let mut rng = rand::thread_rng();
     let n_total = instances.len();
 
-    // FocusedILS starts with 1 instance and grows; Basic/Random use all instances immediately.
+    // FocusedILS starts at the configured fidelity and grows; Basic/Random use all instances.
     let mut n_runs = match options.approach {
-        Approach::Focused => 1,
+        Approach::Focused => initial_n_runs(options.initial_fidelity, n_total),
         _ => n_total,
     };
 
@@ -183,8 +187,8 @@ pub fn run(
         } else if options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
             // This is the bounded increase mechanism: challengers that fail against the
-            // current incumbent push it to be evaluated on one more instance.
-            let next = (n_runs + 1).min(n_total);
+            // current incumbent push it to be evaluated on another fidelity step.
+            let next = next_n_runs(n_runs, options.fidelity_step, n_total);
             if next > n_runs {
                 n_runs = next;
                 incumbent_score = evaluate_config(
@@ -516,6 +520,14 @@ fn compute_score(runtimes: &[f64], qualities: &[f64], options: &IlsOptions) -> f
     }
 }
 
+fn initial_n_runs(initial_fidelity: usize, n_total: usize) -> usize {
+    initial_fidelity.max(1).min(n_total)
+}
+
+fn next_n_runs(current: usize, fidelity_step: usize, n_total: usize) -> usize {
+    current.saturating_add(fidelity_step.max(1)).min(n_total)
+}
+
 /// Iterative-deepening wrapper around [`run`].
 ///
 /// Mirrors `iterative_deepening_ils()` from `param_ils_2_3_run.rb` (lines 809–856,
@@ -706,6 +718,7 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -720,6 +733,7 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Focused,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -733,6 +747,7 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
         };
@@ -744,6 +759,7 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
         };
@@ -758,5 +774,16 @@ mod tests {
             let cfg = random_config(&space, &mut rng);
             assert!(!space.is_forbidden(&cfg));
         }
+    }
+
+    #[test]
+    fn fidelity_is_clamped_and_advances_by_step() {
+        assert_eq!(initial_n_runs(8, 100), 8);
+        assert_eq!(initial_n_runs(100, 8), 8);
+        assert_eq!(initial_n_runs(0, 8), 1);
+
+        assert_eq!(next_n_runs(8, 4, 100), 12);
+        assert_eq!(next_n_runs(8, 100, 10), 10);
+        assert_eq!(next_n_runs(8, 0, 100), 9);
     }
 }

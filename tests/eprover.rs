@@ -116,14 +116,14 @@ fn run_ils_eprover() {
         approach: Approach::Focused,
         n_workers: 4,
         perturbation_strength: 4,
+        initial_fidelity: 1,
+        fidelity_step: 1,
         bound_multiplier: 10.0,
         pruning: true,
         tuner_timeout: 15.0,
         run_obj: RunObjective::Quality,
         overall_obj: OverallObjective::Mean,
-        debug: false,
-        debug_wrapper: false,
-        debug_solver: false,
+        debug: ramparils::DebugOptions::default(),
     };
 
     let initial = space.default_config();
