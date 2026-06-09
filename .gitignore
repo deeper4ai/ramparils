@@ -7,3 +7,10 @@ __pycache__/
 .venv/
 site/
 *.db
+*.dbcache
+*.dbcache-shm
+*.dbcache-wal
+*.log
+diagrams/**/*.png
+diagrams/**/*.svg
+book/

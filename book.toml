@@ -1,0 +1,12 @@
+[book]
+title       = "RamParILS"
+description = "Parallel automated algorithm configuration via Iterated Local Search"
+src         = "docs"
+language    = "en"
+
+[output.html]
+site-url              = "/ramparils/"
+git-repository-url    = "https://github.com/deeper4ai/ramparils"
+edit-url-template     = "https://github.com/deeper4ai/ramparils/edit/main/docs/{path}"
+default-theme         = "ayu"
+additional-js         = ["docs/theme/sidebar.js"]

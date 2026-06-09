@@ -104,14 +104,14 @@ pub struct Scheduler {
     result_rx: Receiver<TaskResult>,
     stop: Arc<AtomicBool>,
     cutoff_time: f64,
-    debug: bool,
+    debug: crate::DebugOptions,
     _workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Scheduler {
     /// Spawn `n_workers` worker threads.  Each loops waiting for `WorkItem`s,
     /// runs the solver, and sends `TaskResult`s back.
-    pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: bool, debug_wrapper: bool, debug_solver: bool) -> Self {
+    pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: crate::DebugOptions) -> Self {
         let (work_tx, work_rx) = unbounded::<WorkItem>();
         let (result_tx, result_rx) = unbounded::<TaskResult>();
         let stop = Arc::new(AtomicBool::new(false));
@@ -130,7 +130,7 @@ impl Scheduler {
                             continue;
                         }
                         let (runtime, quality, status) =
-                            run_solver_inner(&algo, &item.config, item.hash, &item.instance_path, item.cutoff_time, debug_wrapper, debug_solver);
+                            run_solver_inner(&algo, &item.config, item.hash, &item.instance_path, item.cutoff_time, debug.wrapper, debug.solver);
                         // Still send the result even if stop was set mid-call;
                         // ILS drains these as part of the reset() protocol.
                         let _ = result_tx.send(TaskResult {
@@ -146,7 +146,7 @@ impl Scheduler {
             })
             .collect();
 
-        crate::debug_line(debug, &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()));
+        crate::debug_line(debug.main, &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()));
         Scheduler { work_tx, result_tx, result_rx, stop, cutoff_time, debug, _workers: workers }
     }
 
@@ -188,7 +188,7 @@ impl Scheduler {
                 }
             }
         }
-        crate::debug_line(self.debug, &format!("[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}", crate::t(), n_hits + n_misses));
+        crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}", crate::t(), n_hits + n_misses));
         Ok(())
     }
 
@@ -204,7 +204,7 @@ impl Scheduler {
     /// any in-flight results before the next `submit()`.
     pub fn reset(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        crate::debug_line(self.debug, &format!("[{:8.2}s] eval: reset", crate::t()));
+        crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: reset", crate::t()));
     }
 }
 
@@ -261,10 +261,18 @@ pub(crate) fn run_solver_inner(
     let (runtime, quality, status, result_line) = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            parse_solver_output(&stdout, cutoff_time)
+            let (rt, q, st, rl) = parse_solver_output(&stdout, cutoff_time);
+            if st == "UNKNOWN" {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                crate::log_crash(&cmd, &stdout, &stderr, out.status.code());
+            }
+            (rt, q, st, rl)
         }
-        Err(_) => (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(),
-                   format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}")),
+        Err(e) => {
+            crate::log_crash(&cmd, "", &e.to_string(), None);
+            (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(),
+             format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}"))
+        }
     };
     let iname = std::path::Path::new(instance)
         .file_name().and_then(|n| n.to_str()).unwrap_or(instance);
@@ -348,7 +356,7 @@ mod tests {
         cache.put(hash, id1, 0.5, 0.0, "Theorem").unwrap();
         cache.put(hash, id2, 1.0, 0.0, "Theorem").unwrap();
 
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, false, false);
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
         sched.submit(vec![EvalTask {
             neighbor_id: 7,
             config,
@@ -372,7 +380,7 @@ mod tests {
     #[test]
     fn scheduler_reset_drains_cleanly() {
         let cache = Cache::open(":memory:", false).unwrap();
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, false, false);
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
 
         // Submit empty batch (nothing to do) then reset immediately.
         sched.submit(vec![], &cache).unwrap();

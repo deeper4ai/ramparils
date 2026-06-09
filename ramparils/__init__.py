@@ -4,18 +4,14 @@ RamParILS — parallel automated algorithm configuration via Iterated Local Sear
 The public API is a single function: :func:`specialize`.
 """
 
-from typing import Optional
 from ._ramparils import specialize as _specialize
 
 
 def specialize(
     strategy: dict[str, str],
     scenario: dict,
-    cache_db: str,
-    cores: int = 0,
-    debug_log: Optional[str] = None,
 ) -> dict[str, str]:
-    """Specialize a strategy on a set of benchmark instances using FocusedILS.
+    """Specialize a strategy on a set of benchmark instances using ILS.
 
     Runs Iterated Local Search starting from *strategy*, evaluating
     ``(configuration, instance)`` pairs in parallel, and returns the best
@@ -28,7 +24,9 @@ def specialize(
         strategy: Initial parameter configuration as ``{name: value}`` strings.
             Must contain every parameter defined in ``scenario["paramfile"]``.
             Values are strings even for numeric parameters (e.g. ``"1.189"``).
-        scenario: Tuning scenario as a dict.  Required keys:
+        scenario: Tuning scenario as a dict.
+
+            **Required keys:**
 
             - **algo** (*str*) — command to invoke the target algorithm.
               Invoked as ``<algo> <instance> <cutoff_time> -p1 v1 -p2 v2 …``
@@ -45,22 +43,28 @@ def specialize(
             - **instance_file** (*str*) — path to a text file with one instance
               path per line (blank lines and ``#`` comments are ignored).
 
-            Optional keys:
+            **Optional keys** (all have defaults matching the CLI):
 
-            - **run_obj** (*str*, default ``"runtime"``) — what a single run
-              optimises: ``"runtime"`` or ``"quality"``.
-            - **overall_obj** (*str*, default ``"mean"``) — how per-run results
-              are aggregated: ``"mean"`` or ``"median"``.
+            - **run_obj** (*str*, default ``"runtime"``) — ``"runtime"`` or ``"quality"``.
+            - **overall_obj** (*str*, default ``"mean"``) — ``"mean"`` or ``"median"``.
             - **test_instance_file** (*str*) — reserved for future use.
-
-        cache_db: Path to the SQLite cache file.  Created if it does not exist.
-            Use ``":memory:"`` for an in-process cache that is not persisted.
-        cores: Number of parallel worker threads.  ``0`` (default) uses all
-            available CPU cores.
-        debug_log: Optional path to a log file.  When set, structured debug
-            output (new incumbents, scores, timing) is written to this file,
-            mirroring the ``--debug-log`` CLI flag.  The file is created (or
-            overwritten) at the start of each call and closed when it returns.
+            - **approach** (*str*, default ``"focused"``) — ``"focused"``, ``"basic"``, or ``"random"``.
+            - **perturbation_strength** (*int*, default ``4``) — neighbourhood steps per perturbation.
+            - **bound_multiplier** (*float*, default ``10.0``) — adaptive capping multiplier.
+            - **pruning** (*bool*, default ``True``) — enable adaptive capping.
+            - **iterative_deepening** (*bool*, default ``False``) — enable iterative deepening.
+            - **lambda_n** (*float*, default ``0.5``) — iterative deepening instance-count factor.
+            - **lambda_c** (*float*, default ``0.5``) — iterative deepening cutoff-time factor.
+            - **lambda_t** (*float*, default ``0.5``) — iterative deepening timeout factor.
+            - **cores** (*int*, default ``0``) — parallel workers; ``0`` uses all available cores.
+            - **num_run** (*int*, default ``0``) — run index / random seed (reserved).
+            - **cache_db** (*str*, default ``"paramils_cache.db"``) — path to the SQLite cache.
+              Use ``":memory:"`` for an in-process cache that is not persisted.
+            - **debug** (*bool*, default ``False``) — print new incumbents and scores to stderr.
+            - **debug_wrapper** (*bool*, default ``False``) — print every solver invocation.
+            - **debug_solver** (*bool*, default ``False``) — print every solver result.
+            - **debug_log** (*str*, default ``None``) — write debug output to this file.
+            - **error_log** (*str*, default ``None``) — write failed solver runs to this file.
 
     Returns:
         The best configuration found, as ``{name: value}`` strings.
@@ -80,21 +84,14 @@ def specialize(
         ...         "instances":     ["/path/to/inst1.cnf", "/path/to/inst2.cnf"],
         ...         "cutoff_time":   5.0,
         ...         "tuner_timeout": 120.0,
+        ...         "cache_db":      "/tmp/ramparils_cache.db",
+        ...         "cores":         8,
         ...     },
-        ...     cache_db="/tmp/ramparils_cache.db",
-        ...     cores=8,
-        ...     debug_log="/tmp/ramparils.log",
         ... )
         >>> print(result)
         {'alpha': '1.256', 'rho': '0.5'}
     """
-    return _specialize(
-        strategy=strategy,
-        scenario=scenario,
-        cache_db=cache_db,
-        cores=cores,
-        debug_log=debug_log,
-    )
+    return _specialize(strategy=strategy, scenario=scenario)
 
 
 __all__ = ["specialize"]
