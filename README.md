@@ -22,12 +22,6 @@ It evaluates `(configuration, instance)` pairs in parallel across all available 
 
 ## Installation
 
-### Python extension (pip)
-
-```bash
-pip install ramparils
-```
-
 ### CLI binary
 
 Clone the repo and build with Cargo ([Rust 1.85+](https://rustup.rs) required):
@@ -37,6 +31,19 @@ git clone https://github.com/deeper4ai/ramparils.git
 cd ramparils
 cargo build --release
 # binary at target/release/ramparils
+```
+
+> **Note:** If Cargo is not installed, install the Rust toolchain with
+> [rustup](https://rustup.rs):
+>
+> ```bash
+> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+> ```
+
+### Python extension (pip)
+
+```bash
+pip install ramparils
 ```
 
 ---
