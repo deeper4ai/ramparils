@@ -24,6 +24,14 @@ needed:
 LLM2SMT=/path/to/llm2smt ramparils --scenariofile scenario.yaml
 ```
 
+Each solver run has a 4096 MiB virtual-memory limit by default. The limit is
+applied with `RLIMIT_AS` and inherited by solver subprocesses. Override it with
+`LLM2SMT_MEMORY_MB`, for example:
+
+```bash
+LLM2SMT_MEMORY_MB=8192 ramparils --scenariofile scenario.yaml
+```
+
 When developing RamParILS locally, run the same scenario through Cargo:
 
 ```bash

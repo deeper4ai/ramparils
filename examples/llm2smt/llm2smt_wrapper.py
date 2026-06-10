@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from functools import partial
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -12,6 +14,7 @@ from pathlib import Path
 
 
 FAILURE_QUALITY = 10_000_000.0
+DEFAULT_MEMORY_LIMIT_MB = 4096
 
 
 def parse_parameters(arguments: list[str]) -> dict[str, str]:
@@ -86,7 +89,22 @@ def solver_status(stdout: str) -> str | None:
     return None
 
 
-def run(command: list[str], cutoff: float) -> tuple[str, float, float]:
+def memory_limit_bytes() -> int:
+    value = int(
+        os.environ.get("LLM2SMT_MEMORY_MB", str(DEFAULT_MEMORY_LIMIT_MB))
+    )
+    if value <= 0:
+        raise ValueError("LLM2SMT_MEMORY_MB must be positive")
+    return value * 1024 * 1024
+
+
+def apply_memory_limit(limit: int) -> None:
+    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+
+
+def run(
+    command: list[str], cutoff: float, memory_limit: int
+) -> tuple[str, float, float]:
     started = time.monotonic()
     process = subprocess.Popen(
         command,
@@ -94,6 +112,7 @@ def run(command: list[str], cutoff: float) -> tuple[str, float, float]:
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        preexec_fn=partial(apply_memory_limit, memory_limit),
     )
     try:
         stdout, stderr = process.communicate(timeout=cutoff)
@@ -128,8 +147,10 @@ def main() -> int:
         parameters = parse_parameters(sys.argv[3:])
         executable = os.environ.get("LLM2SMT", "llm2smt")
         command = build_command(executable, instance, parameters)
-        status, runtime, quality = run(command, cutoff)
-    except (KeyError, OSError, ValueError) as error:
+        status, runtime, quality = run(
+            command, cutoff, memory_limit_bytes()
+        )
+    except (KeyError, OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"llm2smt wrapper error: {error}", file=sys.stderr)
         status, runtime, quality = (
             "error",

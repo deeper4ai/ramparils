@@ -3,7 +3,7 @@
 ## Scope
 
 - Make all code and documentation changes in this repository.
-- `/home/yan/repos/cbboyan/paramils` is reference-only. It contains the
+- `../paramils` is reference-only. It contains the
   original Ruby ParamILS implementation, papers, diagrams, and historical
   project notes. Do not modify it.
 - Preserve unrelated local changes in either repository.
@@ -50,6 +50,19 @@ maturin develop
 
 The E prover integration test may require external executables and can be
 slower than unit tests. State explicitly when it was not run.
+
+## Commits
+
+Use Conventional Commit-style subjects:
+
+```text
+<type>[optional scope]: <description>
+```
+
+Match recent repository history: use a concise subject and an explanatory body
+for non-trivial changes. When an AI assistant materially authors a commit, add
+the appropriate `Co-Authored-By` trailer for the assistant that actually did
+the work. Do not falsely attribute work to another assistant.
 
 ## Compatibility
 
