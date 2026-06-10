@@ -7,8 +7,10 @@
 //!     perturbation()          — random walk of strength s
 //!     acceptance_criterion()  — accept if new local optimum dominates incumbent
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
+use crossbeam::channel::RecvTimeoutError;
 use rand::Rng;
 
 use crate::cache::{Cache, hash_config};
@@ -299,14 +301,14 @@ fn evaluate_config(
     if instances.is_empty() { return Ok(0.0); }
 
     let hash = hash_config(config);
-    scheduler.submit(vec![EvalTask {
+    let batch_id = scheduler.submit(vec![EvalTask {
         neighbor_id: 0,
         config: config.clone(),
         hash,
-        instances: instances.to_vec(),
+        instances: Arc::new(instances.to_vec()),
     }], cache)?;
 
-    collect_one(hash, instances.len(), 0, scheduler, cache, options, incumbent_score, deadline)
+    collect_one(batch_id, instances.len(), 0, scheduler, cache, options, incumbent_score, deadline)
 }
 
 /// Parallel first-improvement BLS.
@@ -348,11 +350,17 @@ fn basic_local_search(
         let n = neighbors.len();
 
         // Submit all neighbours (evaluated on the first n_runs instances only)
+        let shared_instances = Arc::new(eval_instances.to_vec());
         let tasks: Vec<EvalTask> = neighbors.iter().enumerate().map(|(i, cfg)| {
             let hash = hash_config(cfg);
-            EvalTask { neighbor_id: i, config: cfg.clone(), hash, instances: eval_instances.to_vec() }
+            EvalTask {
+                neighbor_id: i,
+                config: cfg.clone(),
+                hash,
+                instances: Arc::clone(&shared_instances),
+            }
         }).collect();
-        scheduler.submit(tasks, cache)?;
+        let batch_id = scheduler.submit(tasks, cache)?;
 
         // Per-neighbour tracking
         let mut runtimes: Vec<Vec<f64>> = vec![vec![]; n];
@@ -368,12 +376,14 @@ fn basic_local_search(
 
             let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
                 Ok(r) => r,
-                Err(_) => break,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
             };
 
             if result.status != "UNKNOWN" {
                 cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
             }
+            if result.batch_id != batch_id { continue; }
 
             let nid = result.neighbor_id;
             // Guard against stale results from a previous reset (shouldn't
@@ -448,7 +458,7 @@ fn basic_local_search(
 /// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
 /// Used by `evaluate_config` for single-config evaluation.
 fn collect_one(
-    _hash: u64,
+    batch_id: u64,
     n_instances: usize,
     expected_nid: usize,
     scheduler: &Scheduler,
@@ -467,12 +477,14 @@ fn collect_one(
 
         let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
             Ok(r) => r,
-            Err(_) => break,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
         };
 
         if result.status != "UNKNOWN" {
             cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
         }
+        if result.batch_id != batch_id { continue; }
         if result.neighbor_id != expected_nid { continue; }
 
         let val = match options.run_obj {
@@ -785,5 +797,47 @@ mod tests {
         assert_eq!(next_n_runs(8, 4, 100), 12);
         assert_eq!(next_n_runs(8, 100, 10), 10);
         assert_eq!(next_n_runs(8, 0, 100), 9);
+    }
+
+    #[test]
+    fn evaluation_waits_through_poll_timeouts() {
+        let mut cache = Cache::open(":memory:", false).unwrap();
+        let path = "instance.cnf".to_string();
+        let ids = cache.load_instances(std::slice::from_ref(&path)).unwrap();
+        let instances = vec![(ids[&path], path)];
+        let scheduler = Scheduler::new(
+            1,
+            "sleep 0.7; echo '#%# RamParIls #%# sat, 0.7, 0.0'; true".to_string(),
+            2.0,
+            crate::DebugOptions::default(),
+        );
+        let options = IlsOptions {
+            approach: Approach::Focused,
+            n_workers: 1,
+            perturbation_strength: 1,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: false,
+            tuner_timeout: 2.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
+            debug: crate::DebugOptions::default(),
+        };
+        let config = cfg(&[("alpha", "1")]);
+        let started = Instant::now();
+
+        let score = evaluate_config(
+            &config,
+            &instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            None,
+            started + Duration::from_secs(2),
+        ).unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(650));
+        assert!((score - 0.7).abs() < 1e-9);
     }
 }

@@ -11,11 +11,11 @@
 //!  │── submit(tasks, cache) ───────▶│                          │
 //!  │                          bulk cache read                  │
 //!  │                          hits ──────────────────▶ result_rx
-//!  │                          misses ────────────────────────▶ work_rx
+//!  │                          misses ────────────────────────▶ work batches
 //!  │                                │                          │── run_solver ──▶
 //!  │◀── results().recv() ──────────────────────────────────────│
 //!  │                                │                          │
-//!  │── reset() ────────────────────▶│  (stop flag set)         │
+//!  │── reset() ────────────────────▶│  (batch invalidated)     │
 //!  │   drain result_rx              │                          │ (finish call,
 //!  │                                │                          │  skip pending)
 //! ```
@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use anyhow::Result;
@@ -47,11 +47,12 @@ pub struct EvalTask {
     /// Pre-computed hash of `config` (for cache lookup and write-back).
     pub hash: u64,
     /// `(instance_id, instance_path)` pairs — id for cache, path for solver.
-    pub instances: Vec<(i64, String)>,
+    pub instances: Arc<Vec<(i64, String)>>,
 }
 
 /// Result of one `(neighbor, instance)` evaluation.
 pub struct TaskResult {
+    pub batch_id: u64,
     pub neighbor_id: usize,
     pub instance_id: i64,
     /// Hash of the config (for cache write-back).
@@ -85,12 +86,15 @@ impl EvalResult {
 // Internal types (worker-side)
 // ---------------------------------------------------------------------------
 
-struct WorkItem {
+#[derive(Clone)]
+struct WorkBatch {
+    batch_id: u64,
     neighbor_id: usize,
-    config: Config,
+    config: Arc<Config>,
     hash: u64,
-    instance_id: i64,
-    instance_path: String,
+    instances: Arc<Vec<(i64, String)>>,
+    missing_indices: Arc<Vec<usize>>,
+    next_index: Arc<AtomicUsize>,
     cutoff_time: f64,
 }
 
@@ -99,77 +103,104 @@ struct WorkItem {
 // ---------------------------------------------------------------------------
 
 pub struct Scheduler {
-    work_tx: Sender<WorkItem>,
+    work_tx: Sender<WorkBatch>,
     result_tx: Sender<TaskResult>, // used in submit() for cache hits
     result_rx: Receiver<TaskResult>,
-    stop: Arc<AtomicBool>,
+    batch_id: Arc<AtomicU64>,
+    n_workers: usize,
+    #[cfg(test)]
+    submitted_work_batches: AtomicUsize,
     cutoff_time: f64,
     debug: crate::DebugOptions,
     _workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Scheduler {
-    /// Spawn `n_workers` worker threads.  Each loops waiting for `WorkItem`s,
+    /// Spawn `n_workers` worker threads. Each loops waiting for work batches,
     /// runs the solver, and sends `TaskResult`s back.
     pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: crate::DebugOptions) -> Self {
-        let (work_tx, work_rx) = unbounded::<WorkItem>();
+        let (work_tx, work_rx) = unbounded::<WorkBatch>();
         let (result_tx, result_rx) = unbounded::<TaskResult>();
-        let stop = Arc::new(AtomicBool::new(false));
+        let batch_id = Arc::new(AtomicU64::new(0));
 
         let workers = (0..n_workers)
             .map(|_| {
-                let work_rx: Receiver<WorkItem> = work_rx.clone();
+                let work_rx: Receiver<WorkBatch> = work_rx.clone();
                 let result_tx: Sender<TaskResult> = result_tx.clone();
-                let stop = Arc::clone(&stop);
+                let current_batch = Arc::clone(&batch_id);
                 let algo = algo.clone();
 
                 std::thread::spawn(move || {
-                    while let Ok(item) = work_rx.recv() {
-                        if stop.load(Ordering::Relaxed) {
-                            // Drain without processing when stopped.
+                    while let Ok(batch) = work_rx.recv() {
+                        if batch.batch_id != current_batch.load(Ordering::Relaxed) {
                             continue;
                         }
-                        let (runtime, quality, status) =
-                            run_solver_inner(&algo, &item.config, item.hash, &item.instance_path, item.cutoff_time, debug.wrapper, debug.solver);
-                        // Still send the result even if stop was set mid-call;
-                        // ILS drains these as part of the reset() protocol.
-                        let _ = result_tx.send(TaskResult {
-                            neighbor_id: item.neighbor_id,
-                            instance_id: item.instance_id,
-                            hash: item.hash,
-                            runtime,
-                            quality,
-                            status,
-                        });
+                        loop {
+                            let index = batch.next_index.fetch_add(1, Ordering::Relaxed);
+                            let Some(&instance_index) = batch.missing_indices.get(index) else {
+                                break;
+                            };
+                            if batch.batch_id != current_batch.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let (instance_id, instance_path) =
+                                &batch.instances[instance_index];
+                            let (runtime, quality, status) =
+                                run_solver_inner(&algo, &batch.config, batch.hash, instance_path, batch.cutoff_time, debug.wrapper, debug.solver);
+                            let _ = result_tx.send(TaskResult {
+                                batch_id: batch.batch_id,
+                                neighbor_id: batch.neighbor_id,
+                                instance_id: *instance_id,
+                                hash: batch.hash,
+                                runtime,
+                                quality,
+                                status,
+                            });
+                        }
                     }
                 })
             })
             .collect();
 
         crate::debug_line(debug.main, &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()));
-        Scheduler { work_tx, result_tx, result_rx, stop, cutoff_time, debug, _workers: workers }
+        Scheduler {
+            work_tx,
+            result_tx,
+            result_rx,
+            batch_id,
+            n_workers,
+            #[cfg(test)]
+            submitted_work_batches: AtomicUsize::new(0),
+            cutoff_time,
+            debug,
+            _workers: workers,
+        }
     }
 
     /// Dispatch one batch of tasks.
     ///
     /// For each task, issues one bulk cache query; hits go directly to the
-    /// result channel, misses become `WorkItem`s sent to workers.
+    /// result channel, while misses are grouped into shared work batches.
     ///
-    /// Clears the stop flag so workers start processing again.
-    pub fn submit(&self, tasks: Vec<EvalTask>, cache: &Cache) -> Result<()> {
-        self.stop.store(false, Ordering::Relaxed);
+    /// Returns an id that identifies all results from this submission.
+    pub fn submit(&self, tasks: Vec<EvalTask>, cache: &Cache) -> Result<u64> {
+        let batch_id = self.batch_id.fetch_add(1, Ordering::Relaxed) + 1;
 
         let (mut n_hits, mut n_misses) = (0usize, 0usize);
+        #[cfg(test)]
+        let mut n_work_batches = 0usize;
         for task in tasks {
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
             let hits: HashMap<i64, CachedResult> = cache.get_batch(task.hash, &ids)?;
+            let mut missing_indices = Vec::with_capacity(task.instances.len() - hits.len());
 
-            for (instance_id, instance_path) in task.instances {
-                if let Some(cached) = hits.get(&instance_id) {
+            for (index, (instance_id, _)) in task.instances.iter().enumerate() {
+                if let Some(cached) = hits.get(instance_id) {
                     n_hits += 1;
                     let _ = self.result_tx.send(TaskResult {
+                        batch_id,
                         neighbor_id: task.neighbor_id,
-                        instance_id,
+                        instance_id: *instance_id,
                         hash: task.hash,
                         runtime: cached.runtime,
                         quality: cached.quality,
@@ -177,19 +208,35 @@ impl Scheduler {
                     });
                 } else {
                     n_misses += 1;
-                    let _ = self.work_tx.send(WorkItem {
-                        neighbor_id: task.neighbor_id,
-                        config: task.config.clone(),
-                        hash: task.hash,
-                        instance_id,
-                        instance_path,
-                        cutoff_time: self.cutoff_time,
-                    });
+                    missing_indices.push(index);
+                }
+            }
+
+            if !missing_indices.is_empty() {
+                let worker_slots = self.n_workers.min(missing_indices.len());
+                let batch = WorkBatch {
+                    batch_id,
+                    neighbor_id: task.neighbor_id,
+                    config: Arc::new(task.config),
+                    hash: task.hash,
+                    instances: task.instances,
+                    missing_indices: Arc::new(missing_indices),
+                    next_index: Arc::new(AtomicUsize::new(0)),
+                    cutoff_time: self.cutoff_time,
+                };
+                for _ in 0..worker_slots {
+                    let _ = self.work_tx.send(batch.clone());
+                    #[cfg(test)]
+                    {
+                        n_work_batches += 1;
+                    }
                 }
             }
         }
+        #[cfg(test)]
+        self.submitted_work_batches.store(n_work_batches, Ordering::Relaxed);
         crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}", crate::t(), n_hits + n_misses));
-        Ok(())
+        Ok(batch_id)
     }
 
     /// The result channel — ILS reads `TaskResult`s from here as they arrive.
@@ -197,13 +244,18 @@ impl Scheduler {
         &self.result_rx
     }
 
-    /// Signal workers to stop processing new items.
+    #[cfg(test)]
+    fn submitted_work_batches(&self) -> usize {
+        self.submitted_work_batches.load(Ordering::Relaxed)
+    }
+
+    /// Invalidate the current batch so workers skip its queued items.
     ///
     /// Workers finish their current solver call then skip remaining queued
     /// items.  The ILS should drain `results()` after calling this to consume
     /// any in-flight results before the next `submit()`.
     pub fn reset(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.batch_id.fetch_add(1, Ordering::Relaxed);
         crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: reset", crate::t()));
     }
 }
@@ -361,7 +413,10 @@ mod tests {
             neighbor_id: 7,
             config,
             hash,
-            instances: vec![(id1, paths[0].clone()), (id2, paths[1].clone())],
+            instances: Arc::new(vec![
+                (id1, paths[0].clone()),
+                (id2, paths[1].clone()),
+            ]),
         }], &cache).unwrap();
 
         let mut results = vec![];
@@ -389,5 +444,34 @@ mod tests {
         while sched.results().try_recv().is_ok() {}
         // Should be able to submit again without panic
         sched.submit(vec![], &cache).unwrap();
+    }
+
+    #[test]
+    fn scheduler_queues_batches_not_individual_instances() {
+        let cache = Cache::open(":memory:", false).unwrap();
+        let paths: Vec<String> = (0..10_000).map(|i| format!("i{i}.cnf")).collect();
+        let id_map = cache.load_instances(&paths).unwrap();
+        let instances = Arc::new(
+            paths.iter()
+                .map(|path| (id_map[path], path.clone()))
+                .collect(),
+        );
+        let config: Config = [("alpha".to_string(), "1".to_string())].into();
+        let sched = Scheduler::new(
+            4,
+            "true".to_string(),
+            10.0,
+            crate::DebugOptions::default(),
+        );
+
+        sched.submit(vec![EvalTask {
+            neighbor_id: 0,
+            hash: hash_config(&config),
+            config,
+            instances,
+        }], &cache).unwrap();
+
+        assert_eq!(sched.submitted_work_batches(), 4);
+        sched.reset();
     }
 }
