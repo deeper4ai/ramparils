@@ -15,6 +15,7 @@ from pathlib import Path
 
 FAILURE_QUALITY = 10_000_000.0
 DEFAULT_MEMORY_LIMIT_MB = 4096
+solver_process: subprocess.Popen[str] | None = None
 
 
 def parse_parameters(arguments: list[str]) -> dict[str, str]:
@@ -102,11 +103,27 @@ def apply_memory_limit(limit: int) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
+def terminate_solver() -> None:
+    global solver_process
+    if solver_process is None or solver_process.poll() is not None:
+        return
+    try:
+        os.killpg(solver_process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def handle_termination(signum: int, _frame: object) -> None:
+    terminate_solver()
+    raise SystemExit(128 + signum)
+
+
 def run(
     command: list[str], cutoff: float, memory_limit: int
 ) -> tuple[str, float, float]:
+    global solver_process
     started = time.monotonic()
-    process = subprocess.Popen(
+    solver_process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -115,11 +132,14 @@ def run(
         preexec_fn=partial(apply_memory_limit, memory_limit),
     )
     try:
-        stdout, stderr = process.communicate(timeout=cutoff)
+        stdout, stderr = solver_process.communicate(timeout=cutoff)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.communicate()
+        terminate_solver()
+        solver_process.communicate()
         return "timeout", cutoff, FAILURE_QUALITY
+    finally:
+        process = solver_process
+        solver_process = None
 
     elapsed = min(time.monotonic() - started, cutoff)
     status = solver_status(stdout)
@@ -132,6 +152,9 @@ def run(
 
 
 def main() -> int:
+    signal.signal(signal.SIGINT, handle_termination)
+    signal.signal(signal.SIGTERM, handle_termination)
+
     if len(sys.argv) < 3:
         print(
             f"usage: {Path(sys.argv[0]).name} INSTANCE CUTOFF [-name value ...]",

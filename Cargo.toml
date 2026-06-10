@@ -31,6 +31,9 @@ clap = { version = "4", features = ["derive"] }
 # Error handling
 anyhow = "1"
 
+# Unix signal and process-group management
+libc = "0.2"
+
 # Random number generation
 rand = "0.8"
 

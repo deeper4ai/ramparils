@@ -15,6 +15,7 @@ pub mod ils;       // ILS loop: local search, perturbation, acceptance
 // ---------------------------------------------------------------------------
 
 use std::io::Write;
+use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -27,6 +28,65 @@ static ERROR_LOG: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> =
     LazyLock::new(|| Mutex::new(None));
 /// Set to true when `--debug` is passed — controls stderr output.
 static DEBUG_STDERR: AtomicBool = AtomicBool::new(false);
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static ACTIVE_PROCESS_GROUPS: LazyLock<Mutex<HashSet<libc::pid_t>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+extern "C" fn handle_termination_signal(_: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::Relaxed);
+}
+
+/// Install CLI termination handlers. The handler only sets an atomic flag;
+/// worker threads perform process cleanup outside signal context.
+pub fn install_signal_handlers() -> anyhow::Result<()> {
+    unsafe {
+        if libc::signal(
+            libc::SIGINT,
+            handle_termination_signal as *const () as libc::sighandler_t,
+        )
+            == libc::SIG_ERR
+        {
+            return Err(anyhow::anyhow!("failed to install SIGINT handler"));
+        }
+        if libc::signal(
+            libc::SIGTERM,
+            handle_termination_signal as *const () as libc::sighandler_t,
+        )
+            == libc::SIG_ERR
+        {
+            return Err(anyhow::anyhow!("failed to install SIGTERM handler"));
+        }
+    }
+    Ok(())
+}
+
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn register_process_group(process_group: libc::pid_t) {
+    ACTIVE_PROCESS_GROUPS.lock().unwrap().insert(process_group);
+}
+
+pub(crate) fn unregister_process_group(process_group: libc::pid_t) {
+    ACTIVE_PROCESS_GROUPS.lock().unwrap().remove(&process_group);
+}
+
+pub fn terminate_active_process_groups() {
+    let groups: Vec<libc::pid_t> =
+        ACTIVE_PROCESS_GROUPS.lock().unwrap().iter().copied().collect();
+    for process_group in &groups {
+        unsafe {
+            libc::kill(-process_group, libc::SIGTERM);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for process_group in groups {
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+}
 
 /// Seconds elapsed since the first call to this function (process start).
 pub fn t() -> f64 {

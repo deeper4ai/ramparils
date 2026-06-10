@@ -154,7 +154,7 @@ pub fn run(
     let mut last_lm_score = lm_score;
 
     // --- Main ILS loop ---
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !crate::interrupted() {
         // Perturbation
         let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
         crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
@@ -163,7 +163,7 @@ pub fn run(
             &current, &instances[..n_runs], &scheduler, cache, &options, Some(incumbent_score), deadline,
         )?;
 
-        if Instant::now() >= deadline { break; }
+        if Instant::now() >= deadline || crate::interrupted() { break; }
 
         // BLS from the perturbed point — evaluate neighbours on n_runs instances
         if options.debug.main {
@@ -335,7 +335,7 @@ fn basic_local_search(
     let mut current_score = start_score;
     let mut changed = true;
 
-    while changed && Instant::now() < deadline {
+    while changed && Instant::now() < deadline && !crate::interrupted() {
         changed = false;
 
         let mut neighbors = neighbourhood(&current, space);
@@ -372,7 +372,7 @@ fn basic_local_search(
         'collect: loop {
             if n_done >= n { break; }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() { break; }
+            if remaining.is_zero() || crate::interrupted() { break; }
 
             let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
                 Ok(r) => r,
@@ -473,7 +473,7 @@ fn collect_one(
 
     while runtimes.len() < n_instances {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() { break; }
+        if remaining.is_zero() || crate::interrupted() { break; }
 
         let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
             Ok(r) => r,
@@ -599,6 +599,9 @@ pub fn iterative_deepening_ils(
     let mut best: Option<(Config, f64)> = None;
 
     for (depth, (n, c, t)) in schedule.iter().enumerate() {
+        if crate::interrupted() {
+            break;
+        }
         let elapsed = start.elapsed().as_secs_f64();
         let phase_remaining = t - elapsed;
         if phase_remaining <= 0.0 {

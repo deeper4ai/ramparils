@@ -70,6 +70,7 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
 }
 
 fn main() -> Result<()> {
+    ramparils::install_signal_handlers()?;
     let args = Args::parse();
 
     let scenario = Scenario::from_file(&args.scenariofile)?;
@@ -147,6 +148,10 @@ fn main() -> Result<()> {
             &mut cache,
         )?
     };
+    if ramparils::interrupted() {
+        ramparils::terminate_active_process_groups();
+        std::process::exit(130);
+    }
 
     ramparils::debug_line(main_debug, &format!("[{:8.2}s] ils: best score: {best_score:.6}", ramparils::t()));
 
