@@ -1,0 +1,13 @@
+# llm2smt QF_EUF configuration space
+preprocess_passes {0, 1, 2, 3, 4} [0]
+nary {true, false} [true]
+flatten {true, false} [true]
+nnf {false, true} [false]
+nnf_memo {false, true} [false] | nnf in {true}
+eq_bridge {false, true} [false]
+finite_domain_amo {true, false} [true]
+finite_domain_eq_defs {true, false} [true]
+theory_prop {true, false} [true]
+prop_interval {1, 2, 4, 8, 16, 32, 64, 128} [32]
+prop_assign_threshold {0.0, 0.1, 0.25, 0.5, 0.75, 1.0} [0.25]
+prop_delivery_budget {0, 100, 500, 1000, 5000, 20000} [1000]

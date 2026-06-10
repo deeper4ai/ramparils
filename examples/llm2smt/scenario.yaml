@@ -1,0 +1,21 @@
+algo: "python3 llm2smt_wrapper.py"
+paramfile: "params-llm2smt.txt"
+instance_file: "instances.txt"
+
+cutoff_time: 10.0
+tuner_timeout: 300.0
+run_obj: runtime
+overall_obj: mean
+
+approach: focused
+initial_fidelity: 4
+fidelity_step: 4
+perturbation_strength: 4
+bound_multiplier: 10.0
+pruning: true
+
+cores: 0
+cache_db: "llm2smt.dbcache"
+debug: true
+debug_log: "ramparils.log"
+error_log: "ramparils-errors.log"
