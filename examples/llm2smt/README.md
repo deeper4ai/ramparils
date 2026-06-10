@@ -11,16 +11,25 @@ Run the example from this directory:
 
 ```bash
 cd examples/llm2smt
-cargo run --release --manifest-path ../../Cargo.toml -- \
-  --scenariofile scenario.yaml
+ramparils --scenariofile scenario.yaml
 ```
+
+The working directory matters because the scenario refers to the wrapper,
+parameter file, instance list, cache, and logs using relative paths.
 
 By default the wrapper runs `llm2smt` from `PATH`. Override the executable when
 needed:
 
 ```bash
-LLM2SMT=/path/to/llm2smt cargo run --release \
-  --manifest-path ../../Cargo.toml -- --scenariofile scenario.yaml
+LLM2SMT=/path/to/llm2smt ramparils --scenariofile scenario.yaml
+```
+
+When developing RamParILS locally, run the same scenario through Cargo:
+
+```bash
+cd examples/llm2smt
+cargo run --release --manifest-path ../../Cargo.toml -- \
+  --scenariofile scenario.yaml
 ```
 
 The scenario starts FocusedILS at four instances per configuration and raises
