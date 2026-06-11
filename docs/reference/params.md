@@ -3,7 +3,9 @@
 Parameter files (`.params`) describe the configuration space: which parameters exist, their
 domains, defaults, conditional activation, and forbidden combinations.
 
-The format is identical to the original Ruby ParamILS `param_reader.rb`.
+RamParILS supports the discrete parameter syntax used by the original Ruby
+ParamILS implementation. Continuous ranges and other ParamILS variants are not
+supported; enumerate every allowed value explicitly.
 
 ## 🔢 Discrete parameters
 

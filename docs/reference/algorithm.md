@@ -67,6 +67,8 @@ for the objective.
 
 ---
 
+<a id="iterative-deepening"></a>
+
 ## 📈 Iterative deepening
 
 Iterative deepening (`iterative_deepening: true`) runs ILS in multiple phases with an exponential
@@ -80,10 +82,15 @@ Three growth factors control the schedule:
 
 | Field | Controls | Effect of larger value |
 |-------|----------|------------------------|
-| `lambda_n` | fraction of instances used in the first phase | more instances early → slower but more accurate initial filter |
-| `lambda_c` | fraction of `cutoff_time` used in the first phase | longer per-run cutoff early → more accurate but slower phases |
-| `lambda_t` | fraction of `tuner_timeout` given to the first phase | more time early → deeper first-phase search |
+| `lambda_n` | geometric instance-count growth | larger values use more instances in early phases |
+| `lambda_c` | geometric cutoff growth | larger values use longer cutoffs in early phases |
+| `lambda_t` | geometric cumulative-deadline growth | larger values give earlier phases later deadlines |
 
-All three default to `0.5`, giving a geometric doubling schedule.  Iterative deepening is most
-useful when the training set is large (hundreds of instances) and the cutoff time is long (tens
-of seconds), making a full-budget single run prohibitively slow at the start.
+All three default to `0.5`, giving an approximate geometric doubling schedule.
+The timeout values are cumulative deadlines measured from the start of
+iterative deepening, not independent budgets added together. Each phase gets
+the time remaining before its deadline.
+
+Iterative deepening is most useful when the training set is large (hundreds of
+instances) and the cutoff time is long (tens of seconds), making a full-budget
+single run prohibitively slow at the start.

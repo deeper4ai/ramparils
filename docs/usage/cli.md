@@ -13,10 +13,11 @@ YAML, making scenarios self-contained, reproducible, and easy to share.
 ## 🧭 Scenario file reference
 
 ```yaml
-# Required
+# Required: use instance_file or instances
 algo:          "ruby /path/to/solver_wrapper.rb"
 paramfile:     "/path/to/solver.params"
 instance_file: "data/train.txt"
+# instances:   ["data/one.cnf", "data/two.cnf"]
 cutoff_time:   5.0
 tuner_timeout: 300.0
 
@@ -49,9 +50,15 @@ error_log:             ~         # path or null
 |-------|------|-------------|
 | `algo` | string | Shell command used to invoke the target algorithm. Invoked as `<algo> <instance> <cutoff_time> -p1 v1 …` via `sh -c`. |
 | `paramfile` | string | Path to the `.params` file describing the parameter space (domains, defaults, conditionals, forbidden combinations). |
-| `instance_file` | string | Path to a text file listing training instance paths, one per line. Blank lines and `#` comments are ignored. Mutually exclusive with `instances` (Python only). |
+| `instance_file` | string | Path to a text file listing training instance paths, one per line. Blank lines and `#` comments are ignored. |
+| `instances` | list of strings | Inline training-instance paths. This works in YAML as well as Python. If both instance fields are set, `instances` takes precedence. |
 | `cutoff_time` | float | Per-run time limit in seconds. Passed to the target algorithm; the solver wrapper is expected to respect it. |
 | `tuner_timeout` | float | Total wall-clock budget for the tuner in seconds. RamParILS stops launching new evaluations once this is exceeded and returns the best configuration found. |
+
+Paths in the scenario, parameter file, and instance list are interpreted from
+the directory where `ramparils` is started, not from the scenario file's
+directory. Use absolute paths or run from a documented working directory when
+the scenario must be portable.
 
 ### 🎯 Objective
 
@@ -85,9 +92,9 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | Field | Default | Description |
 |-------|---------|-------------|
 | `iterative_deepening` | `false` | Enable iterative deepening. |
-| `lambda_n` | `0.5` | Fraction of training instances used in the first phase. Doubles each phase toward 1.0. |
-| `lambda_c` | `0.5` | Fraction of `cutoff_time` used in the first phase. Doubles each phase toward the full cutoff. |
-| `lambda_t` | `0.5` | Fraction of `tuner_timeout` allocated to the first phase. Doubles each phase. |
+| `lambda_n` | `0.5` | Geometric instance-count factor. Each later phase grows toward the full instance set; `0.5` produces approximate doubling. |
+| `lambda_c` | `0.5` | Geometric cutoff factor. Each later phase grows toward `cutoff_time`; `0.5` produces approximate doubling. |
+| `lambda_t` | `0.5` | Geometric cumulative-deadline factor. Each phase receives the time remaining before its scheduled deadline; `0.5` doubles successive deadlines toward `tuner_timeout`. |
 
 ### ⚙️ Execution
 

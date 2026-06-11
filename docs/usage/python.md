@@ -47,12 +47,16 @@ Tuning scenario.  All keys match the YAML fields in the [CLI reference](cli.md).
 | `cutoff_time` | float | Per-run time limit in seconds, passed to the target algorithm. |
 | `tuner_timeout` | float | Total wall-clock budget for the tuner in seconds. |
 
-Exactly one of the following must be supplied to specify instances:
+At least one of the following must be supplied to specify instances:
 
 | Key | Type | Description |
 |-----|------|-------------|
 | `instances` | list[str] | List of instance paths directly. |
 | `instance_file` | str | Path to a text file with one instance path per line. |
+
+If both are present, `instances` takes precedence. Relative paths are resolved
+from the Python process's current working directory, not from the parameter or
+instance-list file.
 
 **Optional keys** (all have defaults matching the CLI):
 

@@ -7,6 +7,6 @@ language    = "en"
 [output.html]
 site-url              = "/ramparils/"
 git-repository-url    = "https://github.com/deeper4ai/ramparils"
-edit-url-template     = "https://github.com/deeper4ai/ramparils/edit/main/docs/{path}"
+edit-url-template     = "https://github.com/deeper4ai/ramparils/edit/main/{path}"
 default-theme         = "ayu"
 additional-js         = ["docs/theme/sidebar.js"]

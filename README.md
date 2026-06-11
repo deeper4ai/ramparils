@@ -288,6 +288,11 @@ cargo build --release
 The E prover integration test requires external executables and may be slower
 than the unit tests.
 
+Preview the documentation with `./docs-serve.sh`. Maintainers can publish a
+clean, committed tree to
+[GitHub Pages](https://deeper4ai.github.io/ramparils/) with
+`./docs-deploy.sh`.
+
 ## 📚 Documentation
 
 - [Installation](docs/installation.md)

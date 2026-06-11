@@ -15,6 +15,10 @@ The solver is invoked as a shell command:
 - `<cutoff_time>` — per-run time limit in seconds
 - `-param val` pairs — active parameters in alphabetical order
 
+The complete command is passed to `sh -c`. Scenario files and parameter values
+must therefore be trusted, and wrappers should avoid paths or values that need
+shell quoting.
+
 Example:
 
 ```
