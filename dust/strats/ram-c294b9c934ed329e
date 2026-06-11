@@ -1,0 +1,1 @@
+--preprocess-passes 2 --eq-bridge --no-nary --no-finite-domain-amo --prop-interval 2 --prop-assign-threshold 0.5 --prop-delivery-budget 20000
