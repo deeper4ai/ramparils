@@ -114,11 +114,11 @@ pub fn run(
         None => {
             // No initial config: sample a handful of random configs, keep the best.
             let mut best = random_config(space, &mut rng);
-            let mut best_score = evaluate_config(&best, &instances[..n_runs], &scheduler, cache, &options, None, deadline)?;
+            let mut best_score = evaluate_config(&best, &instances[..n_runs], &scheduler, cache, options, space, None, deadline)?;
             for _ in 1..10 {
                 if Instant::now() >= deadline { break; }
                 let cfg = random_config(space, &mut rng);
-                let score = evaluate_config(&cfg, &instances[..n_runs], &scheduler, cache, &options, Some(best_score), deadline)?;
+                let score = evaluate_config(&cfg, &instances[..n_runs], &scheduler, cache, options, space, Some(best_score), deadline)?;
                 if score < best_score {
                     best_score = score;
                     best = cfg;
@@ -129,7 +129,7 @@ pub fn run(
     };
 
     let mut current_score =
-        evaluate_config(&current, &instances[..n_runs], &scheduler, cache, &options, None, deadline)?;
+        evaluate_config(&current, &instances[..n_runs], &scheduler, cache, options, space, None, deadline)?;
 
     let mut incumbent = current.clone();
     let mut incumbent_score = current_score;
@@ -137,7 +137,7 @@ pub fn run(
     // --- First BLS ---
     let (lm, lm_score) = basic_local_search(
         current, current_score,
-        instances, n_runs, &scheduler, cache, &options, space,
+        instances, n_runs, &scheduler, cache, options, space,
         incumbent_score, &mut rng, deadline,
     )?;
     if lm_score < incumbent_score {
@@ -145,7 +145,7 @@ pub fn run(
         incumbent = lm.clone();
         incumbent_score = lm_score;
         if options.debug.main {
-            let hash = hash_config(&incumbent);
+            let hash = hash_config(&active_config(&incumbent, space));
             crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
             print_diff(options.debug.main, &old, &incumbent, space);
         }
@@ -160,7 +160,7 @@ pub fn run(
         crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
         current = perturbed;
         current_score = evaluate_config(
-            &current, &instances[..n_runs], &scheduler, cache, &options, Some(incumbent_score), deadline,
+            &current, &instances[..n_runs], &scheduler, cache, options, space, Some(incumbent_score), deadline,
         )?;
 
         if Instant::now() >= deadline || crate::interrupted() { break; }
@@ -172,7 +172,7 @@ pub fn run(
         }
         let (new_lm, new_lm_score) = basic_local_search(
             current, current_score,
-            instances, n_runs, &scheduler, cache, &options, space,
+            instances, n_runs, &scheduler, cache, options, space,
             incumbent_score, &mut rng, deadline,
         )?;
 
@@ -182,7 +182,7 @@ pub fn run(
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
             if options.debug.main {
-                let hash = hash_config(&incumbent);
+                let hash = hash_config(&active_config(&incumbent, space));
                 crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
                 print_diff(options.debug.main, &old, &incumbent, space);
             }
@@ -194,7 +194,7 @@ pub fn run(
             if next > n_runs {
                 n_runs = next;
                 incumbent_score = evaluate_config(
-                    &incumbent, &instances[..n_runs], &scheduler, cache, &options, None, deadline,
+                    &incumbent, &instances[..n_runs], &scheduler, cache, options, space, None, deadline,
                 )?;
                 crate::debug_line(options.debug.main, &format!(
                     "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
@@ -205,7 +205,7 @@ pub fn run(
 
         // Acceptance criterion: keep new local opt only if it dominates the last one
         let (accepted, accepted_score) =
-            acceptance_criterion(new_lm, new_lm_score, last_lm.clone(), last_lm_score, &options);
+            acceptance_criterion(new_lm, new_lm_score, last_lm.clone(), last_lm_score, options);
         last_lm = accepted;
         last_lm_score = accepted_score;
     }
@@ -289,21 +289,24 @@ fn acceptance_criterion(
 /// Cache hits are served immediately; misses are dispatched to worker threads.
 /// Adaptive capping prunes early if the running mean exceeds
 /// `bound_multiplier × incumbent_score`.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_config(
     config: &Config,
     instances: &[(i64, String)],
     scheduler: &Scheduler,
     cache: &mut Cache,
     options: &IlsOptions,
+    space: &ParamSpace,
     incumbent_score: Option<f64>,
     deadline: Instant,
 ) -> Result<f64> {
     if instances.is_empty() { return Ok(0.0); }
 
-    let hash = hash_config(config);
+    let eval_config = active_config(config, space);
+    let hash = hash_config(&eval_config);
     let batch_id = scheduler.submit(vec![EvalTask {
         neighbor_id: 0,
-        config: config.clone(),
+        config: eval_config,
         hash,
         instances: Arc::new(instances.to_vec()),
     }], cache)?;
@@ -352,10 +355,11 @@ fn basic_local_search(
         // Submit all neighbours (evaluated on the first n_runs instances only)
         let shared_instances = Arc::new(eval_instances.to_vec());
         let tasks: Vec<EvalTask> = neighbors.iter().enumerate().map(|(i, cfg)| {
-            let hash = hash_config(cfg);
+            let eval_config = active_config(cfg, space);
+            let hash = hash_config(&eval_config);
             EvalTask {
                 neighbor_id: i,
-                config: cfg.clone(),
+                config: eval_config,
                 hash,
                 instances: Arc::clone(&shared_instances),
             }
@@ -532,6 +536,16 @@ fn compute_score(runtimes: &[f64], qualities: &[f64], options: &IlsOptions) -> f
     }
 }
 
+fn active_config(config: &Config, space: &ParamSpace) -> Config {
+    space.active_params(config)
+        .into_iter()
+        .filter_map(|param| {
+            config.get(&param.name)
+                .map(|value| (param.name.clone(), value.clone()))
+        })
+        .collect()
+}
+
 fn initial_n_runs(initial_fidelity: usize, n_total: usize) -> usize {
     initial_fidelity.max(1).min(n_total)
 }
@@ -687,6 +701,16 @@ mod tests {
         space
     }
 
+    fn conditional_space() -> ParamSpace {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "mode {{fast, slow}} [fast]").unwrap();
+        writeln!(f, "limit {{1, 2}} [1] | mode in {{slow}}").unwrap();
+        let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
+        drop(f);
+        space
+    }
+
     fn cfg(pairs: &[(&str, &str)]) -> Config {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
@@ -715,6 +739,20 @@ mod tests {
         // From x=2,y=a: can go to x=1,y=a (ok) or x=2,y=b (forbidden) → 1 neighbor
         assert_eq!(n.len(), 1);
         assert_eq!(n[0]["x"], "1");
+    }
+
+    #[test]
+    fn evaluation_config_omits_inactive_parameters() {
+        let space = conditional_space();
+        let first = cfg(&[("mode", "fast"), ("limit", "1")]);
+        let second = cfg(&[("mode", "fast"), ("limit", "2")]);
+
+        let first_active = active_config(&first, &space);
+        let second_active = active_config(&second, &space);
+
+        assert_eq!(first_active, cfg(&[("mode", "fast")]));
+        assert_eq!(first_active, second_active);
+        assert_eq!(hash_config(&first_active), hash_config(&second_active));
     }
 
     #[test]
@@ -836,6 +874,7 @@ mod tests {
             &scheduler,
             &mut cache,
             &options,
+            &simple_space(),
             None,
             started + Duration::from_secs(2),
         ).unwrap();

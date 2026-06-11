@@ -1,4 +1,4 @@
-# llm2smt tuning example
+# 🧪 llm2smt tuning example
 
 This example tunes the `llm2smt` QF_EUF solver without `solverpy`. The wrapper
 uses only the Python standard library and translates RamParILS parameter pairs

@@ -1,8 +1,8 @@
-# Solver wrapper protocol
+# 🔌 Solver wrapper protocol
 
 RamParILS communicates with the target algorithm via a simple subprocess protocol.
 
-## Invocation
+## 📥 Invocation
 
 The solver is invoked as a shell command:
 
@@ -21,7 +21,7 @@ Example:
 ruby /path/to/saps_wrapper.rb /data/inst1.cnf 5.0 -alpha 1.189 -rho 0.5 -ps 0.1 -wp 0.03
 ```
 
-## Output
+## 📤 Output
 
 The solver must print a result line to **stdout**:
 
@@ -31,14 +31,20 @@ The solver must print a result line to **stdout**:
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `status` | `OK`, `TIMEOUT`, `CRASHED` | Outcome of the run |
+| `status` | text | Outcome of the run; stored verbatim in the cache |
 | `runtime` | float | Actual runtime in seconds (capped to `cutoff_time`) |
-| `quality` | float | Solution quality (used when `run_obj: quality`) |
+| `quality` | float | Numeric cost to minimise when `run_obj: quality` |
 
-The result line may appear anywhere in stdout — other output is ignored.
-If no result line is found, the run is treated as a timeout: runtime is set to `cutoff_time`.
+The result line may appear anywhere in stdout; other output is ignored.
+RamParILS stores `status` for reporting but does not use it when scoring.
+The wrapper must therefore encode timeouts, crashes, and unsolved cases as an
+appropriate runtime or quality penalty.
 
-## Examples
+If no valid result line is found, the status becomes `UNKNOWN`, runtime is set
+to `cutoff_time`, and quality is set to `10000000`. `UNKNOWN` results are not
+written to the persistent cache.
+
+## 🧪 Examples
 
 Successful run:
 
@@ -52,7 +58,7 @@ Timeout:
 #%# RamParIls #%# TIMEOUT, 5.0, 0.0
 ```
 
-## Minimal wrapper skeleton
+## 🦴 Minimal wrapper skeleton
 
 ```ruby
 #!/usr/bin/env ruby

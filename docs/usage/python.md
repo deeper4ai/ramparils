@@ -1,4 +1,4 @@
-# Python API
+# 🐍 Python API
 
 ```python
 import ramparils
@@ -10,7 +10,7 @@ native Rust extension built with PyO3, so there is no subprocess overhead — th
 parallel evaluation, and SQLite cache all run in-process.  All tuning options are passed as
 fields in the `scenario` dict, matching the YAML keys documented in the [CLI reference](cli.md).
 
-## specialize
+## 🐏 `specialize`
 
 ```python
 ramparils.specialize(strategy, scenario) -> dict[str, str]
@@ -19,11 +19,14 @@ ramparils.specialize(strategy, scenario) -> dict[str, str]
 Specialize a strategy on a set of benchmark instances using ILS.
 
 Runs Iterated Local Search starting from `strategy`, evaluating `(configuration, instance)` pairs
-in parallel, and returns the best configuration found within the time budget.  Results are cached
-in a persistent SQLite database so that repeated calls with the same algorithm and instances never
-redo solver invocations.
+in parallel, and returns the best configuration found within the time budget. Results may be
+cached in SQLite when `cache_db` names a file.
 
-### Arguments
+Cache entries are keyed only by the active configuration and instance path. Use a separate
+cache when the algorithm command, cutoff, objective, solver version, wrapper behavior, or random
+seed changes. Reusing an incompatible cache can silently return stale results.
+
+### 📥 Arguments
 
 **`strategy`** — `dict[str, str]`
 
@@ -55,9 +58,9 @@ Exactly one of the following must be supplied to specify instances:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `run_obj` | `"runtime"` | `"runtime"` or `"quality"`. |
+| `run_obj` | `"runtime"` | Numeric value to minimise: `"runtime"` or `"quality"`. Convert maximisation objectives to costs in the wrapper. |
 | `overall_obj` | `"mean"` | `"mean"` or `"median"`. |
-| `approach` | `"focused"` | `"focused"`, `"basic"`, or `"random"`. |
+| `approach` | `"focused"` | `"focused"`, `"basic"`, or `"random"`; currently `random` follows the same full-fidelity ILS path as `basic`. |
 | `perturbation_strength` | `4` | Neighbourhood steps per perturbation. |
 | `initial_fidelity` | `1` | Initial instances per configuration in FocusedILS, capped by the instance count. |
 | `fidelity_step` | `1` | Instances added at each FocusedILS fidelity increase. |
@@ -77,17 +80,21 @@ Exactly one of the following must be supplied to specify instances:
 | `error_log` | `None` | Write failed solver runs to this file. |
 | `test_instance_file` | `None` | Reserved for future use. |
 
-### Returns
+FocusedILS uses the first N entries from `instances` or `instance_file` while
+fidelity grows. Put a representative ordering in the list; RamParILS does not
+shuffle it automatically.
+
+### 📤 Returns
 
 `dict[str, str]` — The best configuration found.  Only *active* parameters are included
 (inactive conditional parameters are omitted).
 
-### Raises
+### ⚠️ Raises
 
 `RuntimeError` — If the scenario is invalid, the instance list is empty, the paramfile cannot
 be parsed, or the cache cannot be opened.
 
-## Example
+## 🧪 Example
 
 ```python
 import ramparils

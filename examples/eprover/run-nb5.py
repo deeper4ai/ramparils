@@ -38,10 +38,10 @@ result = ramparils.specialize(
         "tuner_timeout": 600.0,
         "run_obj":       "quality",
         "overall_obj":   "mean",
+        "cache_db":      str(HERE / "eprover-bushy010.dbcache"),
+        "cores":         20,
+        "debug_log":     str(HERE / "ramparils-nb5-py.log"),
     },
-    cache_db=str(HERE / "eprover-bushy010.dbcache"),
-    cores=20,
-    debug_log=str(HERE / "ramparils-nb5-py.log"),
 )
 
 

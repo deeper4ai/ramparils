@@ -17,8 +17,9 @@ def specialize(
     ``(configuration, instance)`` pairs in parallel, and returns the best
     configuration found within the time budget.
 
-    Results are cached in a persistent SQLite database so that repeated calls
-    with the same algorithm and instances never redo solver invocations.
+    Results may be cached in SQLite when ``scenario["cache_db"]`` names a file.
+    Cache entries are keyed only by the active configuration and instance
+    path, so use a separate cache when solver semantics change.
 
     Args:
         strategy: Initial parameter configuration as ``{name: value}`` strings.
@@ -60,8 +61,8 @@ def specialize(
             - **lambda_t** (*float*, default ``0.5``) — iterative deepening timeout factor.
             - **cores** (*int*, default ``0``) — parallel workers; ``0`` uses all available cores.
             - **num_run** (*int*, default ``0``) — run index / random seed (reserved).
-            - **cache_db** (*str*, default ``"paramils_cache.db"``) — path to the SQLite cache.
-              Use ``":memory:"`` for an in-process cache that is not persisted.
+            - **cache_db** (*str*, default ``":memory:"``) — path to the SQLite cache.
+              The default is an in-process cache that is not persisted.
             - **debug** (*bool*, default ``False``) — print new incumbents and scores to stderr.
             - **debug_wrapper** (*bool*, default ``False``) — print every solver invocation.
             - **debug_solver** (*bool*, default ``False``) — print every solver result.

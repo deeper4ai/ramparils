@@ -1,4 +1,4 @@
-# Glossary
+# 📖 Glossary
 
 ---
 
@@ -10,10 +10,10 @@ inactive parameters are omitted from the command line entirely.
 ---
 
 **Adaptive capping** (see also: *pruning*)
-An early-stopping rule that abandons evaluation of a configuration once its accumulated
-runtime exceeds `bound_multiplier × incumbent_runtime`.  At that point the configuration
-cannot possibly beat the incumbent, so further evaluation is wasteful.  Controlled by the
-`pruning` and `bound_multiplier` scenario fields.
+A heuristic early-stopping rule that abandons evaluation when a candidate's partial mean
+exceeds `bound_multiplier × incumbent_score`. Later results could lower the final mean, so
+capping can change the search trajectory. Controlled by the `pruning` and `bound_multiplier`
+scenario fields.
 
 ---
 
@@ -39,10 +39,16 @@ Adaptive capping uses this as the ceiling for individual run runtimes.
 ---
 
 **Dominance** (FocusedILS)
-Configuration θ₁ *dominates* θ₂ when θ₁ has been evaluated on at least as many instances
-as θ₂ and achieves equal or better performance on every one of them.
-FocusedILS accepts a new configuration only if it can dominate the incumbent on the
-instances evaluated so far, avoiding unnecessary full evaluations of poor candidates.
+In the current implementation, configuration θ₁ dominates θ₂ when it has been evaluated
+at at least the same fidelity and has a strictly lower aggregate score. Ties do not count
+as improvements.
+
+---
+
+**Fidelity**
+The number of leading training instances used to score each configuration. FocusedILS starts
+at `initial_fidelity` and grows by `fidelity_step` when the incumbent survives a challenge.
+Instances are taken in list order and are not shuffled.
 
 ---
 
@@ -56,8 +62,8 @@ exploration.
 
 **Incumbent**
 The best configuration found so far during the ILS run.
-Updated whenever a new configuration is found that dominates (FocusedILS) or outperforms
-(BasicILS) the current incumbent.  The final incumbent is returned as the result.
+Updated whenever a new configuration has a strictly lower aggregate score at the required
+fidelity. The final incumbent is returned as the result.
 
 ---
 
@@ -93,7 +99,7 @@ neighbours in parallel.
 **Objective**
 What the tuner is trying to optimise.
 `run_obj: runtime` minimises the mean (or median) solver runtime across instances;
-`run_obj: quality` maximises the mean (or median) solution value returned by the solver.
+`run_obj: quality` minimises the mean (or median) numeric cost returned by the solver.
 See also: *overall objective*.
 
 ---
@@ -120,15 +126,14 @@ a uniformly sampled value from its domain.  Larger values jump further in the sp
 ---
 
 **Pruning** (see also: *adaptive capping*)
-Shorthand for adaptive capping: early termination of a configuration's evaluation when
-it is provably worse than the incumbent.  Enabled by default (`pruning: true`).
+Shorthand for adaptive capping: heuristic early termination when a candidate's partial
+mean exceeds its configured bound. Enabled by default (`pruning: true`).
 
 ---
 
 **Run objective** (`run_obj`)
 What a single solver invocation measures: `runtime` (wall-clock seconds) or `quality`
-(a scalar value returned by the solver).  Determines how the solver wrapper's result line
-is interpreted and how configurations are compared.
+(a scalar cost returned by the solver). Both objectives are minimised.
 
 ---
 
@@ -147,9 +152,10 @@ the solver's behaviour.
 ---
 
 **Strategy hash**
-A compact fingerprint (64-bit integer) of a configuration used as a cache key.
-Computed from the sorted `param=value` pairs.  Two configurations with the same active
-parameters and values always produce the same hash.
+A compact fingerprint (64-bit integer) of the active configuration used as part of the
+cache key. It is computed from the sorted active `param=value` pairs, so inactive
+conditional values do not create duplicate cache entries. The hash is not guaranteed
+to remain portable across Rust versions.
 
 ---
 

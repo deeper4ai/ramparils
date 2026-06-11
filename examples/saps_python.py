@@ -22,9 +22,9 @@ result = ramparils.specialize(
         ],
         "cutoff_time":   5.0,
         "tuner_timeout": 30.0,
+        "cache_db":      "/tmp/ramparils_saps_cache.db",
+        "cores":         4,
     },
-    cache_db="/tmp/ramparils_saps_cache.db",
-    cores=4,
 )
 
 print("Best config found:")

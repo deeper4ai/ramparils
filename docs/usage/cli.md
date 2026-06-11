@@ -1,4 +1,4 @@
-# CLI
+# ⌨️ CLI
 
 ```bash
 ramparils --scenariofile path/to/scenario.yaml
@@ -10,7 +10,7 @@ YAML, making scenarios self-contained, reproducible, and easy to share.
 
 ---
 
-## Scenario file reference
+## 🧭 Scenario file reference
 
 ```yaml
 # Required
@@ -43,7 +43,7 @@ debug_log:             ~         # path or null
 error_log:             ~         # path or null
 ```
 
-### Required fields
+### 🔑 Required fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -53,25 +53,29 @@ error_log:             ~         # path or null
 | `cutoff_time` | float | Per-run time limit in seconds. Passed to the target algorithm; the solver wrapper is expected to respect it. |
 | `tuner_timeout` | float | Total wall-clock budget for the tuner in seconds. RamParILS stops launching new evaluations once this is exceeded and returns the best configuration found. |
 
-### Objective
+### 🎯 Objective
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `run_obj` | `runtime` | What a single run optimises: `runtime` (minimise) or `quality` (maximise). Use `quality` when the algorithm always runs to completion and returns a solution value. |
+| `run_obj` | `runtime` | Which numeric value to minimise: `runtime` or `quality`. For maximisation problems, make the wrapper convert utility to a cost, for example by negating it. |
 | `overall_obj` | `mean` | How per-run results are aggregated across instances: `mean` or `median`. `median` is more robust to outliers but ignores magnitude. |
 
-### Algorithm
+### 🔍 Algorithm
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `approach` | `focused` | ILS variant. `focused` (default) uses adaptive dominance-based comparison and is typically 5–20× more efficient than `basic`. `basic` evaluates every configuration on exactly N instances. `random` samples uniformly — useful as a baseline. See [Algorithm](../reference/algorithm.md). |
+| `approach` | `focused` | Search mode. `focused` (default) starts at `initial_fidelity` instances and increases fidelity when the incumbent survives a challenge. `basic` uses all instances from the start. `random` currently follows the same full-fidelity ILS path as `basic`; it is not an independent random-search baseline. See [Algorithm](../reference/algorithm.md). |
 | `perturbation_strength` | `4` | Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum. |
 | `initial_fidelity` | `1` | Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count. |
 | `fidelity_step` | `1` | Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of `0` are treated as `1`. |
-| `bound_multiplier` | `10.0` | Adaptive capping threshold. A configuration is abandoned early if its accumulated runtime exceeds `bound_multiplier × incumbent_runtime`. Lower values prune more aggressively (faster but riskier); higher values are more conservative. |
-| `pruning` | `true` | Enable adaptive capping. Disable only for debugging or when `run_obj: quality` and pruning is not meaningful. |
+| `bound_multiplier` | `10.0` | Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds `bound_multiplier × incumbent_score`. Lower values prune more aggressively and can change search results. |
+| `pruning` | `true` | Enable heuristic capping. Disable it when exact uncapped comparisons are required or when partial means are not meaningful for the objective. |
 
-### Iterative deepening
+FocusedILS uses the first N entries from `instance_file`, not a random sample.
+Order the file deliberately or shuffle it before a run when early prefixes
+should represent the full training set.
+
+### 📈 Iterative deepening
 
 Runs multiple ILS phases with an exponential schedule.  Early phases use fewer instances and a
 shorter cutoff to rapidly explore the space; later phases refine the best region with the full
@@ -85,7 +89,7 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | `lambda_c` | `0.5` | Fraction of `cutoff_time` used in the first phase. Doubles each phase toward the full cutoff. |
 | `lambda_t` | `0.5` | Fraction of `tuner_timeout` allocated to the first phase. Doubles each phase. |
 
-### Execution
+### ⚙️ Execution
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -93,7 +97,12 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. |
 | `num_run` | `0` | Run index, reserved for future use as a random seed. Has no effect currently. |
 
-### Debug
+Cache entries are keyed only by the active configuration and instance path.
+The algorithm command, cutoff, objective, solver version, wrapper behavior,
+and random seed are not included. Use a separate cache if any of them change;
+otherwise stale results may be reused without warning.
+
+### 🩺 Debug
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -106,7 +115,7 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 
 ---
 
-## Output
+## 📤 Output
 
 The best configuration found is printed to stdout as `-param1 val1 -param2 val2 …`
 (active parameters only, alphabetically sorted):

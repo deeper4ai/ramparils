@@ -1,11 +1,11 @@
-# Parameter file format
+# 🎛️ Parameter file format
 
 Parameter files (`.params`) describe the configuration space: which parameters exist, their
 domains, defaults, conditional activation, and forbidden combinations.
 
 The format is identical to the original Ruby ParamILS `param_reader.rb`.
 
-## Discrete parameters
+## 🔢 Discrete parameters
 
 ```
 name {val1, val2, val3, ...} [default]
@@ -20,7 +20,7 @@ rho   {0, 0.17, 0.5, 1}                               [0.5]
 
 Values are always strings. Numeric values are parsed by the target algorithm.
 
-## Conditional parameters
+## 🔀 Conditional parameters
 
 A conditional parameter is only *active* (included in the command line) when its parent has a
 specific value:
@@ -39,7 +39,7 @@ noise_param {0.0, 0.1, 0.5} [0.1] | noise_type in {walk}
 `noise_param` is only passed to the algorithm when `noise_type = walk`. Otherwise it is omitted
 from the command line.
 
-## Forbidden combinations
+## ⛔ Forbidden combinations
 
 A forbidden combination prevents specific joint assignments from being evaluated:
 
@@ -55,7 +55,7 @@ Example:
 
 Any configuration where `alpha=1.01` **and** `rho=0` simultaneously is skipped during search.
 
-## Comments
+## 💬 Comments
 
 Lines starting with `#` and trailing `#...` are ignored:
 
@@ -64,7 +64,7 @@ Lines starting with `#` and trailing `#...` are ignored:
 alpha {1.01, 1.189} [1.189]   # inline comment
 ```
 
-## Full example
+## 🧩 Full example
 
 ```
 # SAPS parameters

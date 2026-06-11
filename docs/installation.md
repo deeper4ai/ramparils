@@ -1,12 +1,12 @@
-# Installation
+# ⚙️ Installation
 
-## Python extension (pip)
+## 📦 Python extension (pip)
 
 ```bash
 pip install ramparils
 ```
 
-## CLI binary
+## 🦀 CLI binary
 
 Clone the repo and build with Cargo:
 
@@ -19,7 +19,7 @@ cargo build --release
 
 Requires [Rust 1.85+](https://rustup.rs).
 
-## Python extension (from source)
+## 🛠️ Python extension (from source)
 
 ```bash
 git clone https://github.com/deeper4ai/ramparils.git
@@ -28,7 +28,7 @@ pip install maturin
 maturin develop --features python
 ```
 
-## Verify
+## ✅ Verify
 
 ```python
 import ramparils
