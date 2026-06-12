@@ -72,6 +72,8 @@ fn extract_scenario(d: &Bound<'_, PyDict>) -> PyResult<Scenario> {
     Ok(Scenario {
         algo:                  get_str("algo")?,
         paramfile:             get_str("paramfile")?,
+        initial_config:        None,
+        initial_config_file:   None,
         instance_file:         opt_str("instance_file")?,
         instances:             d.get_item("instances")?.map(|v| v.extract::<Vec<String>>()).transpose()?,
         test_instance_file:    opt_str("test_instance_file")?,

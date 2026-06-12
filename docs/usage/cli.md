@@ -18,6 +18,10 @@ algo:          "ruby /path/to/solver_wrapper.rb"
 paramfile:     "/path/to/solver.params"
 instance_file: "data/train.txt"
 # instances:   ["data/one.cnf", "data/two.cnf"]
+initial_config:
+  engine: quick
+  threads: 4
+# initial_config_file: "initial-config.yaml"  # alternative to initial_config
 cutoff_time:   5.0
 tuner_timeout: 300.0
 
@@ -59,6 +63,33 @@ Paths in the scenario, parameter file, and instance list are interpreted from
 the directory where `ramparils` is started, not from the scenario file's
 directory. Use absolute paths or run from a documented working directory when
 the scenario must be portable.
+
+### Initial configuration
+
+Use either `initial_config` for an inline YAML mapping or
+`initial_config_file` for a file containing the same mapping:
+
+```yaml
+initial_config:
+  engine: quick
+  threads: 4
+  use_preprocessing: true
+```
+
+```yaml
+initial_config_file: "initial-config.yaml"
+```
+
+The two fields are mutually exclusive. An explicit initial configuration must
+contain every parameter from the parameter file, including conditional
+parameters that are initially inactive. Parameter names and values are
+validated against the parameter space, and forbidden configurations are
+rejected. YAML string, numeric, and boolean scalar values are accepted.
+
+When neither field is present, RamParILS retains its previous behavior and
+starts from the defaults in square brackets in the parameter file.
+`initial_config_file` is interpreted from the directory where `ramparils` is
+started.
 
 ### 🎯 Objective
 
@@ -124,12 +155,21 @@ otherwise stale results may be reused without warning.
 
 ## 📤 Output
 
-The best configuration found is printed to stdout as `-param1 val1 -param2 val2 …`
-(active parameters only, alphabetically sorted):
+The complete best configuration is printed to stdout as an alphabetically
+ordered YAML mapping:
 
-```
--alpha 1.256 -ps 0.1 -rho 0.5 -wp 0.03
+```yaml
+alpha: '1.256'
+ps: '0.1'
+rho: '0.5'
+wp: '0.03'
 ```
 
-This format is directly compatible with Grackle's strategy parsing.
-Inactive conditional parameters are omitted — they are irrelevant given the active parameter values.
+Values are YAML strings so they preserve the parameter-file representation.
+Inactive conditional parameters are included, making the output directly
+usable as a future `initial_config` or `initial_config_file`.
+
+When `debug_log` is configured, the final YAML mapping is also written there.
+Every improved incumbent is recorded in the log with `hash=<hash>` followed
+by its complete YAML configuration. The hash identifies the active
+configuration used by the evaluation cache.

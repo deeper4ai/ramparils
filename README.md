@@ -180,10 +180,13 @@ Then run:
 ramparils --scenariofile scenario.yaml
 ```
 
-The best active parameters are printed to stdout in wrapper-ready form:
+The complete best configuration is printed to stdout as YAML:
 
-```text
--engine quick -factor 1.2 -restart geometric -threads 8
+```yaml
+engine: quick
+factor: '1.2'
+restart: geometric
+threads: '8'
 ```
 
 All tuning options live in the scenario file, keeping runs reproducible and
@@ -235,6 +238,7 @@ including parameters that may become inactive. See the
 |---|---|
 | `algo` | Shell command for the target algorithm or wrapper |
 | `paramfile` | ParamILS-compatible parameter-space file |
+| `initial_config` / `initial_config_file` | Optional complete ILS starting configuration, inline or in a YAML file |
 | `instance_file` / `instances` | Training instances; use exactly one |
 | `cutoff_time` | Per-solver-run limit in seconds |
 | `tuner_timeout` | Total tuning budget in seconds |

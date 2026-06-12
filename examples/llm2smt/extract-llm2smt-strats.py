@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import shlex
 from pathlib import Path
@@ -16,10 +17,11 @@ from types import ModuleType
 
 INITIAL_MARKER = "ils: initial config:"
 TIMESTAMP_LINE = re.compile(r"^\[\s*\d")
-CONFIG_LINE = re.compile(r"^\s+([A-Za-z0-9_]+):\s+(.+?)\s*$")
+CONFIG_LINE = re.compile(r"^\s*([A-Za-z0-9_]+):\s+(.+?)\s*$")
 INCUMBENT_LINE = re.compile(
-    r"ils: new incumbent: hash=([0-9a-fA-F]+)\b"
+    r"ils: new incumbent: (?:hash=|ram-)([0-9a-fA-F]+)\b"
 )
+YAML_CONFIG_LINE = re.compile(r"^([A-Za-z0-9_]+):\s+(.+?)\s*$")
 CHANGE_LINE = re.compile(
     r"^\s+([A-Za-z0-9_]+):\s+(.+?)\s+->\s+(.+?)\s*$"
 )
@@ -27,6 +29,14 @@ PARAM_LINE = re.compile(
     r"^([A-Za-z0-9_]+)\s+\{[^}]*\}\s+\[([^]]+)\]"
     r"(?:\s*\|\s*([A-Za-z0-9_]+)\s+in\s+\{([^}]*)\})?$"
 )
+
+
+def parse_yaml_scalar(value: str) -> str:
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    if value.startswith('"') and value.endswith('"'):
+        return json.loads(value)
+    return value
 
 
 def parse_paramfile(
@@ -93,7 +103,7 @@ def parse_initial_config(lines: list[str]) -> tuple[dict[str, str], int]:
         while cursor < len(lines) and not TIMESTAMP_LINE.match(lines[cursor]):
             match = CONFIG_LINE.match(lines[cursor])
             if match:
-                config[match.group(1)] = match.group(2)
+                config[match.group(1)] = parse_yaml_scalar(match.group(2))
             cursor += 1
 
         if not config:
@@ -119,8 +129,13 @@ def parse_incumbents(
         hash_value = incumbent.group(1).lower()
         index += 1
         changes = 0
+        full_config: dict[str, str] = {}
 
         while index < len(lines) and not TIMESTAMP_LINE.match(lines[index]):
+            item = YAML_CONFIG_LINE.match(lines[index])
+            if item:
+                name, value = item.groups()
+                full_config[name] = parse_yaml_scalar(value)
             change = CHANGE_LINE.match(lines[index])
             if change:
                 name, old_value, new_value = change.groups()
@@ -138,9 +153,11 @@ def parse_incumbents(
                 changes += 1
             index += 1
 
-        if changes == 0:
+        if full_config:
+            config = full_config
+        elif changes == 0:
             raise ValueError(
-                f"incumbent {hash_value}: no configuration changes found"
+                f"incumbent {hash_value}: no configuration found"
             )
         incumbents.append((hash_value, config.copy()))
 

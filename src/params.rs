@@ -5,11 +5,20 @@
 //!   child {a, b} [a] | parent in {val1}          # conditional: only active when parent=val1
 //!   {alpha=1.01, rho=0}                          # forbidden combination
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context, Result};
 
 /// A configuration is a map from parameter name → value string.
 pub type Config = HashMap<String, String>;
+
+/// Serialize a complete configuration as a deterministically ordered YAML mapping.
+pub fn config_to_yaml(config: &Config) -> Result<String> {
+    let ordered: BTreeMap<&str, &str> = config
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    serde_yaml::to_string(&ordered).context("failed to serialize configuration as YAML")
+}
 
 /// A single parameter: its name, ordered domain, default, and optional condition.
 #[derive(Debug, Clone)]
@@ -161,6 +170,38 @@ impl ParamSpace {
     /// Default configuration: every param at its default value.
     pub fn default_config(&self) -> Config {
         self.params.iter().map(|p| (p.name.clone(), p.default.clone())).collect()
+    }
+
+    /// Validate that `config` contains exactly one in-domain value for every parameter.
+    pub fn validate_config(&self, config: &Config) -> Result<()> {
+        for name in config.keys() {
+            anyhow::ensure!(
+                self.params.iter().any(|p| &p.name == name),
+                "unknown parameter '{name}' in initial configuration"
+            );
+        }
+
+        for param in &self.params {
+            let value = config.get(&param.name).with_context(|| {
+                format!(
+                    "initial configuration is missing parameter '{}'",
+                    param.name
+                )
+            })?;
+            anyhow::ensure!(
+                param.domain.contains(value),
+                "initial configuration value '{}' is not in domain {:?} for parameter '{}'",
+                value,
+                param.domain,
+                param.name
+            );
+        }
+
+        anyhow::ensure!(
+            !self.is_forbidden(config),
+            "initial configuration matches a forbidden parameter combination"
+        );
+        Ok(())
     }
 
     /// Return only params that are active for `config`.
@@ -333,5 +374,67 @@ thresh {1, 2, 3} [2] | mode in {slow}
         let cfg = space.default_config();
         assert_eq!(cfg["alpha"], "1.189");
         assert_eq!(cfg["rho"], "0.5");
+    }
+
+    #[test]
+    fn validate_complete_config() {
+        let space = parse(WITH_COND_AND_FORBIDDEN);
+        let config: Config = [
+            ("mode".to_string(), "slow".to_string()),
+            ("thresh".to_string(), "2".to_string()),
+        ].into();
+        space.validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn validate_config_rejects_missing_unknown_and_invalid_values() {
+        let space = parse(WITH_COND_AND_FORBIDDEN);
+
+        let missing: Config = [("mode".to_string(), "slow".to_string())].into();
+        assert!(
+            space
+                .validate_config(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("missing parameter 'thresh'")
+        );
+
+        let unknown: Config = [
+            ("mode".to_string(), "slow".to_string()),
+            ("thresh".to_string(), "2".to_string()),
+            ("other".to_string(), "x".to_string()),
+        ].into();
+        assert!(
+            space
+                .validate_config(&unknown)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown parameter 'other'")
+        );
+
+        let invalid: Config = [
+            ("mode".to_string(), "slow".to_string()),
+            ("thresh".to_string(), "4".to_string()),
+        ].into();
+        assert!(
+            space
+                .validate_config(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("not in domain")
+        );
+    }
+
+    #[test]
+    fn config_yaml_is_sorted_and_preserves_string_values() {
+        let config: Config = [
+            ("zeta".to_string(), "true".to_string()),
+            ("alpha".to_string(), "0.25".to_string()),
+        ]
+        .into();
+        assert_eq!(
+            config_to_yaml(&config).unwrap(),
+            "alpha: '0.25'\nzeta: 'true'\n"
+        );
     }
 }

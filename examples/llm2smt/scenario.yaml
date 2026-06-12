@@ -1,6 +1,19 @@
 algo: "python3 llm2smt_wrapper.py"
 paramfile: "params-llm2smt.txt"
 instance_file: "instances.txt"
+initial_config:
+  preprocess_passes: 0
+  nary: true
+  flatten: true
+  nnf: false
+  nnf_memo: false
+  eq_bridge: false
+  finite_domain_amo: true
+  finite_domain_eq_defs: true
+  theory_prop: true
+  prop_interval: 32
+  prop_assign_threshold: 0.25
+  prop_delivery_budget: 1000
 
 cutoff_time: 10.0
 tuner_timeout: 300.0

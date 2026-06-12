@@ -7,6 +7,10 @@
 //! ```yaml
 //! algo: path/to/solver_wrapper
 //! paramfile: solver.params
+//! initial_config:             # optional; must contain every parameter
+//!   engine: quick
+//!   threads: 4
+//! # initial_config_file: initial-config.yaml  # alternative YAML mapping
 //! instance_file: instances/train.txt
 //! test_instance_file: instances/test.txt   # optional
 //! cutoff_time: 60.0
@@ -37,8 +41,10 @@
 //! `instances` (a list of paths) may be used instead of `instance_file`.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
-use std::fs;
+use serde::{Deserialize, Deserializer};
+use std::{collections::HashMap, fs};
+
+use crate::params::{Config, ParamSpace};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +78,14 @@ pub struct Scenario {
 
     /// Path to the `.params` file describing the parameter space.
     pub paramfile: String,
+
+    /// Complete initial parameter configuration, as an inline YAML mapping.
+    #[serde(default, deserialize_with = "deserialize_optional_config")]
+    pub initial_config: Option<Config>,
+
+    /// YAML file containing the complete initial parameter configuration.
+    #[serde(default)]
+    pub initial_config_file: Option<String>,
 
     /// File listing training instance paths, one per line.
     /// Mutually exclusive with `instances`; one must be set.
@@ -201,6 +215,73 @@ impl Scenario {
             self.instance_file.clone().unwrap_or_else(|| "<none>".to_string())
         }
     }
+
+    /// Resolve and validate the ILS starting configuration.
+    ///
+    /// Explicit configurations must contain every parameter. If neither form
+    /// is supplied, parameter-file defaults preserve the historical behavior.
+    pub fn resolve_initial_config(&self, space: &ParamSpace) -> Result<Config> {
+        anyhow::ensure!(
+            self.initial_config.is_none() || self.initial_config_file.is_none(),
+            "scenario: 'initial_config' and 'initial_config_file' are mutually exclusive"
+        );
+
+        let config = if let Some(config) = &self.initial_config {
+            config.clone()
+        } else if let Some(path) = &self.initial_config_file {
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("Cannot read initial configuration file: {path}"))?;
+            parse_config_yaml(&text)
+                .with_context(|| format!("Failed to parse initial configuration YAML: {path}"))?
+        } else {
+            space.default_config()
+        };
+
+        space.validate_config(&config)?;
+        Ok(config)
+    }
+}
+
+fn deserialize_optional_config<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Config>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+    value
+        .map(config_from_yaml_value)
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn parse_config_yaml(text: &str) -> Result<Config> {
+    let value: serde_yaml::Value = serde_yaml::from_str(text)?;
+    config_from_yaml_value(value)
+}
+
+fn config_from_yaml_value(value: serde_yaml::Value) -> Result<Config> {
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("initial configuration must be a YAML mapping"))?;
+    let mut config = HashMap::with_capacity(mapping.len());
+
+    for (key, value) in mapping {
+        let name = key.as_str().ok_or_else(|| {
+            anyhow::anyhow!("initial configuration parameter names must be strings")
+        })?;
+        let value = match value {
+            serde_yaml::Value::String(value) => value.clone(),
+            serde_yaml::Value::Bool(value) => value.to_string(),
+            serde_yaml::Value::Number(value) => value.to_string(),
+            _ => anyhow::bail!(
+                "initial configuration value for '{name}' must be a string, number, or boolean"
+            ),
+        };
+        config.insert(name.to_string(), value);
+    }
+
+    Ok(config)
 }
 
 #[cfg(feature = "python")]
@@ -241,4 +322,66 @@ pub fn load_instances(path: &str) -> Result<Vec<String>> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(str::to_string)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn space() -> ParamSpace {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "mode {{fast, slow}} [fast]").unwrap();
+        writeln!(file, "limit {{1, 2}} [1]").unwrap();
+        ParamSpace::from_file(file.path().to_str().unwrap()).unwrap()
+    }
+
+    fn scenario(extra: &str) -> Scenario {
+        serde_yaml::from_str(&format!(
+            "algo: solver\nparamfile: params\ninstances: [one]\ncutoff_time: 1\ntuner_timeout: 2\n{extra}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn resolves_inline_initial_config_with_scalar_values() {
+        let scenario = scenario("initial_config:\n  mode: slow\n  limit: 2\n");
+        let config = scenario.resolve_initial_config(&space()).unwrap();
+        assert_eq!(config["mode"], "slow");
+        assert_eq!(config["limit"], "2");
+    }
+
+    #[test]
+    fn rejects_both_initial_config_forms() {
+        let scenario = scenario(
+            "initial_config:\n  mode: slow\n  limit: 2\ninitial_config_file: initial.yaml\n",
+        );
+        assert!(
+            scenario
+                .resolve_initial_config(&space())
+                .unwrap_err()
+                .to_string()
+                .contains("mutually exclusive")
+        );
+    }
+
+    #[test]
+    fn resolves_initial_config_file() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "mode: slow\nlimit: 2").unwrap();
+        let scenario = scenario(&format!(
+            "initial_config_file: {:?}\n",
+            file.path().to_str().unwrap()
+        ));
+        let config = scenario.resolve_initial_config(&space()).unwrap();
+        assert_eq!(config["mode"], "slow");
+        assert_eq!(config["limit"], "2");
+    }
+
+    #[test]
+    fn falls_back_to_parameter_defaults() {
+        let config = scenario("").resolve_initial_config(&space()).unwrap();
+        assert_eq!(config["mode"], "fast");
+        assert_eq!(config["limit"], "1");
+    }
 }

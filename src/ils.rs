@@ -15,22 +15,30 @@ use rand::Rng;
 
 use crate::cache::{Cache, hash_config};
 use crate::eval::{EvalTask, Scheduler};
-use crate::params::{Config, ParamSpace};
+use crate::params::{Config, ParamSpace, config_to_yaml};
 use crate::scenario::{OverallObjective, RunObjective};
 
 
-fn print_diff(to_stderr: bool, prev: &Config, next: &Config, space: &ParamSpace) {
-    let active: std::collections::HashSet<String> = space.active_params(next)
-        .into_iter().map(|p| p.name.clone()).collect();
-    let mut changes: Vec<String> = active.iter()
-        .filter_map(|k| {
-            let a = prev.get(k).map(|s| s.as_str()).unwrap_or("-");
-            let b = next.get(k).map(|s| s.as_str()).unwrap_or("-");
-            if a != b { Some(format!("           {k}: {a} -> {b}")) } else { None }
-        })
-        .collect();
-    changes.sort();
-    for line in changes { crate::debug_line(to_stderr, &line); }
+fn log_incumbent(
+    enabled: bool,
+    incumbent: &Config,
+    score: f64,
+    n_runs: usize,
+    space: &ParamSpace,
+) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    let hash = hash_config(&active_config(incumbent, space));
+    crate::debug_line(
+        true,
+        &format!(
+            "[{:8.2}s] ils: new incumbent: hash={hash:016x} score={score:.6} instances={n_runs}",
+            crate::t()
+        ),
+    );
+    crate::debug_block(true, &config_to_yaml(incumbent)?);
+    Ok(())
 }
 
 /// ILS algorithm variant.
@@ -98,14 +106,7 @@ pub fn run(
         crate::debug_line(d, &format!("[{t:8.2}s] ils: starting approach={approach_str} instances={n_total} timeout={:.0}s", options.tuner_timeout));
         crate::debug_line(d, &format!("[{t:8.2}s] ils: initial config:"));
         match &initial {
-            Some(cfg) => {
-                let active = space.active_params(cfg);
-                let mut pairs: Vec<(&str, &str)> = active.iter()
-                    .filter_map(|p| cfg.get(&p.name).map(|v| (p.name.as_str(), v.as_str())))
-                    .collect();
-                pairs.sort_by_key(|(k, _)| *k);
-                for (k, v) in pairs { crate::debug_line(d, &format!("           {k}: {v}")); }
-            }
+            Some(cfg) => crate::debug_block(d, &config_to_yaml(cfg)?),
             None => crate::debug_line(d, "           (random)"),
         }
     }
@@ -141,14 +142,15 @@ pub fn run(
         incumbent_score, &mut rng, deadline,
     )?;
     if lm_score < incumbent_score {
-        let old = incumbent.clone();
         incumbent = lm.clone();
         incumbent_score = lm_score;
-        if options.debug.main {
-            let hash = hash_config(&active_config(&incumbent, space));
-            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
-            print_diff(options.debug.main, &old, &incumbent, space);
-        }
+        log_incumbent(
+            options.debug.main,
+            &incumbent,
+            incumbent_score,
+            n_runs,
+            space,
+        )?;
     }
     let mut last_lm = lm;
     let mut last_lm_score = lm_score;
@@ -178,14 +180,15 @@ pub fn run(
 
         // Update incumbent
         if new_lm_score < incumbent_score {
-            let old = incumbent.clone();
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
-            if options.debug.main {
-                let hash = hash_config(&active_config(&incumbent, space));
-                crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: new incumbent: hash={hash:016x} score={incumbent_score:.6} instances={n_runs}", crate::t()));
-                print_diff(options.debug.main, &old, &incumbent, space);
-            }
+            log_incumbent(
+                options.debug.main,
+                &incumbent,
+                incumbent_score,
+                n_runs,
+                space,
+            )?;
         } else if options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
             // This is the bounded increase mechanism: challengers that fail against the

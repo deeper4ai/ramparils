@@ -180,5 +180,13 @@ pub fn debug_line(enabled: bool, line: &str) {
     }
 }
 
+/// Write multiline debug output through the configured debug destinations.
+pub fn debug_block(enabled: bool, block: &str) {
+    if !enabled { return; }
+    for line in block.lines() {
+        debug_line(true, line);
+    }
+}
+
 #[cfg(feature = "python")]
 mod python;        // PyO3 bindings — only compiled when building the Python .so

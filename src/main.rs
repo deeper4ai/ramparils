@@ -5,7 +5,7 @@ use clap::Parser;
 
 use ramparils::cache::Cache;
 use ramparils::ils::{self, Approach, IlsOptions};
-use ramparils::params::ParamSpace;
+use ramparils::params::{ParamSpace, config_to_yaml};
 use ramparils::scenario::{RunObjective, OverallObjective, Scenario};
 use ramparils::DebugOptions;
 
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
 
     print_debug_scenario(&scenario, instances.len(), n_workers);
 
-    let initial = space.default_config();
+    let initial = scenario.resolve_initial_config(&space)?;
 
     let (result, best_score) = if scenario.iterative_deepening {
         ils::iterative_deepening_ils(
@@ -153,15 +153,16 @@ fn main() -> Result<()> {
         std::process::exit(130);
     }
 
-    ramparils::debug_line(main_debug, &format!("[{:8.2}s] ils: best score: {best_score:.6}", ramparils::t()));
-
-    let active = space.active_params(&result);
-    let mut pairs: Vec<(&String, &String)> = active.iter()
-        .filter_map(|p| result.get(&p.name).map(|v| (&p.name, v)))
-        .collect();
-    pairs.sort_by_key(|(k, _)| k.as_str());
-    let param_str = pairs.iter().map(|(k, v)| format!("-{k} {v}")).collect::<Vec<_>>().join(" ");
-    println!("{param_str}");
+    let result_yaml = config_to_yaml(&result)?;
+    ramparils::debug_line(
+        main_debug,
+        &format!(
+            "[{:8.2}s] ils: final config: score={best_score:.6}",
+            ramparils::t()
+        ),
+    );
+    ramparils::debug_block(main_debug, &result_yaml);
+    print!("{result_yaml}");
 
     Ok(())
 }
