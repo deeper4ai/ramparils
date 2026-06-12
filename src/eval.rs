@@ -26,7 +26,7 @@
 //! `cache.put()`.  The ILS writes back each result as it reads it from the
 //! result channel — keeps cache access single-threaded in the ILS.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -116,7 +116,7 @@ pub struct Scheduler {
     submitted_work_batches: AtomicUsize,
     cutoff_time: f64,
     debug: crate::DebugOptions,
-    active_process_groups: Arc<Mutex<HashSet<libc::pid_t>>>,
+    active_process_groups: Arc<Mutex<HashMap<libc::pid_t, u64>>>,
     _workers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -127,7 +127,7 @@ impl Scheduler {
         let (work_tx, work_rx) = unbounded::<WorkBatch>();
         let (result_tx, result_rx) = unbounded::<TaskResult>();
         let batch_id = Arc::new(AtomicU64::new(0));
-        let active_process_groups = Arc::new(Mutex::new(HashSet::new()));
+        let active_process_groups = Arc::new(Mutex::new(HashMap::new()));
 
         let workers = (0..n_workers)
             .map(|_| {
@@ -152,16 +152,19 @@ impl Scheduler {
                             }
                             let (instance_id, instance_path) =
                                 &batch.instances[instance_index];
-                            let (runtime, quality, status) =
-                                run_solver_inner(
-                                    &algo,
-                                    &batch.config,
-                                    batch.hash,
-                                    instance_path,
-                                    batch.cutoff_time,
-                                    debug,
-                                    &active_process_groups,
-                                );
+                            let Some((runtime, quality, status)) = run_solver_inner(
+                                &algo,
+                                &batch.config,
+                                batch.hash,
+                                instance_path,
+                                batch.cutoff_time,
+                                batch.batch_id,
+                                &current_batch,
+                                debug,
+                                &active_process_groups,
+                            ) else {
+                                break;
+                            };
                             let _ = result_tx.send(TaskResult {
                                 batch_id: batch.batch_id,
                                 neighbor_id: batch.neighbor_id,
@@ -265,13 +268,14 @@ impl Scheduler {
         self.submitted_work_batches.load(Ordering::Relaxed)
     }
 
-    /// Invalidate the current batch so workers skip its queued items.
+    /// Invalidate the current batch, terminate its active solver processes,
+    /// and make workers skip its queued items.
     ///
-    /// Workers finish their current solver call then skip remaining queued
-    /// items.  The ILS should drain `results()` after calling this to consume
-    /// any in-flight results before the next `submit()`.
+    /// The ILS should drain `results()` after calling this to consume any
+    /// results completed just before cancellation.
     pub fn reset(&self) {
-        self.batch_id.fetch_add(1, Ordering::Relaxed);
+        let invalidated_batch = self.batch_id.fetch_add(1, Ordering::Relaxed);
+        terminate_batch_process_groups(&self.active_process_groups, invalidated_batch);
         crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: reset", crate::t()));
     }
 }
@@ -309,15 +313,18 @@ const UNKNOWN_QUALITY: f64 = 10_000_000.0;
 /// # Security note
 /// The algo string is passed to `sh -c` for shell compatibility.
 /// Only trusted scenario files should be used.
+#[allow(clippy::too_many_arguments)]
 fn run_solver_inner(
     algo: &str,
     config: &Config,
     hash: u64,
     instance: &str,
     cutoff_time: f64,
+    batch_id: u64,
+    current_batch: &AtomicU64,
     debug: crate::DebugOptions,
-    active_process_groups: &Arc<Mutex<HashSet<libc::pid_t>>>,
-) -> (f64, f64, String) {
+    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, u64>>>,
+) -> Option<(f64, f64, String)> {
     let mut pairs: Vec<(&String, &String)> = config.iter().collect();
     pairs.sort_unstable_by_key(|(k, _)| *k);
     let paramstring = pairs
@@ -329,10 +336,15 @@ fn run_solver_inner(
     let cmd = format!("{algo} {instance} {cutoff_time} {paramstring}");
     crate::debug_line(debug.wrapper, &format!("[{:8.2}s] wrapper: {cmd}", crate::t()));
 
-    let output = run_wrapper_process(&cmd, active_process_groups);
+    let output = run_wrapper_process(
+        &cmd,
+        batch_id,
+        current_batch,
+        active_process_groups,
+    );
 
     let (runtime, quality, status, result_line) = match output {
-        Ok(out) => {
+        Ok(Some(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let (rt, q, st, rl) = parse_solver_output(&stdout, cutoff_time);
             if st == "UNKNOWN" {
@@ -341,6 +353,7 @@ fn run_solver_inner(
             }
             (rt, q, st, rl)
         }
+        Ok(None) => return None,
         Err(e) => {
             crate::log_crash(&cmd, "", &e.to_string(), None);
             (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(),
@@ -350,13 +363,15 @@ fn run_solver_inner(
     let iname = std::path::Path::new(instance)
         .file_name().and_then(|n| n.to_str()).unwrap_or(instance);
     crate::debug_line(debug.solver, &format!("[{:8.2}s] solver: {hash:016x} @ {iname} {result_line}", crate::t()));
-    (runtime, quality, status)
+    Some((runtime, quality, status))
 }
 
 fn run_wrapper_process(
     cmd: &str,
-    active_process_groups: &Arc<Mutex<HashSet<libc::pid_t>>>,
-) -> std::io::Result<std::process::Output> {
+    batch_id: u64,
+    current_batch: &AtomicU64,
+    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, u64>>>,
+) -> std::io::Result<Option<std::process::Output>> {
     let mut child = Command::new("sh")
         .args(["-c", cmd])
         .process_group(0)
@@ -365,7 +380,7 @@ fn run_wrapper_process(
         .spawn()?;
     let process_group = child.id() as libc::pid_t;
     crate::register_process_group(process_group);
-    active_process_groups.lock().unwrap().insert(process_group);
+    active_process_groups.lock().unwrap().insert(process_group, batch_id);
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
     let stdout_reader = std::thread::spawn(move || {
@@ -378,43 +393,72 @@ fn run_wrapper_process(
     });
 
     let status = loop {
-        if crate::interrupted() {
-            unsafe {
-                libc::kill(-process_group, libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-            if child.try_wait()?.is_none() {
-                unsafe {
-                    libc::kill(-process_group, libc::SIGKILL);
-                }
-            }
-            break child.wait();
+        let canceled =
+            crate::interrupted() || batch_id != current_batch.load(Ordering::Relaxed);
+        if canceled {
+            terminate_child_process_group(&mut child, process_group)?;
+            break None;
         }
         if let Some(status) = child.try_wait()? {
-            break Ok(status);
+            break Some(status);
         }
         std::thread::sleep(Duration::from_millis(25));
     };
     crate::unregister_process_group(process_group);
     active_process_groups.lock().unwrap().remove(&process_group);
-    let status = status?;
     let stdout = stdout_reader.join()
         .map_err(|_| std::io::Error::other("stdout reader thread panicked"))??;
     let stderr = stderr_reader.join()
         .map_err(|_| std::io::Error::other("stderr reader thread panicked"))??;
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(status.map(|status| std::process::Output { status, stdout, stderr }))
 }
 
-fn terminate_process_groups(active_process_groups: &Mutex<HashSet<libc::pid_t>>) {
+fn terminate_child_process_group(
+    child: &mut std::process::Child,
+    process_group: libc::pid_t,
+) -> std::io::Result<()> {
+    unsafe {
+        libc::kill(-process_group, libc::SIGTERM);
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    if child.try_wait()?.is_none() {
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+    child.wait()?;
+    Ok(())
+}
+
+fn terminate_batch_process_groups(
+    active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>,
+    batch_id: u64,
+) {
+    let groups: Vec<libc::pid_t> = active_process_groups
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(&process_group, &active_batch)| {
+            (active_batch == batch_id).then_some(process_group)
+        })
+        .collect();
+    terminate_groups(&groups);
+}
+
+fn terminate_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>) {
     let groups: Vec<libc::pid_t> =
-        active_process_groups.lock().unwrap().iter().copied().collect();
-    for process_group in &groups {
+        active_process_groups.lock().unwrap().keys().copied().collect();
+    terminate_groups(&groups);
+}
+
+fn terminate_groups(groups: &[libc::pid_t]) {
+    for &process_group in groups {
         unsafe {
             libc::kill(-process_group, libc::SIGTERM);
         }
     }
     std::thread::sleep(Duration::from_millis(100));
-    for process_group in groups {
+    for &process_group in groups {
         unsafe {
             libc::kill(-process_group, libc::SIGKILL);
         }
@@ -446,6 +490,9 @@ fn parse_solver_output(output: &str, cutoff_time: f64) -> (f64, f64, String, Str
 mod tests {
     use super::*;
     use crate::cache::{Cache, hash_config};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
 
     #[test]
     fn parse_ok_line() {
@@ -533,6 +580,78 @@ mod tests {
         while sched.results().try_recv().is_ok() {}
         // Should be able to submit again without panic
         sched.submit(vec![], &cache).unwrap();
+    }
+
+    #[test]
+    fn scheduler_reset_terminates_active_solver() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("wrapper.sh");
+        let pid_file = dir.path().join("solver.pid");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\necho \"$$\" > '{}'\ntrap 'exit 143' TERM\nsleep 300\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper, permissions).unwrap();
+
+        let cache = Cache::open(":memory:", false).unwrap();
+        let instance = "instance.cnf".to_string();
+        let ids = cache.load_instances(std::slice::from_ref(&instance)).unwrap();
+        let config: Config = [("alpha".to_string(), "1".to_string())].into();
+        let sched = Scheduler::new(
+            1,
+            wrapper.display().to_string(),
+            300.0,
+            crate::DebugOptions::default(),
+        );
+        sched.submit(
+            vec![EvalTask {
+                neighbor_id: 0,
+                hash: hash_config(&config),
+                config,
+                instances: Arc::new(vec![(ids[&instance], instance)]),
+            }],
+            &cache,
+        )
+        .unwrap();
+
+        let start_deadline = Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() {
+            assert!(
+                Instant::now() < start_deadline,
+                "solver process did not start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let solver_pid: libc::pid_t =
+            fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+
+        sched.reset();
+
+        let exit_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let exists = unsafe {
+                libc::kill(solver_pid, 0) == 0
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+            };
+            if !exists {
+                break;
+            }
+            assert!(
+                Instant::now() < exit_deadline,
+                "solver process {solver_pid} survived scheduler reset"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            sched.results().recv_timeout(Duration::from_millis(200)).is_err(),
+            "canceled solver produced a result"
+        );
     }
 
     #[test]
