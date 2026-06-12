@@ -64,6 +64,9 @@ pub struct TaskResult {
     pub runtime: f64,
     pub quality: f64,
     pub status: String,
+    /// Only results produced by a solver execution may be persisted.
+    pub cacheable: bool,
+    pub cutoff: f64,
 }
 
 /// Aggregated result for one config across all instances.
@@ -173,6 +176,8 @@ impl Scheduler {
                                 runtime,
                                 quality,
                                 status,
+                                cacheable: true,
+                                cutoff: batch.cutoff_time,
                             });
                         }
                     }
@@ -210,7 +215,8 @@ impl Scheduler {
         let mut n_work_batches = 0usize;
         for task in tasks {
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
-            let hits: HashMap<i64, CachedResult> = cache.get_batch(task.hash, &ids)?;
+            let hits: HashMap<i64, CachedResult> =
+                cache.get_batch(task.hash, &ids, self.cutoff_time)?;
             let mut missing_indices = Vec::with_capacity(task.instances.len() - hits.len());
 
             for (index, (instance_id, _)) in task.instances.iter().enumerate() {
@@ -224,6 +230,8 @@ impl Scheduler {
                         runtime: cached.runtime,
                         quality: cached.quality,
                         status: cached.status.clone(),
+                        cacheable: false,
+                        cutoff: self.cutoff_time,
                     });
                 } else {
                     n_misses += 1;
@@ -541,8 +549,8 @@ mod tests {
         let id2 = id_map["i2.cnf"];
 
         let mut cache = cache;
-        cache.put(hash, id1, 0.5, 0.0, "Theorem").unwrap();
-        cache.put(hash, id2, 1.0, 0.0, "Theorem").unwrap();
+        cache.put(hash, id1, 0.5, 0.0, "Theorem", 10.0).unwrap();
+        cache.put(hash, id2, 1.0, 0.0, "Theorem", 10.0).unwrap();
 
         let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
         sched.submit(vec![EvalTask {
@@ -563,9 +571,46 @@ mod tests {
         }
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.neighbor_id == 7));
+        assert!(results.iter().all(|r| !r.cacheable));
         let runtimes: Vec<f64> = results.iter().map(|r| r.runtime).collect();
         assert!(runtimes.contains(&0.5));
         assert!(runtimes.contains(&1.0));
+    }
+
+    #[test]
+    fn synthetic_timeout_is_not_cacheable() {
+        let mut cache = Cache::open(":memory:", false).unwrap();
+        let instance = "i1.cnf".to_string();
+        let id_map = cache.load_instances(std::slice::from_ref(&instance)).unwrap();
+        let instance_id = id_map[&instance];
+        let config: Config = [("alpha".to_string(), "1".to_string())].into();
+        let hash = hash_config(&config);
+        cache.put(hash, instance_id, 8.0, 0.0, "sat", 10.0).unwrap();
+
+        let scheduler =
+            Scheduler::new(1, "unused".to_string(), 5.0, crate::DebugOptions::default());
+        scheduler
+            .submit(
+                vec![EvalTask {
+                    neighbor_id: 0,
+                    config,
+                    hash,
+                    instances: Arc::new(vec![(instance_id, instance)]),
+                }],
+                &cache,
+            )
+            .unwrap();
+
+        let result = scheduler
+            .results()
+            .recv_timeout(Duration::from_millis(100))
+            .expect("expected synthetic timeout");
+        assert_eq!(result.status, "TIMEOUT");
+        assert!(!result.cacheable);
+
+        let original = cache.get_batch(hash, &[instance_id], 10.0).unwrap();
+        assert_eq!(original[&instance_id].status, "sat");
+        assert!((original[&instance_id].runtime - 8.0).abs() < 1e-9);
     }
 
     #[test]

@@ -76,8 +76,8 @@ instance-list file.
 | `lambda_t` | `0.5` | Iterative deepening timeout factor. |
 | `cores` | `0` | Parallel workers; `0` uses all available cores. |
 | `num_run` | `0` | Run index / random seed (reserved). |
-| `cache_db` | `":memory:"` | Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. |
-| `debug` | `False` | Print new incumbents and scores to stderr. |
+| `cache_db` | `":memory:"` | Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases. |
+| `debug` | `False` | Print new incumbents, scores, and accepted argument changes to stderr. |
 | `debug_wrapper` | `False` | Print every solver invocation. |
 | `debug_solver` | `False` | Print every solver result. |
 | `debug_log` | `None` | Write debug output to this file. |

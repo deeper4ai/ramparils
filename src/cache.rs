@@ -17,6 +17,7 @@
 //!     runtime       REAL    NOT NULL,
 //!     quality       REAL    NOT NULL,
 //!     status_id     INTEGER NOT NULL DEFAULT 0,
+//!     cutoff        REAL    NOT NULL,
 //!     PRIMARY KEY (strategy_hash, instance_id)
 //! );
 //! ```
@@ -34,11 +35,13 @@
 //! which returns an in-memory `HashMap<String, i64>` used for all subsequent
 //! queries — no path strings appear in hot-path SQL.
 
-use std::collections::HashMap;
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashMap;
 
 use crate::params::Config;
+
+const SYNTHETIC_TIMEOUT_QUALITY: f64 = 10_000_000.0;
 
 /// A single cached solver result.
 #[derive(Debug, Clone)]
@@ -79,19 +82,23 @@ impl Cache {
                 instance_id   INTEGER NOT NULL,
                 runtime       REAL    NOT NULL,
                 quality       REAL    NOT NULL,
+                status_id     INTEGER NOT NULL DEFAULT 0,
+                cutoff        REAL    NOT NULL,
                 PRIMARY KEY (strategy_hash, instance_id)
             );
         ").context("failed to initialise cache schema")?;
 
-        // Migration: add status_id to existing DBs that predate status tracking.
-        // Existing rows get status_id = 0 ('UNKNOWN').
-        match conn.execute_batch(
-            "ALTER TABLE results ADD COLUMN status_id INTEGER NOT NULL DEFAULT 0"
-        ) {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(anyhow::anyhow!(e).context("failed to add status_id column")),
-        }
+        let columns = {
+            let mut statement = conn.prepare("PRAGMA table_info(results)")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        anyhow::ensure!(
+            columns.iter().any(|column| column == "status_id")
+                && columns.iter().any(|column| column == "cutoff"),
+            "cache uses an incompatible schema; remove it and create a fresh cache"
+        );
 
         crate::debug_line(debug, &format!("[{:8.2}s] cache: opened path={path}", crate::t()));
         Ok(Cache { conn, debug, status_cache: HashMap::new() })
@@ -140,6 +147,7 @@ impl Cache {
         &self,
         strategy_hash: u64,
         instance_ids: &[i64],
+        requested_cutoff: f64,
     ) -> Result<HashMap<i64, CachedResult>> {
         if instance_ids.is_empty() {
             return Ok(HashMap::new());
@@ -149,7 +157,7 @@ impl Cache {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT r.instance_id, r.runtime, r.quality, s.status \
+            "SELECT r.instance_id, r.runtime, r.quality, s.status, r.cutoff \
              FROM results r JOIN statuses s ON r.status_id = s.id \
              WHERE r.strategy_hash = ?1 AND r.instance_id IN ({placeholders})"
         );
@@ -160,12 +168,29 @@ impl Cache {
                 std::iter::once(&hash as &dyn rusqlite::types::ToSql)
                     .chain(instance_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql))
             ),
-            |row| Ok((
-                row.get::<_, i64>(0)?,
-                CachedResult { runtime: row.get(1)?, quality: row.get(2)?, status: row.get(3)? },
-            )),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    (
+                        CachedResult {
+                            runtime: row.get(1)?,
+                            quality: row.get(2)?,
+                            status: row.get(3)?,
+                        },
+                        row.get::<_, f64>(4)?,
+                    ),
+                ))
+            },
         )?;
-        let result = iter.collect::<rusqlite::Result<HashMap<_, _>>>()
+        let result = iter
+            .filter_map(|row| match row {
+                Ok((instance_id, (cached, stored_cutoff))) => {
+                    adapt_cached_result(cached, stored_cutoff, requested_cutoff)
+                        .map(|cached| Ok((instance_id, cached)))
+                }
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<rusqlite::Result<HashMap<_, _>>>()
             .context("failed to query result cache")?;
         Ok(result)
     }
@@ -178,13 +203,42 @@ impl Cache {
         runtime: f64,
         quality: f64,
         status: &str,
+        cutoff: f64,
     ) -> Result<()> {
         let status_id = self.intern_status(status)?;
+        let existing = self
+            .conn
+            .query_row(
+                "SELECT s.status, r.cutoff \
+                 FROM results r JOIN statuses s ON r.status_id = s.id \
+                 WHERE r.strategy_hash = ?1 AND r.instance_id = ?2",
+                params![strategy_hash as i64, instance_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
+            )
+            .optional()?;
+        let should_write = match existing {
+            None => true,
+            Some((existing_status, existing_cutoff)) => {
+                existing_status.eq_ignore_ascii_case("timeout")
+                    && (!status.eq_ignore_ascii_case("timeout") || cutoff > existing_cutoff)
+            }
+        };
+        if !should_write {
+            return Ok(());
+        }
+
         self.conn.execute(
             "INSERT OR REPLACE INTO results \
-             (strategy_hash, instance_id, runtime, quality, status_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![strategy_hash as i64, instance_id, runtime, quality, status_id],
+             (strategy_hash, instance_id, runtime, quality, status_id, cutoff) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                strategy_hash as i64,
+                instance_id,
+                runtime,
+                quality,
+                status_id,
+                cutoff
+            ],
         ).context("failed to write to result cache")?;
         Ok(())
     }
@@ -209,6 +263,32 @@ impl Cache {
         self.status_cache.insert(status.to_string(), id);
         Ok(id)
     }
+}
+
+fn adapt_cached_result(
+    cached: CachedResult,
+    stored_cutoff: f64,
+    requested_cutoff: f64,
+) -> Option<CachedResult> {
+    if cached.status.eq_ignore_ascii_case("timeout") {
+        if stored_cutoff < requested_cutoff {
+            return None;
+        }
+        return Some(CachedResult {
+            runtime: requested_cutoff,
+            ..cached
+        });
+    }
+
+    if cached.runtime > requested_cutoff {
+        return Some(CachedResult {
+            runtime: requested_cutoff,
+            quality: SYNTHETIC_TIMEOUT_QUALITY,
+            status: "TIMEOUT".to_string(),
+        });
+    }
+
+    Some(cached)
 }
 
 /// Deterministic u64 hash of a `Config`.
@@ -258,10 +338,10 @@ mod tests {
         let id1 = ids["p1.cnf"];
         let id2 = ids["p2.cnf"];
 
-        assert!(cache.get_batch(42, &[id1, id2]).unwrap().is_empty());
+        assert!(cache.get_batch(42, &[id1, id2], 10.0).unwrap().is_empty());
 
-        cache.put(42, id1, 1.23, 0.0, "Theorem").unwrap();
-        let hits = cache.get_batch(42, &[id1, id2]).unwrap();
+        cache.put(42, id1, 1.23, 0.0, "Theorem", 10.0).unwrap();
+        let hits = cache.get_batch(42, &[id1, id2], 10.0).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[&id1].runtime - 1.23).abs() < 1e-9);
         assert_eq!(hits[&id1].status, "Theorem");
@@ -269,23 +349,79 @@ mod tests {
     }
 
     #[test]
-    fn put_replace() {
+    fn stronger_result_replaces_timeout() {
         let mut cache = open();
         let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
         let id = ids["x.cnf"];
-        cache.put(1, id, 2.0, 5.0, "Theorem").unwrap();
-        cache.put(1, id, 3.5, 7.0, "Timeout").unwrap();
-        let hits = cache.get_batch(1, &[id]).unwrap();
-        assert!((hits[&id].runtime - 3.5).abs() < 1e-9);
-        assert!((hits[&id].quality - 7.0).abs() < 1e-9);
-        assert_eq!(hits[&id].status, "Timeout");
+        cache.put(1, id, 2.0, 5.0, "Timeout", 2.0).unwrap();
+        cache.put(1, id, 3.5, 7.0, "Timeout", 5.0).unwrap();
+        cache.put(1, id, 1.5, 1.0, "Theorem", 5.0).unwrap();
+        cache.put(1, id, 1.0, 0.0, "Timeout", 10.0).unwrap();
+
+        let hits = cache.get_batch(1, &[id], 10.0).unwrap();
+        assert!((hits[&id].runtime - 1.5).abs() < 1e-9);
+        assert!((hits[&id].quality - 1.0).abs() < 1e-9);
+        assert_eq!(hits[&id].status, "Theorem");
+    }
+
+    #[test]
+    fn timeout_reuse_depends_on_cutoff() {
+        let mut cache = open();
+        let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
+        let id = ids["x.cnf"];
+        cache.put(1, id, 5.0, 7.0, "timeout", 5.0).unwrap();
+
+        let shorter = cache.get_batch(1, &[id], 2.0).unwrap();
+        assert!((shorter[&id].runtime - 2.0).abs() < 1e-9);
+        assert_eq!(shorter[&id].status, "timeout");
+        assert!(cache.get_batch(1, &[id], 10.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn success_beyond_cutoff_becomes_synthetic_timeout() {
+        let mut cache = open();
+        let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
+        let id = ids["x.cnf"];
+        cache.put(1, id, 8.0, 0.0, "sat", 10.0).unwrap();
+
+        let hits = cache.get_batch(1, &[id], 5.0).unwrap();
+        assert!((hits[&id].runtime - 5.0).abs() < 1e-9);
+        assert!((hits[&id].quality - SYNTHETIC_TIMEOUT_QUALITY).abs() < 1e-9);
+        assert_eq!(hits[&id].status, "TIMEOUT");
+
+        let full = cache.get_batch(1, &[id], 10.0).unwrap();
+        assert!((full[&id].runtime - 8.0).abs() < 1e-9);
+        assert_eq!(full[&id].status, "sat");
+    }
+
+    #[test]
+    fn rejects_cache_without_cutoff_column() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let conn = Connection::open(file.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE results (
+                strategy_hash INTEGER NOT NULL,
+                instance_id INTEGER NOT NULL,
+                runtime REAL NOT NULL,
+                quality REAL NOT NULL,
+                status_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (strategy_hash, instance_id)
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = Cache::open(file.path().to_str().unwrap(), false)
+            .err()
+            .expect("old cache schema should be rejected");
+        assert!(error.to_string().contains("incompatible schema"));
     }
 
     #[test]
     fn intern_status_unknown_default() {
         let cache = open();
         // The UNKNOWN row (id=0) is pre-inserted by the schema setup.
-        let hits = cache.get_batch(999, &[]).unwrap();
+        let hits = cache.get_batch(999, &[], 10.0).unwrap();
         assert!(hits.is_empty()); // nothing stored yet — just verifying open() succeeded
     }
 

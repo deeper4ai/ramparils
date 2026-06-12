@@ -132,19 +132,25 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | Field | Default | Description |
 |-------|---------|-------------|
 | `cores` | `0` | Number of parallel worker threads. `0` uses all available CPU cores. Set to a specific number to limit parallelism on shared machines. |
-| `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. |
+| `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases. |
 | `num_run` | `0` | Run index, reserved for future use as a random seed. Has no effect currently. |
 
-Cache entries are keyed only by the active configuration and instance path.
-The algorithm command, cutoff, objective, solver version, wrapper behavior,
-and random seed are not included. Use a separate cache if any of them change;
+Cache entries are keyed by the active configuration and instance path, with the
+execution cutoff stored on each result. A timeout can satisfy only requests
+with an equal or shorter cutoff. A completed result that exceeds a shorter
+requested cutoff is returned as an in-memory synthetic timeout and is never
+written back. The algorithm command, objective, solver version, wrapper
+behavior, and random seed are not included. Use a separate cache if any of them change;
 otherwise stale results may be reused without warning.
+
+Caches created before cutoff-aware results were introduced are incompatible
+and must be removed or replaced with a new cache file.
 
 ### 🩺 Debug
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `debug` | `false` | Print structured debug output to stderr: new incumbents, scores, and timing. |
+| `debug` | `false` | Print structured debug output to stderr: new incumbents, scores, accepted argument changes, and timing. |
 | `debug_wrapper` | `false` | Print one line per solver wrapper invocation (instance, parameters). Verbose; useful for tracing evaluation order. |
 | `debug_solver` | `false` | Print one line per solver result (status, runtime, quality). Verbose; useful for diagnosing wrapper output. |
 | `debug_log` | `null` | Write debug output to this file in addition to (or instead of) stderr. Independent of `debug` — file logging can be active without stderr logging. |

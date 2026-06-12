@@ -7,11 +7,12 @@
 //!     perturbation()          — random walk of strength s
 //!     acceptance_criterion()  — accept if new local optimum dominates incumbent
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossbeam::channel::RecvTimeoutError;
 use rand::Rng;
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::cache::{Cache, hash_config};
 use crate::eval::{EvalTask, Scheduler};
@@ -39,6 +40,32 @@ fn log_incumbent(
     );
     crate::debug_block(true, &config_to_yaml(incumbent)?);
     Ok(())
+}
+
+fn format_argument_changes(current: &Config, next: &Config, space: &ParamSpace) -> String {
+    let current = active_config(current, space);
+    let next = active_config(next, space);
+    let names: BTreeSet<&str> = current
+        .keys()
+        .chain(next.keys())
+        .map(String::as_str)
+        .collect();
+
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let before = current.get(name).map(String::as_str);
+            let after = next.get(name).map(String::as_str);
+            (before != after).then(|| {
+                format!(
+                    "{name}: {} -> {}",
+                    before.unwrap_or("<inactive>"),
+                    after.unwrap_or("<inactive>")
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// ILS algorithm variant.
@@ -387,8 +414,15 @@ fn basic_local_search(
                 Err(RecvTimeoutError::Disconnected) => break,
             };
 
-            if result.status != "UNKNOWN" {
-                cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+            if result.cacheable && result.status != "UNKNOWN" {
+                cache.put(
+                    result.hash,
+                    result.instance_id,
+                    result.runtime,
+                    result.quality,
+                    &result.status,
+                    result.cutoff,
+                )?;
             }
             if result.batch_id != batch_id { continue; }
 
@@ -429,14 +463,22 @@ fn basic_local_search(
                     // Accept — stop evaluating the rest
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
-                if r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                if r.cacheable && r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
                 }
             }
                     crate::debug_line(options.debug.main, &format!(
                         "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
                         crate::t()
                     ));
+                    crate::debug_line(
+                        options.debug.main,
+                        &format!(
+                            "[{:8.2}s] ils: bls arguments: {}",
+                            crate::t(),
+                            format_argument_changes(&current, &neighbors[nid], space)
+                        ),
+                    );
                     current = neighbors[nid].clone();
                     current_score = score;
                     changed = true;
@@ -448,8 +490,8 @@ fn basic_local_search(
         if !changed {
             scheduler.reset();
             while let Ok(r) = scheduler.results().try_recv() {
-                if r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                if r.cacheable && r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
                 }
             }
             crate::debug_line(options.debug.main, &format!(
@@ -488,8 +530,15 @@ fn collect_one(
             Err(RecvTimeoutError::Disconnected) => break,
         };
 
-        if result.status != "UNKNOWN" {
-            cache.put(result.hash, result.instance_id, result.runtime, result.quality, &result.status)?;
+        if result.cacheable && result.status != "UNKNOWN" {
+            cache.put(
+                result.hash,
+                result.instance_id,
+                result.runtime,
+                result.quality,
+                &result.status,
+                result.cutoff,
+            )?;
         }
         if result.batch_id != batch_id { continue; }
         if result.neighbor_id != expected_nid { continue; }
@@ -508,8 +557,8 @@ fn collect_one(
                 if pm > options.bound_multiplier * inc {
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
-                if r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status)?;
+                if r.cacheable && r.status != "UNKNOWN" {
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
                 }
             }
                     break;
@@ -756,6 +805,34 @@ mod tests {
         assert_eq!(first_active, cfg(&[("mode", "fast")]));
         assert_eq!(first_active, second_active);
         assert_eq!(hash_config(&first_active), hash_config(&second_active));
+    }
+
+    #[test]
+    fn argument_changes_include_conditional_activation() {
+        let space = conditional_space();
+        let current = cfg(&[("mode", "fast"), ("limit", "2")]);
+        let next = cfg(&[("mode", "slow"), ("limit", "2")]);
+
+        assert_eq!(
+            format_argument_changes(&current, &next, &space),
+            "limit: <inactive> -> 2; mode: fast -> slow"
+        );
+        assert_eq!(
+            format_argument_changes(&next, &current, &space),
+            "limit: 2 -> <inactive>; mode: slow -> fast"
+        );
+    }
+
+    #[test]
+    fn argument_changes_are_sorted() {
+        let space = simple_space();
+        let current = cfg(&[("alpha", "1"), ("beta", "b")]);
+        let next = cfg(&[("alpha", "3"), ("beta", "a")]);
+
+        assert_eq!(
+            format_argument_changes(&current, &next, &space),
+            "alpha: 1 -> 3; beta: b -> a"
+        );
     }
 
     #[test]
