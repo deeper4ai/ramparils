@@ -145,3 +145,51 @@ fn llm2smt_wrapper_forwards_sigterm_to_solver_session() {
     };
     assert!(!process_exists, "llm2smt solver process {solver_pid} was orphaned");
 }
+
+#[test]
+fn llm2smt_wrapper_handles_sigterm_during_solver_spawn() {
+    let wrapper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/llm2smt/llm2smt_wrapper.py");
+    let script = r#"
+import importlib.util
+import os
+import signal
+import sys
+
+spec = importlib.util.spec_from_file_location("llm2smt_wrapper", sys.argv[1])
+wrapper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wrapper)
+
+kills = []
+
+class FakeProcess:
+    pid = 123456
+
+    def __init__(self, *args, **kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def poll(self):
+        return None
+
+wrapper.subprocess.Popen = FakeProcess
+wrapper.os.killpg = lambda pid, signum: kills.append((pid, signum))
+signal.signal(signal.SIGTERM, wrapper.handle_termination)
+
+try:
+    wrapper.run(["unused"], 300.0, 1024 * 1024)
+except SystemExit as error:
+    assert error.code == 128 + signal.SIGTERM
+else:
+    raise AssertionError("SIGTERM was not delivered after solver assignment")
+
+assert kills == [(FakeProcess.pid, signal.SIGKILL)]
+"#;
+
+    let status = Command::new("python3")
+        .args(["-c", script])
+        .arg(wrapper)
+        .status()
+        .unwrap();
+
+    assert!(status.success(), "spawn-race regression script failed");
+}

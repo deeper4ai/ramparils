@@ -99,8 +99,11 @@ def memory_limit_bytes() -> int:
     return value * 1024 * 1024
 
 
-def apply_memory_limit(limit: int) -> None:
+def apply_process_setup(
+    limit: int, signal_mask: set[signal.Signals]
+) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    signal.pthread_sigmask(signal.SIG_SETMASK, signal_mask)
 
 
 def terminate_solver() -> None:
@@ -123,14 +126,24 @@ def run(
 ) -> tuple[str, float, float]:
     global solver_process
     started = time.monotonic()
-    solver_process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        preexec_fn=partial(apply_memory_limit, memory_limit),
+    termination_signals = {signal.SIGINT, signal.SIGTERM}
+    previous_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, termination_signals
     )
+    try:
+        solver_process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            preexec_fn=partial(
+                apply_process_setup, memory_limit, previous_mask
+            ),
+        )
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
     try:
         stdout, stderr = solver_process.communicate(timeout=cutoff)
     except subprocess.TimeoutExpired:
