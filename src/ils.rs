@@ -222,14 +222,23 @@ pub fn run(
             // current incumbent push it to be evaluated on another fidelity step.
             let next = next_n_runs(n_runs, options.fidelity_step, n_total);
             if next > n_runs {
-                n_runs = next;
-                incumbent_score = evaluate_config(
-                    &incumbent, &instances[..n_runs], &scheduler, cache, options, space, None, deadline,
+                let next_evaluation = evaluate_config_outcome(
+                    &incumbent, &instances[..next], &scheduler, cache, options, space, None, deadline,
                 )?;
-                crate::debug_line(options.debug.main, &format!(
-                    "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
-                    crate::t()
-                ));
+                if next_evaluation.complete && next_evaluation.score.is_finite() {
+                    n_runs = next;
+                    incumbent_score = next_evaluation.score;
+                    crate::debug_line(options.debug.main, &format!(
+                        "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
+                        crate::t()
+                    ));
+                } else {
+                    crate::debug_line(options.debug.main, &format!(
+                        "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete; retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
+                        crate::t()
+                    ));
+                    break;
+                }
             }
         }
 
@@ -330,7 +339,41 @@ fn evaluate_config(
     incumbent_score: Option<f64>,
     deadline: Instant,
 ) -> Result<f64> {
-    if instances.is_empty() { return Ok(0.0); }
+    Ok(evaluate_config_outcome(
+        config,
+        instances,
+        scheduler,
+        cache,
+        options,
+        space,
+        incumbent_score,
+        deadline,
+    )?
+    .score)
+}
+
+struct ConfigEvaluation {
+    score: f64,
+    complete: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_config_outcome(
+    config: &Config,
+    instances: &[(i64, String)],
+    scheduler: &Scheduler,
+    cache: &mut Cache,
+    options: &IlsOptions,
+    space: &ParamSpace,
+    incumbent_score: Option<f64>,
+    deadline: Instant,
+) -> Result<ConfigEvaluation> {
+    if instances.is_empty() {
+        return Ok(ConfigEvaluation {
+            score: 0.0,
+            complete: true,
+        });
+    }
 
     let eval_config = active_config(config, space);
     let hash = hash_config(&eval_config);
@@ -506,6 +549,7 @@ fn basic_local_search(
 
 /// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
 /// Used by `evaluate_config` for single-config evaluation.
+#[allow(clippy::too_many_arguments)]
 fn collect_one(
     batch_id: u64,
     n_instances: usize,
@@ -515,7 +559,7 @@ fn collect_one(
     options: &IlsOptions,
     incumbent_score: Option<f64>,
     deadline: Instant,
-) -> Result<f64> {
+) -> Result<ConfigEvaluation> {
     let mut runtimes = Vec::with_capacity(n_instances);
     let mut qualities = Vec::with_capacity(n_instances);
     let mut partial_sum = 0.0f64;
@@ -567,8 +611,13 @@ fn collect_one(
         }
     }
 
-    if runtimes.is_empty() { return Ok(f64::INFINITY); }
-    Ok(compute_score(&runtimes, &qualities, options))
+    let complete = runtimes.len() == n_instances;
+    let score = if runtimes.is_empty() {
+        f64::INFINITY
+    } else {
+        compute_score(&runtimes, &qualities, options)
+    };
+    Ok(ConfigEvaluation { score, complete })
 }
 
 /// Compute a scalar score from per-instance results.
@@ -961,5 +1010,57 @@ mod tests {
 
         assert!(started.elapsed() >= Duration::from_millis(650));
         assert!((score - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn evaluation_marks_partial_cache_result_incomplete() {
+        let mut cache = Cache::open(":memory:", false).unwrap();
+        let paths = vec!["cached.cnf".to_string(), "slow.cnf".to_string()];
+        let ids = cache.load_instances(&paths).unwrap();
+        let instances = paths
+            .iter()
+            .map(|path| (ids[path], path.clone()))
+            .collect::<Vec<_>>();
+        let space = simple_space();
+        let config = cfg(&[("alpha", "1"), ("beta", "a")]);
+        let hash = hash_config(&active_config(&config, &space));
+        cache
+            .put(hash, ids["cached.cnf"], 0.1, 0.0, "sat", 2.0)
+            .unwrap();
+
+        let scheduler = Scheduler::new(
+            1,
+            "sleep 0.5; echo '#%# RamParIls #%# sat, 0.5, 0.0'; true".to_string(),
+            2.0,
+            crate::DebugOptions::default(),
+        );
+        let options = IlsOptions {
+            approach: Approach::Focused,
+            n_workers: 1,
+            perturbation_strength: 1,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: false,
+            tuner_timeout: 0.1,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
+            debug: crate::DebugOptions::default(),
+        };
+
+        let evaluation = evaluate_config_outcome(
+            &config,
+            &instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            None,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .unwrap();
+
+        assert!(!evaluation.complete);
+        assert!((evaluation.score - 0.1).abs() < 1e-9);
     }
 }
