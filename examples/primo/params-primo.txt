@@ -1,0 +1,30 @@
+# primo QF_LRA configuration space
+#
+# Defaults match `primo --help`; the QF_UF/EUF options are left out because
+# every bundled instance is QF_LRA.
+
+# Simplex bound propagation. Row propagation only takes effect while
+# lra_propagation is on, and the reverse direction only while the forward one
+# is on, so both are declared conditional.
+lra_propagation {true, false} [true]
+lra_row_propagation {false, true} [false] | lra_propagation in {true}
+lra_row_propagation_max_row_size {8, 16, 32, 64, 128, 256} [64] | lra_row_propagation in {true}
+lra_row_propagation_max_fanout {8, 16, 32, 64, 128, 256} [64] | lra_row_propagation in {true}
+lra_bidirectional_row_propagation {false, true} [false] | lra_row_propagation in {true}
+lra_bidirectional_row_propagation_max_row_size {8, 16, 32, 64, 128} [32] | lra_bidirectional_row_propagation in {true}
+lra_bidirectional_row_propagation_max_fanout {8, 16, 32, 64, 128} [32] | lra_bidirectional_row_propagation in {true}
+
+# Check/Pivot variable selection. The leaving-side heuristic is only consulted
+# under the sparse rule.
+lra_pivoting_rule {sparse, bland, dantzig, soi} [sparse]
+lra_sparse_leaving {true, false} [true] | lra_pivoting_rule in {sparse}
+
+lra_theory_decisions {false, true} [false]
+lra_fixed_elimination {false, true} [false]
+gaussian_elimination {true, false} [true]
+
+# SAT and DPLL(T) boundary. "auto" for top_level_or_tseitin is primo's
+# automatic rule; "always" and "never" pin the encoding.
+top_level_or_tseitin {auto, always, never} [auto]
+pure_theory_filter {auto, on, off} [auto]
+theory_phase {negative, positive, none, polarity, auto} [negative]

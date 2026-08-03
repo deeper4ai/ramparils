@@ -1,0 +1,37 @@
+algo: "python3 primo_wrapper.py"
+paramfile: "params-primo.txt"
+instance_file: "instances.txt"
+initial_config:
+  lra_propagation: true
+  lra_row_propagation: false
+  lra_row_propagation_max_row_size: 64
+  lra_row_propagation_max_fanout: 64
+  lra_bidirectional_row_propagation: false
+  lra_bidirectional_row_propagation_max_row_size: 32
+  lra_bidirectional_row_propagation_max_fanout: 32
+  lra_pivoting_rule: sparse
+  lra_sparse_leaving: true
+  lra_theory_decisions: false
+  lra_fixed_elimination: false
+  gaussian_elimination: true
+  top_level_or_tseitin: auto
+  pure_theory_filter: auto
+  theory_phase: negative
+
+cutoff_time: 10.0
+tuner_timeout: 300.0
+run_obj: runtime
+overall_obj: mean
+
+approach: focused
+initial_fidelity: 4
+fidelity_step: 4
+perturbation_strength: 4
+bound_multiplier: 10.0
+pruning: true
+
+cores: 0
+cache_db: "primo.dbcache"
+debug: true
+debug_log: "ramparils.log"
+error_log: "ramparils-errors.log"
