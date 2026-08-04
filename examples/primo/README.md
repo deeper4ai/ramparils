@@ -81,6 +81,10 @@ primo's built-in default when one is absent.
 `auto` (the default automatic rule, no flag), `always`
 (`--top-level-or-tseitin`), and `never` (`--no-top-level-or-tseitin`).
 
+`guarded_real_equality_lowering` is a preprocessing rewrite that primo groups
+with its QF_LRA options. It is unconditional and off by default, so the wrapper
+passes `--guarded-real-equality-lowering` only when the tuner turns it on.
+
 ## 📤 Output
 
 The complete starting configuration is declared inline under `initial_config`.

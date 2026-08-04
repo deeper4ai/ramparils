@@ -31,6 +31,7 @@ POSITIVE_FLAGS = {
     "lra_bidirectional_row_propagation": "--lra-bidirectional-row-propagation",
     "lra_theory_decisions": "--lra-theory-decisions",
     "lra_fixed_elimination": "--lra-fixed-elimination",
+    "guarded_real_equality_lowering": "--guarded-real-equality-lowering",
 }
 
 # Parameters passed through as `--flag value`.

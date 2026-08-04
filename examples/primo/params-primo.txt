@@ -23,6 +23,11 @@ lra_theory_decisions {false, true} [false]
 lra_fixed_elimination {false, true} [false]
 gaussian_elimination {true, false} [true]
 
+# Preprocessing rewrite that distributes a guard over a disjunction's single
+# Real equality child, saving one Tseitin layer. Opt-in in primo because its
+# measured effect is mixed, and unconditional: it depends on no other option.
+guarded_real_equality_lowering {false, true} [false]
+
 # SAT and DPLL(T) boundary. "auto" for top_level_or_tseitin is primo's
 # automatic rule; "always" and "never" pin the encoding.
 top_level_or_tseitin {auto, always, never} [auto]
