@@ -46,6 +46,38 @@ speculative work on neighbors that may become irrelevant after the first improvi
 Fidelity always uses the first F entries in the supplied instance list. The list is not shuffled,
 so its early prefixes should be reasonably representative of the complete training set.
 
+A score is only meaningful relative to the prefix it was measured on — different fidelities are
+different objective functions, and comparing across them is meaningless. Two configurations
+outlive a fidelity increase: the incumbent, and the local optimum the next perturbation starts
+from (the ILS home base). **Both are re-measured on the new prefix whenever the fidelity grows**,
+so every comparison the ILS makes is between scores taken on the same instances. Each increase is
+logged as
+
+```text
+ils: n_runs increased to 64/1753 incumbent_score=0.456619 home_base_score=0.456619
+```
+
+The home base is usually the incumbent, in which case the second measurement costs nothing.
+
+Home-base replacements are logged too, one line each, with the parameter diff against the
+previous home base rather than a full configuration block — it can change every round:
+
+```text
+ils: new home base: hash=bd4315273a9356dd score=0.025000 instances=4 changes: alpha: 3 -> 2; beta: a -> b
+```
+
+Replacements with no effective change (a differing value on a parameter whose guard is off)
+produce an empty diff and are not logged.
+
+This matters more than it may appear. Prefix means drift as the prefix grows — typically upward,
+if the early instances are cheaper — while the acceptance criterion is monotone: the home base is
+only ever replaced by something that beats it. A home base left on an old, smaller prefix
+therefore holds an optimistically low bar that the only mechanism able to update it can no longer
+clear, and the perturbation centre freezes for the rest of the run. ParamILS avoids this by
+storing a score per fidelity level for every configuration and always comparing two states at
+their common level (`isBetterWithLesserDetail` in `param_ils_2_3_run.rb`); RamParILS keeps one
+score per state and re-measures instead.
+
 **Random** (`approach: random`) currently uses all instances from the start and otherwise follows
 the same ILS path as `basic`. It should not currently be interpreted as an independent uniform
 random-search baseline.

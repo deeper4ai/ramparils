@@ -41,7 +41,24 @@ Adaptive capping uses this as the ceiling for individual run runtimes.
 **Dominance** (FocusedILS)
 In the current implementation, configuration θ₁ dominates θ₂ when it has been evaluated
 at at least the same fidelity and has a strictly lower aggregate score. Ties do not count
-as improvements.
+as improvements — this is what lets the fidelity grow when the incumbent survives a tie
+instead of being replaced endlessly by equal-scoring challengers.
+
+The acceptance criterion is the one exception: it resolves ties in favour of the challenger,
+so the ILS home base can cross plateaus and drift away from a basin it cannot improve on
+while the incumbent stays put. ParamILS spells the two variants
+`dominates(θ₁, θ₂, equalIsBetter)`.
+
+---
+
+**Home base** (ILS)
+The local optimum the next perturbation starts from — ParamILS's `last_ils_state`. Distinct
+from the incumbent: the incumbent is the best configuration found, the home base is where the
+search currently is. It is replaced by the new local optimum whenever that one is at least as
+good, and, like the incumbent, is re-measured whenever the fidelity grows. Replacements are
+logged as `ils: new home base:` with the parameter diff against the previous one. Only the home
+base is perturbed, so a home base that stops moving turns the ILS into repeated random restarts
+from a fixed ball however the incumbent behaves — which is what the log lets you check.
 
 ---
 

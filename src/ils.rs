@@ -5,7 +5,27 @@
 //!     init_default() / init_random()
 //!     basic_local_search()    — first-improvement, parallel neighbour evaluation
 //!     perturbation()          — random walk of strength s
-//!     acceptance_criterion()  — accept if new local optimum dominates incumbent
+//!     acceptance_criterion()  — accept if the new local optimum dominates the last one
+//!
+//! # Fidelity consistency
+//!
+//! A score is only meaningful relative to the instance prefix it was measured
+//! on: it is the objective over `instances[..n_runs]`, and different `n_runs`
+//! are different objective functions. FocusedILS grows `n_runs` during the run,
+//! so every score that outlives a fidelity increase has to be re-measured
+//! before it is compared again.
+//!
+//! ParamILS gets this for free by storing a score *per level* for every
+//! configuration (`@cachedResultScalars[state][level]`) and projecting both
+//! sides of a comparison onto their common level (`isBetterWithLesserDetail`);
+//! `betterWithoutAutomaticIncrease` raises whichever state has fewer runs until
+//! the comparison resolves at equal detail. Here each retained state carries a
+//! single scalar instead, so there is nothing to project onto — the score has
+//! to be re-measured. Both states the loop carries across iterations, the
+//! incumbent and the ILS home base (`last_lm`), are therefore re-measured in
+//! the fidelity-increase block below, and the loop maintains the invariant that
+//! `incumbent_score`, `last_lm_score` and the current round's local optimum are
+//! all measured on the same `n_runs`.
 
 use anyhow::Result;
 use crossbeam::channel::RecvTimeoutError;
@@ -40,6 +60,45 @@ fn log_incumbent(
     );
     crate::debug_block(true, &config_to_yaml(incumbent)?);
     Ok(())
+}
+
+/// Log a replacement of the ILS home base — the configuration the next
+/// perturbation starts from (`last_lm`).
+///
+/// The home base is not the incumbent: the incumbent is the best configuration
+/// found, the home base is where the search currently *is*. Only the home base
+/// is perturbed, so a home base that stops moving turns the ILS into repeated
+/// random restarts from a fixed ball regardless of what the incumbent does —
+/// which is exactly what a reader of the log needs to be able to check.
+///
+/// Unlike a new incumbent this is logged as a single line with the parameter
+/// diff against the previous home base, not a full configuration block: the
+/// home base can change every round, and the diff is enough to replay the
+/// trajectory. Replacements with no *effective* change (a differing value on a
+/// parameter whose guard is off) produce an empty diff and are not logged.
+fn log_home_base(
+    enabled: bool,
+    previous: &Config,
+    home_base: &Config,
+    score: f64,
+    n_runs: usize,
+    space: &ParamSpace,
+) {
+    if !enabled {
+        return;
+    }
+    let changes = format_argument_changes(previous, home_base, space);
+    if changes.is_empty() {
+        return;
+    }
+    let hash = hash_config(&active_config(home_base, space));
+    crate::debug_line(
+        true,
+        &format!(
+            "[{:8.2}s] ils: new home base: hash={hash:016x} score={score:.6} instances={n_runs} changes: {changes}",
+            crate::t()
+        ),
+    );
 }
 
 fn format_argument_changes(current: &Config, next: &Config, space: &ParamSpace) -> String {
@@ -161,6 +220,9 @@ pub fn run(
 
     let mut incumbent = current.clone();
     let mut incumbent_score = current_score;
+    // Kept for the home-base diff below: `incumbent` may be replaced by the
+    // first descent, and `current` is moved into it.
+    let initial_config = current.clone();
 
     // --- First BLS ---
     let (lm, lm_score) = basic_local_search(
@@ -168,7 +230,7 @@ pub fn run(
         instances, n_runs, &scheduler, cache, options, space,
         incumbent_score, &mut rng, deadline,
     )?;
-    if lm_score < incumbent_score {
+    if dominates(lm_score, n_runs, incumbent_score, n_runs, options) {
         incumbent = lm.clone();
         incumbent_score = lm_score;
         log_incumbent(
@@ -181,6 +243,16 @@ pub fn run(
     }
     let mut last_lm = lm;
     let mut last_lm_score = lm_score;
+    // Fidelity at which `last_lm_score` was measured; kept equal to `n_runs`.
+    let mut last_lm_runs = n_runs;
+    log_home_base(
+        options.debug.main,
+        &initial_config,
+        &last_lm,
+        last_lm_score,
+        n_runs,
+        space,
+    );
 
     // --- Main ILS loop ---
     while Instant::now() < deadline && !crate::interrupted() {
@@ -205,8 +277,13 @@ pub fn run(
             incumbent_score, &mut rng, deadline,
         )?;
 
-        // Update incumbent
-        if new_lm_score < incumbent_score {
+        // Update incumbent.  `new_lm_score`, `incumbent_score` and
+        // `last_lm_score` are all measured on `instances[..n_runs]` here — the
+        // fidelity block at the end of the loop re-measures the two retained
+        // states together, so the comparisons below never cross fidelities.
+        let incumbent_survived =
+            !dominates(new_lm_score, n_runs, incumbent_score, n_runs, options);
+        if !incumbent_survived {
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
             log_incumbent(
@@ -216,7 +293,28 @@ pub fn run(
                 n_runs,
                 space,
             )?;
-        } else if options.approach == Approach::Focused {
+        }
+
+        // Acceptance criterion: keep new local opt only if it dominates the last one
+        let previous_home_base = last_lm.clone();
+        let (accepted, accepted_score) = acceptance_criterion(
+            new_lm, new_lm_score, n_runs,
+            last_lm.clone(), last_lm_score, last_lm_runs,
+            options,
+        );
+        last_lm = accepted;
+        last_lm_score = accepted_score;
+        last_lm_runs = n_runs;
+        log_home_base(
+            options.debug.main,
+            &previous_home_base,
+            &last_lm,
+            last_lm_score,
+            n_runs,
+            space,
+        );
+
+        if incumbent_survived && options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
             // This is the bounded increase mechanism: challengers that fail against the
             // current incumbent push it to be evaluated on another fidelity step.
@@ -225,28 +323,51 @@ pub fn run(
                 let next_evaluation = evaluate_config_outcome(
                     &incumbent, &instances[..next], &scheduler, cache, options, space, None, deadline,
                 )?;
-                if next_evaluation.complete && next_evaluation.score.is_finite() {
-                    n_runs = next;
-                    incumbent_score = next_evaluation.score;
-                    crate::debug_line(options.debug.main, &format!(
-                        "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6}",
-                        crate::t()
-                    ));
-                } else {
+                if !(next_evaluation.complete && next_evaluation.score.is_finite()) {
                     crate::debug_line(options.debug.main, &format!(
                         "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete; retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
                         crate::t()
                     ));
                     break;
                 }
+
+                // Re-measure the ILS home base at the new fidelity too.  It is
+                // compared against the challenger on every subsequent round, so
+                // leaving its score on the old prefix would compare two
+                // different objectives.  Because prefix means drift, such a
+                // stale bar is biased and — the acceptance criterion being
+                // monotone — can only be updated by the comparison it blocks,
+                // which freezes the perturbation centre for the rest of the run.
+                // The home base is usually the incumbent, in which case the
+                // evaluation is already done.
+                let home_base_is_incumbent = hash_config(&active_config(&last_lm, space))
+                    == hash_config(&active_config(&incumbent, space));
+                let home_base_score = if home_base_is_incumbent {
+                    next_evaluation.score
+                } else {
+                    let home_base_evaluation = evaluate_config_outcome(
+                        &last_lm, &instances[..next], &scheduler, cache, options, space, None, deadline,
+                    )?;
+                    if !(home_base_evaluation.complete && home_base_evaluation.score.is_finite()) {
+                        crate::debug_line(options.debug.main, &format!(
+                            "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete (home base); retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
+                            crate::t()
+                        ));
+                        break;
+                    }
+                    home_base_evaluation.score
+                };
+
+                n_runs = next;
+                incumbent_score = next_evaluation.score;
+                last_lm_score = home_base_score;
+                last_lm_runs = next;
+                crate::debug_line(options.debug.main, &format!(
+                    "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6} home_base_score={last_lm_score:.6}",
+                    crate::t()
+                ));
             }
         }
-
-        // Acceptance criterion: keep new local opt only if it dominates the last one
-        let (accepted, accepted_score) =
-            acceptance_criterion(new_lm, new_lm_score, last_lm.clone(), last_lm_score, options);
-        last_lm = accepted;
-        last_lm_score = accepted_score;
     }
 
     Ok((incumbent, incumbent_score))
@@ -294,6 +415,9 @@ pub fn perturbation(config: Config, strength: usize, space: &ParamSpace, rng: &m
 /// Strict `<` (not `≤`) is intentional: ties do not count as improvement.
 /// This lets FocusedILS grow `n_runs` when the incumbent survives a tie
 /// instead of endlessly replacing it with an equal-scoring challenger.
+///
+/// ParamILS spells this `dominates(a, b, equalIsBetter=false)`; the `≤` variant
+/// is [`weakly_dominates`].
 pub fn dominates(
     a_score: f64, a_runs: usize,
     b_score: f64, b_runs: usize,
@@ -305,14 +429,43 @@ pub fn dominates(
     }
 }
 
+/// `a` is at least as good as `b` — ParamILS's `dominates(a, b, equalIsBetter=true)`.
+///
+/// Used only by the acceptance criterion. ParamILS resolves a tie there in
+/// favour of the challenger, with the comment "new <= old handled first ->
+/// moving away from incumbent": on a plateau the ILS home base keeps moving
+/// while the incumbent stays put, which is what lets the two diverge and the
+/// search drift away from a basin it cannot improve on. The incumbent
+/// comparison keeps the strict [`dominates`], so fidelity growth is unaffected.
+pub fn weakly_dominates(
+    a_score: f64, a_runs: usize,
+    b_score: f64, b_runs: usize,
+    options: &IlsOptions,
+) -> bool {
+    match options.approach {
+        Approach::Basic | Approach::Random => a_score <= b_score,
+        Approach::Focused => a_runs >= b_runs && a_score <= b_score,
+    }
+}
+
 /// Return the new local optimum if it dominates the previous one; otherwise
 /// keep the previous one.
+///
+/// `new_runs` and `last_runs` are the fidelities the two scores were measured
+/// on. The caller keeps them equal (see the fidelity-consistency note in the
+/// module docs); they are passed rather than assumed so that `dominates`'
+/// FocusedILS guard still refuses a claim made from a smaller sample if that
+/// invariant is ever broken.
 fn acceptance_criterion(
-    new: Config, new_score: f64,
-    last: Config, last_score: f64,
+    new: Config, new_score: f64, new_runs: usize,
+    last: Config, last_score: f64, last_runs: usize,
     options: &IlsOptions,
 ) -> (Config, f64) {
-    if dominates(new_score, 1, last_score, 1, options) {
+    debug_assert_eq!(
+        new_runs, last_runs,
+        "acceptance compares scores measured on different instance prefixes"
+    );
+    if weakly_dominates(new_score, new_runs, last_score, last_runs, options) {
         (new, new_score)
     } else {
         (last, last_score)
@@ -816,6 +969,22 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
+    fn focused_options() -> IlsOptions {
+        IlsOptions {
+            approach: Approach::Focused,
+            n_workers: 1,
+            perturbation_strength: 4,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: true,
+            tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
+            debug: crate::DebugOptions::default(),
+        }
+    }
+
     #[test]
     fn neighbourhood_size() {
         let space = simple_space();
@@ -922,6 +1091,64 @@ mod tests {
         assert!(dominates(1.0, 10, 2.0, 5, &opts));  // strictly better score, more runs
         assert!(!dominates(1.0, 3, 2.0, 5, &opts));  // better score but fewer runs
         assert!(!dominates(1.0, 10, 1.0, 5, &opts)); // tie — does NOT dominate
+    }
+
+    #[test]
+    fn weakly_dominates_resolves_ties_for_the_challenger() {
+        let opts = focused_options();
+
+        // Same as `dominates` except on ties, which the acceptance criterion
+        // resolves in favour of the challenger ("moving away from incumbent").
+        assert!(weakly_dominates(1.0, 10, 2.0, 5, &opts));
+        assert!(weakly_dominates(1.0, 10, 1.0, 5, &opts)); // tie — accepted here
+        assert!(!weakly_dominates(2.0, 10, 1.0, 5, &opts));
+        // The FocusedILS run-count guard still applies.
+        assert!(!weakly_dominates(1.0, 3, 1.0, 5, &opts));
+        assert!(!weakly_dominates(1.0, 3, 2.0, 5, &opts));
+    }
+
+    #[test]
+    fn acceptance_takes_better_and_ties_but_not_worse() {
+        let opts = focused_options();
+        let old = cfg(&[("alpha", "1")]);
+        let new = cfg(&[("alpha", "2")]);
+
+        // Strictly better: accepted.
+        let (config, score) =
+            acceptance_criterion(new.clone(), 1.0, 8, old.clone(), 2.0, 8, &opts);
+        assert_eq!(config, new);
+        assert!((score - 1.0).abs() < 1e-9);
+
+        // Tie: accepted, so the home base can cross plateaus.
+        let (config, score) =
+            acceptance_criterion(new.clone(), 2.0, 8, old.clone(), 2.0, 8, &opts);
+        assert_eq!(config, new);
+        assert!((score - 2.0).abs() < 1e-9);
+
+        // Worse: rejected, home base unchanged.
+        let (config, score) =
+            acceptance_criterion(new.clone(), 3.0, 8, old.clone(), 2.0, 8, &opts);
+        assert_eq!(config, old);
+        assert!((score - 2.0).abs() < 1e-9);
+    }
+
+    /// A stale home-base score from a smaller prefix must not be able to reject
+    /// a challenger measured on the current one.  The loop prevents this by
+    /// re-measuring both retained states on every fidelity increase; if that
+    /// invariant were ever broken, the run-count guard is the backstop.
+    #[test]
+    fn stale_lower_fidelity_score_cannot_win_a_comparison() {
+        let opts = focused_options();
+
+        // The failure this reproduces: a home base measured on 12 instances
+        // scoring 0.111, against a challenger measured on 568 scoring 0.489.
+        // The stale score looks far better only because short prefixes of this
+        // instance list are cheaper.
+        assert!(!dominates(0.111, 12, 0.489, 568, &opts));
+        assert!(!weakly_dominates(0.111, 12, 0.489, 568, &opts));
+
+        // Measured on the same prefix, the comparison resolves normally.
+        assert!(dominates(0.474, 568, 0.489, 568, &opts));
     }
 
     #[test]
