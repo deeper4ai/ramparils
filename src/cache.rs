@@ -20,7 +20,24 @@
 //!     cutoff        REAL    NOT NULL,
 //!     PRIMARY KEY (strategy_hash, instance_id)
 //! );
+//! CREATE TABLE IF NOT EXISTS strategies (
+//!     hash   INTEGER PRIMARY KEY,
+//!     config TEXT NOT NULL          -- JSON object, keys sorted
+//! );
 //! ```
+//!
+//! `strategies` makes the cache self-describing: without it a `.dbcache` is a
+//! pile of opaque hashes, and recovering what they mean depends on the
+//! parameter space still being enumerable and the hash still being reproducible
+//! — neither of which is guaranteed. `hash_config` uses `DefaultHasher`, which
+//! is explicitly not portable across compiler versions, so a toolchain upgrade
+//! would otherwise silently turn every cached row into an unattributable miss.
+//! One row per distinct configuration; negligible beside `results`.
+//!
+//! Opening an older cache adds the table (the schema is `IF NOT EXISTS` and
+//! runs on every open). Rows already in `results` stay usable — their hashes
+//! simply have no configuration recorded, and only strategies evaluated from
+//! then on are described.
 //!
 //! `quality` is the best-solution value reported by the solver (used when
 //! `run_obj = quality`; for runtime-objective runs it is ignored but still
@@ -37,7 +54,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::params::Config;
 
@@ -85,6 +102,10 @@ impl Cache {
                 status_id     INTEGER NOT NULL DEFAULT 0,
                 cutoff        REAL    NOT NULL,
                 PRIMARY KEY (strategy_hash, instance_id)
+            );
+            CREATE TABLE IF NOT EXISTS strategies (
+                hash   INTEGER PRIMARY KEY,
+                config TEXT NOT NULL
             );
         ").context("failed to initialise cache schema")?;
 
@@ -137,6 +158,74 @@ impl Cache {
             .context("failed to load instance ids")?;
         crate::debug_line(self.debug, &format!("[{:8.2}s] cache: load_instances n={}", crate::t(), map.len()));
         Ok(map)
+    }
+
+    /// Record what a strategy hash means, so the cache is self-describing.
+    ///
+    /// `config` must be the *active* configuration — the same one that was fed
+    /// to [`hash_config`], since inactive parameters are not part of the key.
+    /// Stored as a JSON object with sorted keys, which survives values
+    /// containing separators and is directly readable by downstream tooling.
+    ///
+    /// `INSERT OR IGNORE`: the first writer wins and repeat submissions of the
+    /// same strategy are free. Takes `&self` so it can be called from
+    /// [`crate::eval::Scheduler::submit`], which holds the cache immutably.
+    pub fn put_strategy(&self, strategy_hash: u64, config: &Config) -> Result<()> {
+        let ordered: BTreeMap<&str, &str> = config
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let json = serde_json::to_string(&ordered)
+            .context("failed to serialise configuration for the cache")?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO strategies (hash, config) VALUES (?1, ?2)",
+                params![strategy_hash as i64, json],
+            )
+            .context("failed to record strategy configuration")?;
+        Ok(())
+    }
+
+    /// Look up the configuration behind a strategy hash.
+    ///
+    /// `None` means the hash was never recorded — either it predates the
+    /// `strategies` table or it was written by an older binary.
+    pub fn get_strategy(&self, strategy_hash: u64) -> Result<Option<Config>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT config FROM strategies WHERE hash = ?1",
+                params![strategy_hash as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query strategy configuration")?;
+        match json {
+            None => Ok(None),
+            Some(json) => Ok(Some(
+                serde_json::from_str(&json)
+                    .with_context(|| format!("corrupt strategy record for hash {strategy_hash:016x}"))?,
+            )),
+        }
+    }
+
+    /// Every recorded strategy, ordered by hash.
+    pub fn strategies(&self) -> Result<Vec<(u64, Config)>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT hash, config FROM strategies ORDER BY hash")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to list strategies")?;
+        rows.into_iter()
+            .map(|(hash, json)| {
+                let config: Config = serde_json::from_str(&json).with_context(|| {
+                    format!("corrupt strategy record for hash {:016x}", hash as u64)
+                })?;
+                Ok((hash as u64, config))
+            })
+            .collect()
     }
 
     /// Bulk-fetch cached results for one strategy on a set of instances.
@@ -415,6 +504,67 @@ mod tests {
             .err()
             .expect("old cache schema should be rejected");
         assert!(error.to_string().contains("incompatible schema"));
+    }
+
+    #[test]
+    fn strategy_round_trip() {
+        let cache = open();
+        let config: Config = [
+            ("mode".to_string(), "slow".to_string()),
+            ("limit".to_string(), "2".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let hash = hash_config(&config);
+
+        assert!(cache.get_strategy(hash).unwrap().is_none());
+        cache.put_strategy(hash, &config).unwrap();
+        assert_eq!(cache.get_strategy(hash).unwrap().as_ref(), Some(&config));
+
+        // Idempotent: re-recording the same strategy is a no-op, not an error.
+        cache.put_strategy(hash, &config).unwrap();
+        assert_eq!(cache.strategies().unwrap().len(), 1);
+        assert_eq!(cache.strategies().unwrap()[0], (hash, config));
+    }
+
+    #[test]
+    fn strategy_values_survive_separator_characters() {
+        // The column is JSON precisely so a value containing `,` or `=` cannot
+        // corrupt the record.
+        let cache = open();
+        let config: Config = [("expr".to_string(), "a=1,b=2".to_string())]
+            .into_iter()
+            .collect();
+        let hash = hash_config(&config);
+        cache.put_strategy(hash, &config).unwrap();
+        assert_eq!(cache.get_strategy(hash).unwrap(), Some(config));
+    }
+
+    #[test]
+    fn opening_an_older_cache_adds_the_strategies_table() {
+        // A cache written before the table existed must keep working: the
+        // schema is applied on every open, so the table appears and the
+        // existing results stay readable — they simply have no configuration
+        // recorded against their hashes.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+        {
+            let mut cache = Cache::open(&path, false).unwrap();
+            let ids = cache.load_instances(&["p1.cnf".to_string()]).unwrap();
+            cache.put(7, ids["p1.cnf"], 1.5, 0.0, "sat", 10.0).unwrap();
+            cache.conn.execute_batch("DROP TABLE strategies;").unwrap();
+        }
+
+        let cache = Cache::open(&path, false).unwrap();
+        assert!(cache.strategies().unwrap().is_empty());
+        assert!(cache.get_strategy(7).unwrap().is_none());
+        let ids = cache.load_instances(&["p1.cnf".to_string()]).unwrap();
+        let hits = cache.get_batch(7, &[ids["p1.cnf"]], 10.0).unwrap();
+        assert_eq!(hits.len(), 1, "pre-existing results must survive the migration");
+
+        let config: Config = [("a".to_string(), "1".to_string())].into_iter().collect();
+        cache.put_strategy(7, &config).unwrap();
+        assert_eq!(cache.get_strategy(7).unwrap(), Some(config));
     }
 
     #[test]

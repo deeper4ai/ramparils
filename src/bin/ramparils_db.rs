@@ -83,6 +83,16 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         out_dir: PathBuf,
     },
+
+    /// Print `hash <TAB> configuration` for every recorded strategy.
+    Strategies {
+        /// Path to the .dbcache file.
+        dbcache: PathBuf,
+
+        /// Emit the stored JSON instead of `key=value,…`.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +104,64 @@ fn main() -> Result<()> {
     match args.cmd {
         Cmd::Solved  { dbcache, out_dir } => cmd_solved(&dbcache, &out_dir),
         Cmd::Status  { dbcache, out_dir } => cmd_status(&dbcache, &out_dir),
+        Cmd::Strategies { dbcache, json } => cmd_strategies(&dbcache, json),
     }
+}
+
+// ---------------------------------------------------------------------------
+// `strategies` sub-command
+// ---------------------------------------------------------------------------
+
+/// Dump the `strategies` table — what each hash in `results` actually means.
+///
+/// Caches written before the table existed have no rows here; those hashes can
+/// only be recovered by enumerating the parameter space, which needs the space
+/// to be small and the hash to be reproducible by the current toolchain.
+fn cmd_strategies(dbcache: &Path, as_json: bool) -> Result<()> {
+    let conn = open_ro(dbcache)?;
+
+    let present: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='strategies'",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed to inspect schema")?;
+    anyhow::ensure!(
+        present > 0,
+        "{} has no `strategies` table — it was written by a ramparils build that \
+         did not record configurations. Running the tuner on it with a current \
+         build adds the table, but only strategies evaluated from then on are \
+         described.",
+        dbcache.display()
+    );
+
+    let mut stmt = conn.prepare("SELECT hash, config FROM strategies ORDER BY hash")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let mut n = 0usize;
+    for row in rows {
+        let (hash, json) = row?;
+        n += 1;
+        if as_json {
+            writeln!(out, "{:016x}\t{json}", hash as u64)?;
+        } else {
+            let config: BTreeMap<String, String> = serde_json::from_str(&json)
+                .with_context(|| format!("corrupt strategy record for hash {:016x}", hash as u64))?;
+            let body: Vec<String> = config
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+            writeln!(out, "{:016x}\t{}", hash as u64, body.join(","))?;
+        }
+    }
+    out.flush()?;
+    eprintln!("{n} strategies");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -263,7 +263,24 @@ ramparils-db solved results.dbcache --out-dir reports
 
 # Tab-separated instance, status, and runtime tables.
 ramparils-db status results.dbcache --out-dir reports
+
+# What each strategy hash actually is.
+ramparils-db strategies results.dbcache
+ramparils-db strategies results.dbcache --json
 ```
+
+Results are keyed by a hash of the active configuration, and the cache records
+what each hash means in a `strategies` table, written the first time a
+configuration is evaluated. Without it a `.dbcache` is a pile of opaque hashes:
+recovering them would depend on the parameter space still being small enough to
+enumerate and on the hash being reproducible by the current toolchain — and
+`hash_config` uses `DefaultHasher`, which is explicitly not portable across
+compiler versions.
+
+Opening a cache written before the table existed adds it automatically;
+existing results stay usable, but their hashes are only described from that
+point on. `ramparils-db strategies` says so rather than reporting an empty
+table.
 
 The cache is most valuable when several tuning runs use exactly the same
 solver semantics. Keep separate cache files when the algorithm command,

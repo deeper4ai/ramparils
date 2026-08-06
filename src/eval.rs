@@ -214,6 +214,10 @@ impl Scheduler {
         #[cfg(test)]
         let mut n_work_batches = 0usize;
         for task in tasks {
+            // Every configuration the tuner ever evaluates passes through here,
+            // so this is where the cache learns what its hashes mean.
+            cache.put_strategy(task.hash, &task.config)?;
+
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
             let hits: HashMap<i64, CachedResult> =
                 cache.get_batch(task.hash, &ids, self.cutoff_time)?;

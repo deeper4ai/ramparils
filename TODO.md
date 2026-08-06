@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS instances (
     id   INTEGER PRIMARY KEY,
     path TEXT UNIQUE NOT NULL
 );
+CREATE TABLE IF NOT EXISTS strategies (
+    hash   INTEGER PRIMARY KEY,
+    config TEXT NOT NULL          -- JSON object, sorted keys; makes the cache self-describing
+);
 CREATE TABLE IF NOT EXISTS results (
     strategy_hash INTEGER NOT NULL,
     instance_id   INTEGER NOT NULL,
