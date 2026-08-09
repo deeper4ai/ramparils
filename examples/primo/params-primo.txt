@@ -1,7 +1,10 @@
 # primo QF_LRA configuration space
 #
-# Defaults match `primo --help`; the QF_UF/EUF options are left out because
-# every bundled instance is QF_LRA.
+# Defaults match `primo --help` (checked against primo 0.1.0, git 996a100);
+# the QF_UF/EUF options are left out because every bundled instance is QF_LRA.
+# The QF_UFLRA Nelson-Oppen knobs (--nelson-oppen-prop,
+# --model-equality-branching and friends) are left out for the same reason:
+# they are inert unless a formula reaches the mixed EUF/LRA solver.
 
 # Simplex bound propagation. Row propagation only takes effect while
 # lra_propagation is on, and the reverse direction only while the forward one
@@ -14,19 +17,60 @@ lra_bidirectional_row_propagation {false, true} [false] | lra_row_propagation in
 lra_bidirectional_row_propagation_max_row_size {8, 16, 32, 64, 128} [32] | lra_bidirectional_row_propagation in {true}
 lra_bidirectional_row_propagation_max_fanout {8, 16, 32, 64, 128} [32] | lra_bidirectional_row_propagation in {true}
 
-# Check/Pivot variable selection. The leaving-side heuristic is only consulted
-# under the sparse rule.
+# Check/Pivot variable selection.
 lra_pivoting_rule {sparse, bland, dantzig, soi} [sparse]
-lra_sparse_leaving {true, false} [true] | lra_pivoting_rule in {sparse}
 
+# Leaving side, sparse rule only. The two heuristics are not independent:
+# lra_tableau.cpp tests least-violated first and skips the short-row branch
+# entirely when it fires, so lra_sparse_leaving is declared under
+# lra_least_violated_leaving rather than under the pivoting rule. RamParILS
+# resolves the chain transitively, so it is still inactive under every other
+# rule.
+lra_least_violated_leaving {false, true} [false] | lra_pivoting_rule in {sparse}
+lra_sparse_leaving {true, false} [true] | lra_least_violated_leaving in {false}
+
+# Entering side, sparse rule only: how many eligible candidates are scored
+# before the best one seen is taken. 0 scores every eligible candidate; 1 is
+# the cheapest possible pricing. Any value is sound — the bound never cuts
+# short the search for *whether* an eligible candidate exists.
+lra_sparse_pricing_candidates {1, 2, 4, 8, 16, 32, 64, 0} [16] | lra_pivoting_rule in {sparse}
+
+# Anti-cycling fallback point: factor * variables + offset pivots within one
+# check() before selection switches to Bland's rule. Inactive under the bland
+# rule, which is already there. Smaller is slower but anti-cycling-proven;
+# every value is sound, since termination needs the fallback to happen after
+# finitely many pivots and not after any particular count.
+lra_bland_fallback_factor {0, 1, 2, 4, 8, 16, 32} [4] | lra_pivoting_rule in {sparse, dantzig, soi}
+lra_bland_fallback_offset {0, 16, 32, 64, 128, 256, 1024} [64] | lra_pivoting_rule in {sparse, dantzig, soi}
+
+# A zero threshold falls back on the first pivot, which just reproduces
+# lra_pivoting_rule=bland by another route.
+{lra_bland_fallback_factor=0, lra_bland_fallback_offset=0}
+
+# SAT-search guidance from the arithmetic theory. Independent of each other:
+# theory decisions supply the decision literal, model phase only refreshes
+# atom polarity from the tableau assignment.
 lra_theory_decisions {false, true} [false]
+lra_model_phase {false, true} [false]
+
 lra_fixed_elimination {false, true} [false]
 gaussian_elimination {true, false} [true]
+
+# Monotone (one-sided) real-variable elimination: a variable every constraint
+# pushes the same way is discharged and its atoms folded to constants.
+monotone_elimination {false, true} [false]
 
 # Preprocessing rewrite that distributes a guard over a disjunction's single
 # Real equality child, saving one Tseitin layer. Opt-in in primo because its
 # measured effect is mixed, and unconditional: it depends on no other option.
 guarded_real_equality_lowering {false, true} [false]
+
+# Which formulas reach the mixed EUF/LRA solver. Under "narrow" only a
+# Bool-sorted function application counts as an EUF predicate, so a formula
+# that is pure QF_LRA apart from propositional variables stays on the pure
+# path; "wide" routes it to the mixed solver, which is usually much worse but
+# genuinely better on some instances. Kept as a portfolio dimension.
+mixed_dispatch {narrow, wide} [narrow]
 
 # SAT and DPLL(T) boundary. "auto" for top_level_or_tseitin is primo's
 # automatic rule; "always" and "never" pin the encoding.

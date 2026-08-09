@@ -30,7 +30,10 @@ POSITIVE_FLAGS = {
     "lra_row_propagation": "--lra-row-propagation",
     "lra_bidirectional_row_propagation": "--lra-bidirectional-row-propagation",
     "lra_theory_decisions": "--lra-theory-decisions",
+    "lra_model_phase": "--lra-model-phase",
+    "lra_least_violated_leaving": "--lra-least-violated-leaving",
     "lra_fixed_elimination": "--lra-fixed-elimination",
+    "monotone_elimination": "--monotone-elimination",
     "guarded_real_equality_lowering": "--guarded-real-equality-lowering",
 }
 
@@ -45,6 +48,10 @@ VALUE_OPTIONS = {
         "--lra-bidirectional-row-propagation-max-fanout"
     ),
     "lra_pivoting_rule": "--lra-pivoting-rule",
+    "lra_sparse_pricing_candidates": "--lra-sparse-pricing-candidates",
+    "lra_bland_fallback_factor": "--lra-bland-fallback-factor",
+    "lra_bland_fallback_offset": "--lra-bland-fallback-offset",
+    "mixed_dispatch": "--mixed-dispatch",
     "pure_theory_filter": "--pure-theory-filter",
     "theory_phase": "--theory-phase",
 }

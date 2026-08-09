@@ -10,11 +10,18 @@ initial_config:
   lra_bidirectional_row_propagation_max_row_size: 32
   lra_bidirectional_row_propagation_max_fanout: 32
   lra_pivoting_rule: sparse
+  lra_least_violated_leaving: false
   lra_sparse_leaving: true
+  lra_sparse_pricing_candidates: 16
+  lra_bland_fallback_factor: 4
+  lra_bland_fallback_offset: 64
   lra_theory_decisions: false
+  lra_model_phase: false
   lra_fixed_elimination: false
   gaussian_elimination: true
+  monotone_elimination: false
   guarded_real_equality_lowering: false
+  mixed_dispatch: narrow
   top_level_or_tseitin: auto
   pure_theory_filter: auto
   theory_phase: negative

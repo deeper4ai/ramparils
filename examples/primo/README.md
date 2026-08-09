@@ -60,30 +60,55 @@ is enough to exercise every path in the wrapper.
 
 `params-primo.txt` covers primo's QF_LRA theory options and the SAT/DPLL(T)
 boundary. The QF_UF/EUF family is deliberately left out: it is inert on this
-benchmark set.
+benchmark set. So are the QF_UFLRA Nelson-Oppen knobs (`--nelson-oppen-prop`,
+`--model-equality-branching`, `--model-equality-branch-budget`,
+`--model-equality-branch-policy`), which do nothing unless a formula reaches
+the mixed EUF/LRA solver.
 
-Four parameters are conditional, matching what primo's own `--help` documents
-about when each option takes effect:
+Nine parameters are conditional, matching what primo's own `--help` and its
+simplex implementation say about when each option takes effect:
 
 - `lra_row_propagation` is active only while `lra_propagation` is on.
 - `lra_bidirectional_row_propagation` and the forward row-size/fanout caps are
   active only while `lra_row_propagation` is on.
 - The reverse-direction caps are active only while
   `lra_bidirectional_row_propagation` is on.
-- `lra_sparse_leaving` is active only under `lra_pivoting_rule = sparse`, which
-  is the only rule that consults the leaving-side heuristic.
+- `lra_least_violated_leaving` and `lra_sparse_pricing_candidates` are active
+  only under `lra_pivoting_rule = sparse`, the only rule that consults the
+  sparse leaving-side and pricing heuristics.
+- `lra_sparse_leaving` hangs off `lra_least_violated_leaving` rather than off
+  the pivoting rule: the leaving-variable loop in `LraTableau::check` tests
+  least-violated first and skips the short-row branch entirely when it fires,
+  so the two are not independent. The chain keeps it inactive under every
+  non-sparse rule too.
+- The Bland fallback point (`lra_bland_fallback_factor`,
+  `lra_bland_fallback_offset`) is active under every rule except `bland`, which
+  uses Bland selection from the first pivot anyway.
 
 RamParILS resolves these transitively and omits inactive parameters from the
 command line, so the wrapper looks every name up defensively and falls back to
 primo's built-in default when one is absent.
 
+One forbidden combination is declared: `lra_bland_fallback_factor = 0` together
+with `lra_bland_fallback_offset = 0` falls back on the first pivot, which only
+reproduces `lra_pivoting_rule = bland` by another route.
+
 `top_level_or_tseitin` folds two primo flags into one three-valued parameter:
 `auto` (the default automatic rule, no flag), `always`
-(`--top-level-or-tseitin`), and `never` (`--no-top-level-or-tseitin`).
+(`--top-level-or-tseitin`), and `never` (`--no-top-level-or-tseitin`). primo
+also has `--no-auto-top-level-or-tseitin`, which needs no parameter of its own:
+with the forced-on flag absent it does exactly what `never` does.
 
-`guarded_real_equality_lowering` is a preprocessing rewrite that primo groups
-with its QF_LRA options. It is unconditional and off by default, so the wrapper
-passes `--guarded-real-equality-lowering` only when the tuner turns it on.
+`guarded_real_equality_lowering` and `monotone_elimination` are preprocessing
+rewrites that primo groups with its QF_LRA options. Both are unconditional and
+off by default, so the wrapper passes their flags only when the tuner turns
+them on.
+
+`mixed_dispatch` is a routing switch rather than a heuristic: `wide` sends a
+QF_LRA formula containing a propositional variable to the mixed EUF/LRA solver,
+`narrow` (the default) keeps it on the pure path. primo documents `wide` as
+usually much worse but genuinely better on some instances, which is what makes
+it worth a portfolio dimension.
 
 ## 📤 Output
 
