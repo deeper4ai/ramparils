@@ -10,7 +10,16 @@ use ramparils::scenario::{RunObjective, OverallObjective, Scenario};
 use ramparils::DebugOptions;
 
 #[derive(Parser, Debug)]
-#[command(name = "ramparils", about = "Automated algorithm configuration via ILS")]
+#[command(
+    name = "ramparils",
+    about = "Automated algorithm configuration via ILS",
+    version,
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"), "\n",
+        "git:   ", env!("RAMPARILS_GIT"), "\n",
+        "build: ", env!("RAMPARILS_BUILD"),
+    ),
+)]
 struct Args {
     /// Scenario file (YAML): defines algo, instances, cutoff, tuner knobs, …
     #[arg(long)]
@@ -31,6 +40,8 @@ fn print_debug_header() {
     let sep = "-".repeat(60);
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] binary:  {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] git:     {}", ramparils::GIT_REVISION));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] build:   {}", ramparils::BUILD_INFO));
     ramparils::debug_line(d, &format!("[{t:8.2}s] date:    {}", sh("date")));
     ramparils::debug_line(d, &format!("[{t:8.2}s] host:    {}  ({})", sh("hostname"), sh("uname -sr")));
     ramparils::debug_line(d, &format!("[{t:8.2}s] user:    {}", std::env::var("USER").unwrap_or_else(|_| sh("whoami"))));

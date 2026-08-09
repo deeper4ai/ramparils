@@ -5,8 +5,27 @@ ramparils --scenariofile path/to/scenario.yaml
 ```
 
 All tuning options — instances, cutoff times, algorithm settings, cache location, debug flags —
-live in a single YAML scenario file.  The CLI has no other flags: every knob is a field in the
-YAML, making scenarios self-contained, reproducible, and easy to share.
+live in a single YAML scenario file.  Apart from `--version`, the CLI has no other flags: every
+knob is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.
+
+```console
+$ ramparils --version
+ramparils 0.1.3
+git:   353d6e8
+build: release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+```
+
+The revision is baked in at build time, and it matters more than the version: `0.1.3` covers every
+commit since that tag, so the version alone does not say which code ran. A `-dirty` suffix means
+the worktree had uncommitted changes and the revision therefore does not identify the build. Where
+the crate is built without git — an sdist, a source tarball — the revision reads `unknown` rather
+than failing the build. The same lines open every debug log:
+
+```text
+[    0.00s] binary:  ramparils v0.1.3
+[    0.00s] git:     353d6e8
+[    0.00s] build:   release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+```
 
 ---
 

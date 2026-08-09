@@ -10,6 +10,20 @@ pub mod eval;      // parallel evaluation engine (rayon thread pool + capping)
 pub mod cache;     // persistent result cache (SQLite via rusqlite)
 pub mod ils;       // ILS loop: local search, perturbation, acceptance
 
+/// Source revision this binary was built from, suffixed `-dirty` when the
+/// worktree had uncommitted changes, or `"unknown"` when it was built without
+/// git (an sdist, a source tarball). Set by `build.rs`.
+///
+/// `CARGO_PKG_VERSION` is not a substitute: it only moves on release, so every
+/// commit between two tags reports the same version. A tuning run's log is
+/// usually the only lasting record of what produced a result, which makes this
+/// the difference between a run that can be reproduced and one that merely
+/// claims a version number.
+pub const GIT_REVISION: &str = env!("RAMPARILS_GIT");
+
+/// Build profile, compiler version and target triple. Set by `build.rs`.
+pub const BUILD_INFO: &str = env!("RAMPARILS_BUILD");
+
 // ---------------------------------------------------------------------------
 // Shared debug helpers
 // ---------------------------------------------------------------------------
@@ -190,3 +204,21 @@ pub fn debug_block(enabled: bool, block: &str) {
 
 #[cfg(feature = "python")]
 mod python;        // PyO3 bindings — only compiled when building the Python .so
+
+#[cfg(test)]
+mod tests {
+    /// The build script must always produce these, including where git is
+    /// unavailable. A silent failure would leave the header claiming an empty
+    /// revision, which reads as a formatting bug rather than as missing
+    /// provenance.
+    #[test]
+    fn build_stamps_are_populated() {
+        assert!(!super::GIT_REVISION.is_empty());
+        assert!(
+            !super::GIT_REVISION.contains(char::is_whitespace),
+            "revision should be a bare sha, got {:?}",
+            super::GIT_REVISION
+        );
+        assert!(!super::BUILD_INFO.is_empty());
+    }
+}
