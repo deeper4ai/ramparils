@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use ramparils::{
     cache::Cache,
-    ils::{self, Approach, IlsOptions},
+    ils::{self, Approach, IlsOptions, RestartTarget},
     params::ParamSpace,
     scenario::{self, OverallObjective, RunObjective},
 };
@@ -116,6 +116,12 @@ fn run_ils_eprover() {
         approach: Approach::Focused,
         n_workers: 4,
         perturbation_strength: 4,
+        restart_probability: 0.0,
+        restart_failures: 0,
+        restart_target: RestartTarget::Incumbent,
+        restart_strength: 8,
+        acceptance_tolerance: 0.0,
+        random_probes: 0,
         initial_fidelity: 1,
         fidelity_step: 1,
         bound_multiplier: 10.0,

@@ -135,6 +135,43 @@ pub enum Approach {
     Random,
 }
 
+/// Where a restart puts the ILS home base.
+///
+/// ParamILS only has [`RestartTarget::Random`] — its `init_random()`. Landing
+/// on a uniformly random configuration is the strongest possible
+/// diversification, which suits ParamILS's thousands of iterations but not a
+/// run that gets a few dozen: the descent that follows starts from a
+/// configuration that is almost certainly terrible, and it has to be paid for
+/// out of the same budget. [`RestartTarget::Incumbent`] keeps the jump
+/// anchored at the best configuration found so far, trading diversification
+/// for not throwing away what the run already knows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RestartTarget {
+    /// Perturb the incumbent by `restart_strength` steps.
+    Incumbent,
+    /// Draw a uniformly random configuration.
+    Random,
+}
+
+/// Why a restart fired — recorded in the log so the two triggers can be told
+/// apart when reading a run back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RestartReason {
+    /// `restart_failures` consecutive local optima were rejected.
+    Stagnation,
+    /// The `restart_probability` coin came up.
+    Probability,
+}
+
+impl RestartReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            RestartReason::Stagnation => "stagnation",
+            RestartReason::Probability => "probability",
+        }
+    }
+}
+
 /// All tunable settings for a single ILS run.
 #[derive(Clone)]
 pub struct IlsOptions {
@@ -143,6 +180,24 @@ pub struct IlsOptions {
     pub n_workers: usize,
     /// Number of neighbourhood steps for perturbation.
     pub perturbation_strength: usize,
+    /// Probability of restarting the home base after a round (ParamILS
+    /// `p_restart`); 0 disables it.
+    pub restart_probability: f64,
+    /// Restart the home base after this many consecutive rejected local
+    /// optima; 0 disables it.  Both triggers may be enabled at once.
+    pub restart_failures: usize,
+    /// Where a restart puts the home base.
+    pub restart_target: RestartTarget,
+    /// Perturbation steps a restart applies to the incumbent.  Already
+    /// resolved: callers substitute `2 * perturbation_strength` for 0.
+    pub restart_strength: usize,
+    /// Relative margin around the *incumbent* within which a worse local
+    /// optimum is still accepted as the new home base; 0 disables it.
+    pub acceptance_tolerance: f64,
+    /// ParamILS's `R`: how many random configurations to probe before the
+    /// first descent, keeping any that beats the starting point.  0 (the
+    /// default) starts from the supplied configuration and nothing else.
+    pub random_probes: usize,
     /// Initial number of instances used to evaluate each configuration.
     pub initial_fidelity: usize,
     /// Number of instances added when FocusedILS increases fidelity.
@@ -196,27 +251,41 @@ pub fn run(
             None => crate::debug_line(d, "           (random)"),
         }
     }
+    // Without a starting configuration there is nothing to start from but a
+    // random draw.  Any further sampling is `random_probes` below, so that
+    // there is one rule for how many random configurations a run looks at
+    // rather than two paths that disagree.
     let mut current = match initial {
         Some(cfg) => cfg,
-        None => {
-            // No initial config: sample a handful of random configs, keep the best.
-            let mut best = random_config(space, &mut rng);
-            let mut best_score = evaluate_config(&best, &instances[..n_runs], &scheduler, cache, options, space, None, deadline)?;
-            for _ in 1..10 {
-                if Instant::now() >= deadline { break; }
-                let cfg = random_config(space, &mut rng);
-                let score = evaluate_config(&cfg, &instances[..n_runs], &scheduler, cache, options, space, Some(best_score), deadline)?;
-                if score < best_score {
-                    best_score = score;
-                    best = cfg;
-                }
-            }
-            best
-        }
+        None => random_config(space, &mut rng),
     };
 
     let mut current_score =
         evaluate_config(&current, &instances[..n_runs], &scheduler, cache, options, space, None, deadline)?;
+
+    // ParamILS's `R` random probes: sample configurations and step to any that
+    // beats the starting point, before the first descent commits to a region.
+    // ParamILS does this on every run, including when a default configuration
+    // was supplied.  Here it defaults to 0, because the primary use is
+    // specializing a strategy handed in by Grackle: the caller's configuration
+    // is the point of the run, and probing away from it by default would
+    // defeat that.
+    for _ in 0..options.random_probes {
+        if Instant::now() >= deadline || crate::interrupted() { break; }
+        let probe = random_config(space, &mut rng);
+        let probe_score = evaluate_config(
+            &probe, &instances[..n_runs], &scheduler, cache, options, space,
+            Some(current_score), deadline,
+        )?;
+        if dominates(probe_score, n_runs, current_score, n_runs, options) {
+            crate::debug_line(options.debug.main, &format!(
+                "[{:8.2}s] ils: random probe improves: score={probe_score:.6} (was {current_score:.6}) instances={n_runs}",
+                crate::t()
+            ));
+            current = probe;
+            current_score = probe_score;
+        }
+    }
 
     let mut incumbent = current.clone();
     let mut incumbent_score = current_score;
@@ -254,11 +323,23 @@ pub fn run(
         space,
     );
 
+    // Consecutive rounds whose local optimum failed the acceptance criterion,
+    // which is what `restart_failures` counts.
+    let mut rejections = 0usize;
+
     // --- Main ILS loop ---
     while Instant::now() < deadline && !crate::interrupted() {
-        // Perturbation
-        let perturbed = perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng);
-        crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
+        // Perturbation.  `Approach::Random` is ParamILS's `pert_rand`: replace
+        // the perturbation with a fresh random configuration and drop the
+        // acceptance criterion entirely, which makes the run a random-restart
+        // baseline rather than an iterated local search.
+        let perturbed = if options.approach == Approach::Random {
+            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: random restart (approach=random)", crate::t()));
+            random_config(space, &mut rng)
+        } else {
+            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
+            perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng)
+        };
         current = perturbed;
         current_score = evaluate_config(
             &current, &instances[..n_runs], &scheduler, cache, options, space, Some(incumbent_score), deadline,
@@ -295,11 +376,31 @@ pub fn run(
             )?;
         }
 
-        // Acceptance criterion: keep new local opt only if it dominates the last one
+        // Acceptance criterion: keep new local opt only if it dominates the
+        // last one.  Skipped entirely under `Approach::Random`, where the next
+        // round starts from a fresh random configuration regardless — there is
+        // no home base to keep, and a restart would be a no-op.
+        if options.approach == Approach::Random {
+            let previous_home_base = last_lm.clone();
+            last_lm = new_lm;
+            last_lm_score = new_lm_score;
+            last_lm_runs = n_runs;
+            log_home_base(
+                options.debug.main,
+                &previous_home_base,
+                &last_lm,
+                last_lm_score,
+                n_runs,
+                space,
+            );
+            continue;
+        }
+
         let previous_home_base = last_lm.clone();
-        let (accepted, accepted_score) = acceptance_criterion(
+        let (accepted, accepted_score, took_new) = acceptance_criterion(
             new_lm, new_lm_score, n_runs,
             last_lm.clone(), last_lm_score, last_lm_runs,
+            incumbent_score,
             options,
         );
         last_lm = accepted;
@@ -313,6 +414,70 @@ pub fn run(
             n_runs,
             space,
         );
+
+        // Restart.  The acceptance criterion above can only move the home base
+        // to an at-least-as-good local optimum (or, with a tolerance, one
+        // close to the incumbent), so on its own it can never move the search
+        // uphill: a home base that stops improving stays put for the rest of
+        // the budget and every later round perturbs the same point.  Either
+        // trigger below breaks that.
+        rejections = if took_new { 0 } else { rejections + 1 };
+        let reason = if options.restart_failures > 0
+            && rejections >= options.restart_failures
+        {
+            Some(RestartReason::Stagnation)
+        } else if options.restart_probability > 0.0
+            && rng.gen_range(0.0..1.0) < options.restart_probability
+        {
+            Some(RestartReason::Probability)
+        } else {
+            None
+        };
+
+        if let Some(reason) = reason {
+            if Instant::now() >= deadline || crate::interrupted() { break; }
+            let restarted = match options.restart_target {
+                RestartTarget::Incumbent => {
+                    perturbation(incumbent.clone(), options.restart_strength, space, &mut rng)
+                }
+                RestartTarget::Random => random_config(space, &mut rng),
+            };
+            // Capped against the incumbent: a restart lands on a configuration
+            // that is usually much worse, and there is no reason to pay for a
+            // full evaluation of one.  A pruned evaluation yields a score above
+            // the cap, which is exactly the "bad home base" the next round is
+            // meant to escape from anyway.
+            let restarted_score = evaluate_config(
+                &restarted, &instances[..n_runs], &scheduler, cache, options, space,
+                Some(incumbent_score), deadline,
+            )?;
+            crate::debug_line(options.debug.main, &format!(
+                "[{:8.2}s] ils: restart: reason={} target={} strength={} score={restarted_score:.6} instances={n_runs} after {rejections} rejected local optima",
+                crate::t(),
+                reason.as_str(),
+                match options.restart_target {
+                    RestartTarget::Incumbent => "incumbent",
+                    RestartTarget::Random => "random",
+                },
+                match options.restart_target {
+                    RestartTarget::Incumbent => options.restart_strength,
+                    RestartTarget::Random => 0,
+                },
+            ));
+            let before_restart = last_lm.clone();
+            last_lm = restarted;
+            last_lm_score = restarted_score;
+            last_lm_runs = n_runs;
+            rejections = 0;
+            log_home_base(
+                options.debug.main,
+                &before_restart,
+                &last_lm,
+                last_lm_score,
+                n_runs,
+                space,
+            );
+        }
 
         if incumbent_survived && options.approach == Approach::Focused {
             // Incumbent survived — increase fidelity for the next round (up to all instances).
@@ -456,20 +621,52 @@ pub fn weakly_dominates(
 /// module docs); they are passed rather than assumed so that `dominates`'
 /// FocusedILS guard still refuses a claim made from a smaller sample if that
 /// invariant is ever broken.
+///
+/// With `acceptance_tolerance > 0` a *worse* local optimum can still be
+/// accepted, provided it stays within that relative margin of the incumbent.
+/// The margin deliberately hangs off the incumbent and not off the home base:
+/// against the home base each accepted step raises the bar for the next one, so
+/// the home base can walk downhill indefinitely in small increments. Against
+/// the incumbent the home base is confined to a fixed band around the best
+/// score seen, which is what lets the search leave a basin without abandoning
+/// the region it already knows is good.
+///
+/// The third return value reports whether the new local optimum was taken —
+/// the caller counts consecutive rejections to drive the stagnation restart.
+#[allow(clippy::too_many_arguments)]
 fn acceptance_criterion(
     new: Config, new_score: f64, new_runs: usize,
     last: Config, last_score: f64, last_runs: usize,
+    incumbent_score: f64,
     options: &IlsOptions,
-) -> (Config, f64) {
+) -> (Config, f64, bool) {
     debug_assert_eq!(
         new_runs, last_runs,
         "acceptance compares scores measured on different instance prefixes"
     );
     if weakly_dominates(new_score, new_runs, last_score, last_runs, options) {
-        (new, new_score)
-    } else {
-        (last, last_score)
+        return (new, new_score, true);
     }
+    if accepted_within_tolerance(new_score, incumbent_score, options) {
+        return (new, new_score, true);
+    }
+    (last, last_score, false)
+}
+
+/// Whether `new_score` is close enough to the incumbent to be accepted as the
+/// home base despite being worse than the current one.
+///
+/// The band is `incumbent + tolerance * |incumbent|` rather than
+/// `incumbent * (1 + tolerance)` so that it still widens in the right direction
+/// when the quality objective produces negative scores.
+fn accepted_within_tolerance(new_score: f64, incumbent_score: f64, options: &IlsOptions) -> bool {
+    if options.acceptance_tolerance <= 0.0 {
+        return false;
+    }
+    if !new_score.is_finite() || !incumbent_score.is_finite() {
+        return false;
+    }
+    new_score <= incumbent_score + options.acceptance_tolerance * incumbent_score.abs()
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1171,12 @@ mod tests {
             approach: Approach::Focused,
             n_workers: 1,
             perturbation_strength: 4,
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
             initial_fidelity: 1,
             fidelity_step: 1,
             bound_multiplier: 10.0,
@@ -1069,6 +1272,9 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            restart_probability: 0.0, restart_failures: 0,
+            restart_target: RestartTarget::Incumbent, restart_strength: 8,
+            acceptance_tolerance: 0.0, random_probes: 0,
             initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
@@ -1084,6 +1290,9 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Focused,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            restart_probability: 0.0, restart_failures: 0,
+            restart_target: RestartTarget::Incumbent, restart_strength: 8,
+            acceptance_tolerance: 0.0, random_probes: 0,
             initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
@@ -1107,6 +1316,102 @@ mod tests {
         assert!(!weakly_dominates(1.0, 3, 2.0, 5, &opts));
     }
 
+    /// The softened criterion accepts a worse local optimum only while it stays
+    /// inside the band around the *incumbent*, and the band is measured from
+    /// the incumbent precisely so that repeated acceptances cannot walk the
+    /// home base downhill one margin at a time.
+    #[test]
+    fn acceptance_tolerance_band_is_anchored_at_the_incumbent() {
+        let mut opts = focused_options();
+        opts.acceptance_tolerance = 0.05;
+        let old = cfg(&[("alpha", "1")]);
+        let new = cfg(&[("alpha", "2")]);
+        let incumbent_score = 2.0;
+
+        // Worse than the home base but within 5% of the incumbent: accepted.
+        let (config, score, took_new) = acceptance_criterion(
+            new.clone(), 2.05, 8, old.clone(), 2.0, 8, incumbent_score, &opts,
+        );
+        assert_eq!(config, new);
+        assert!(took_new);
+        assert!((score - 2.05).abs() < 1e-9);
+
+        // Outside the band: rejected.
+        let (config, score, took_new) = acceptance_criterion(
+            new.clone(), 2.2, 8, old.clone(), 2.0, 8, incumbent_score, &opts,
+        );
+        assert_eq!(config, old);
+        assert!(!took_new);
+        assert!((score - 2.0).abs() < 1e-9);
+
+        // The band does not drift with the home base: a home base that already
+        // sits inside the band cannot pull the bar up behind it.
+        let (config, _, took_new) = acceptance_criterion(
+            new.clone(), 2.15, 8, old.clone(), 2.1, 8, incumbent_score, &opts,
+        );
+        assert_eq!(config, old);
+        assert!(!took_new);
+    }
+
+    /// A zero tolerance has to leave the ParamILS rule untouched, so runs made
+    /// before the knob existed stay reproducible.
+    #[test]
+    fn acceptance_tolerance_zero_is_the_paramils_rule() {
+        let opts = focused_options();
+        assert_eq!(opts.acceptance_tolerance, 0.0);
+        let old = cfg(&[("alpha", "1")]);
+        let new = cfg(&[("alpha", "2")]);
+
+        let (config, _, took_new) =
+            acceptance_criterion(new.clone(), 2.000_001, 8, old.clone(), 2.0, 8, 2.0, &opts);
+        assert_eq!(config, old, "any worse score is rejected when tolerance is 0");
+        assert!(!took_new);
+    }
+
+    /// An infinite incumbent score (nothing measured successfully yet) must not
+    /// open the band to everything.
+    #[test]
+    fn acceptance_tolerance_ignores_non_finite_scores() {
+        let mut opts = focused_options();
+        opts.acceptance_tolerance = 0.05;
+        assert!(!accepted_within_tolerance(1.0, f64::INFINITY, &opts));
+        assert!(!accepted_within_tolerance(f64::INFINITY, 1.0, &opts));
+    }
+
+    /// With a negative objective the band still has to widen upward from the
+    /// incumbent, which `incumbent * (1 + tol)` would get backwards.
+    #[test]
+    fn acceptance_tolerance_handles_negative_scores() {
+        let mut opts = focused_options();
+        opts.acceptance_tolerance = 0.10;
+        // Incumbent -2.0; the band reaches up to -1.8.
+        assert!(accepted_within_tolerance(-1.9, -2.0, &opts));
+        assert!(!accepted_within_tolerance(-1.7, -2.0, &opts));
+    }
+
+    /// A restart from the incumbent is still a perturbation: it must land
+    /// inside the space, and it must actually move.
+    #[test]
+    fn restart_from_incumbent_is_a_stronger_perturbation() {
+        let space = simple_space();
+        let incumbent = cfg(&[("alpha", "2"), ("beta", "a")]);
+        let mut rng = rand::thread_rng();
+
+        let mut moved = 0;
+        for _ in 0..50 {
+            let restarted = perturbation(incumbent.clone(), 8, &space, &mut rng);
+            assert_eq!(restarted.len(), incumbent.len());
+            for (name, value) in &restarted {
+                let param = space.params.iter().find(|p| &p.name == name).unwrap();
+                assert!(param.domain.contains(value), "{name}={value} left its domain");
+            }
+            if restarted != incumbent {
+                moved += 1;
+            }
+        }
+        assert!(moved > 0, "a strength-8 restart never moved in 50 attempts");
+    }
+
     #[test]
     fn acceptance_takes_better_and_ties_but_not_worse() {
         let opts = focused_options();
@@ -1114,20 +1419,23 @@ mod tests {
         let new = cfg(&[("alpha", "2")]);
 
         // Strictly better: accepted.
-        let (config, score) =
-            acceptance_criterion(new.clone(), 1.0, 8, old.clone(), 2.0, 8, &opts);
+        let (config, score, took_new) =
+            acceptance_criterion(new.clone(), 1.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        assert!(took_new);
         assert_eq!(config, new);
         assert!((score - 1.0).abs() < 1e-9);
 
         // Tie: accepted, so the home base can cross plateaus.
-        let (config, score) =
-            acceptance_criterion(new.clone(), 2.0, 8, old.clone(), 2.0, 8, &opts);
+        let (config, score, took_new) =
+            acceptance_criterion(new.clone(), 2.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        assert!(took_new);
         assert_eq!(config, new);
         assert!((score - 2.0).abs() < 1e-9);
 
         // Worse: rejected, home base unchanged.
-        let (config, score) =
-            acceptance_criterion(new.clone(), 3.0, 8, old.clone(), 2.0, 8, &opts);
+        let (config, score, took_new) =
+            acceptance_criterion(new.clone(), 3.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        assert!(!took_new);
         assert_eq!(config, old);
         assert!((score - 2.0).abs() < 1e-9);
     }
@@ -1156,6 +1464,9 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            restart_probability: 0.0, restart_failures: 0,
+            restart_target: RestartTarget::Incumbent, restart_strength: 8,
+            acceptance_tolerance: 0.0, random_probes: 0,
             initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
@@ -1168,6 +1479,9 @@ mod tests {
         let opts = IlsOptions {
             approach: Approach::Basic,
             n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
+            restart_probability: 0.0, restart_failures: 0,
+            restart_target: RestartTarget::Incumbent, restart_strength: 8,
+            acceptance_tolerance: 0.0, random_probes: 0,
             initial_fidelity: 1, fidelity_step: 1,
             bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
@@ -1212,6 +1526,12 @@ mod tests {
             approach: Approach::Focused,
             n_workers: 1,
             perturbation_strength: 1,
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
             initial_fidelity: 1,
             fidelity_step: 1,
             bound_multiplier: 10.0,
@@ -1265,6 +1585,12 @@ mod tests {
             approach: Approach::Focused,
             n_workers: 1,
             perturbation_strength: 1,
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
             initial_fidelity: 1,
             fidelity_step: 1,
             bound_multiplier: 10.0,

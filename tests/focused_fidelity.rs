@@ -11,7 +11,7 @@
 use std::io::Write;
 
 use ramparils::cache::Cache;
-use ramparils::ils::{Approach, IlsOptions};
+use ramparils::ils::{Approach, IlsOptions, RestartTarget};
 use ramparils::params::ParamSpace;
 use ramparils::scenario::{OverallObjective, RunObjective};
 
@@ -55,6 +55,12 @@ fn fidelity_increases_remeasure_both_retained_states() {
         approach: Approach::Focused,
         n_workers: 4,
         perturbation_strength: 2,
+        restart_probability: 0.0,
+        restart_failures: 0,
+        restart_target: RestartTarget::Incumbent,
+        restart_strength: 8,
+        acceptance_tolerance: 0.0,
+        random_probes: 0,
         initial_fidelity: 2,
         fidelity_step: 2,
         bound_multiplier: 10.0,

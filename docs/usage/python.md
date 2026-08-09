@@ -64,8 +64,14 @@ instance-list file.
 |-----|---------|-------------|
 | `run_obj` | `"runtime"` | Numeric value to minimise: `"runtime"` or `"quality"`. Convert maximisation objectives to costs in the wrapper. |
 | `overall_obj` | `"mean"` | `"mean"` or `"median"`. |
-| `approach` | `"focused"` | `"focused"`, `"basic"`, or `"random"`; currently `random` follows the same full-fidelity ILS path as `basic`. |
+| `approach` | `"focused"` | `"focused"`, `"basic"`, or `"random"`; `random` is ParamILS's `pert_rand` random-restart baseline. |
 | `perturbation_strength` | `4` | Neighbourhood steps per perturbation. |
+| `restart_probability` | `0.0` | ParamILS's `p_restart`: chance of restarting the home base after a round. |
+| `restart_failures` | `0` | Restart the home base after this many consecutive rejected local optima. |
+| `restart_target` | `"incumbent"` | `"incumbent"` (perturb the best configuration by `restart_strength`) or `"random"`. |
+| `restart_strength` | `0` | Steps a restart applies to the incumbent; `0` means `2 * perturbation_strength`. |
+| `acceptance_tolerance` | `0.0` | Accept a worse local optimum within this relative margin of the incumbent. |
+| `random_probes` | `0` | ParamILS's `R`: random configurations probed before the first descent; `0` starts from the supplied strategy only. |
 | `initial_fidelity` | `1` | Initial instances per configuration in FocusedILS, capped by the instance count. |
 | `fidelity_step` | `1` | Instances added at each FocusedILS fidelity increase. |
 | `bound_multiplier` | `10.0` | Adaptive capping multiplier. |

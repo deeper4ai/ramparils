@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use ramparils::cache::Cache;
-use ramparils::ils::{self, Approach, IlsOptions};
+use ramparils::ils;
 use ramparils::params::{ParamSpace, config_to_yaml};
 use ramparils::scenario::{RunObjective, OverallObjective, Scenario};
 use ramparils::DebugOptions;
@@ -65,6 +65,25 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
             s.initial_fidelity, s.fidelity_step
         ),
     );
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] perturb:    strength={} restart_strength={}",
+            s.perturbation_strength,
+            if s.restart_strength == 0 { 2 * s.perturbation_strength } else { s.restart_strength },
+        ),
+    );
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] restart:    p={} failures={} target={} tolerance={} probes={}",
+            s.restart_probability,
+            s.restart_failures,
+            s.restart_target,
+            s.acceptance_tolerance,
+            s.random_probes,
+        ),
+    );
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
@@ -92,33 +111,19 @@ fn main() -> Result<()> {
         .map(|p| (id_map[p], p.clone()))
         .collect();
 
-    let approach = match scenario.approach.to_lowercase().as_str() {
-        "basic"  => Approach::Basic,
-        "random" => Approach::Random,
-        _        => Approach::Focused,
-    };
     let n_workers = if scenario.cores == 0 {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
     } else {
         scenario.cores
     };
-    let options = IlsOptions {
-        approach,
+    let options = scenario.ils_options(
         n_workers,
-        perturbation_strength: scenario.perturbation_strength,
-        initial_fidelity: scenario.initial_fidelity,
-        fidelity_step: scenario.fidelity_step,
-        bound_multiplier: scenario.bound_multiplier,
-        pruning: scenario.pruning,
-        tuner_timeout: scenario.tuner_timeout,
-        run_obj: scenario.run_obj.clone(),
-        overall_obj: scenario.overall_obj.clone(),
-        debug: DebugOptions {
+        DebugOptions {
             main: main_debug,
             wrapper: scenario.debug_wrapper,
             solver: scenario.debug_solver,
         },
-    };
+    )?;
 
     print_debug_scenario(&scenario, instances.len(), n_workers);
 

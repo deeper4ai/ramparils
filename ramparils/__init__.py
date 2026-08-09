@@ -49,8 +49,19 @@ def specialize(
             - **run_obj** (*str*, default ``"runtime"``) — ``"runtime"`` or ``"quality"``.
             - **overall_obj** (*str*, default ``"mean"``) — ``"mean"`` or ``"median"``.
             - **test_instance_file** (*str*) — reserved for future use.
-            - **approach** (*str*, default ``"focused"``) — ``"focused"``, ``"basic"``, or ``"random"``.
+            - **approach** (*str*, default ``"focused"``) — ``"focused"``, ``"basic"``, or
+              ``"random"``; ``"random"`` is ParamILS's ``pert_rand`` random-restart baseline.
             - **perturbation_strength** (*int*, default ``4``) — neighbourhood steps per perturbation.
+            - **restart_probability** (*float*, default ``0.0``) — ParamILS ``p_restart``.
+            - **restart_failures** (*int*, default ``0``) — restart the home base after this
+              many consecutive rejected local optima.
+            - **restart_target** (*str*, default ``"incumbent"``) — ``"incumbent"`` or ``"random"``.
+            - **restart_strength** (*int*, default ``0``) — steps applied to the incumbent by a
+              restart; ``0`` means ``2 * perturbation_strength``.
+            - **acceptance_tolerance** (*float*, default ``0.0``) — accept a worse local optimum
+              within this relative margin of the incumbent.
+            - **random_probes** (*int*, default ``0``) — ParamILS ``R``: random configurations
+              probed before the first descent. ``0`` starts from the supplied strategy only.
             - **initial_fidelity** (*int*, default ``1``) — initial instances per configuration in FocusedILS.
             - **fidelity_step** (*int*, default ``1``) — instances added at each FocusedILS fidelity increase.
             - **bound_multiplier** (*float*, default ``10.0``) — adaptive capping multiplier.

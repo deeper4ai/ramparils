@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
 
 use crate::cache::Cache;
-use crate::ils::{self, Approach, IlsOptions};
+use crate::ils;
 use crate::params::ParamSpace;
 use crate::scenario::{OverallObjective, RunObjective, Scenario};
 
@@ -83,6 +83,12 @@ fn extract_scenario(d: &Bound<'_, PyDict>) -> PyResult<Scenario> {
         overall_obj,
         approach:              opt_str("approach")?.unwrap_or_else(|| "focused".to_string()),
         perturbation_strength: opt_usize("perturbation_strength")?.unwrap_or(4),
+        restart_probability:   opt_f64("restart_probability")?.unwrap_or(0.0),
+        restart_failures: opt_usize("restart_failures")?.unwrap_or(0),
+        restart_target:        opt_str("restart_target")?.unwrap_or_else(|| "incumbent".to_string()),
+        restart_strength:      opt_usize("restart_strength")?.unwrap_or(0),
+        acceptance_tolerance:  opt_f64("acceptance_tolerance")?.unwrap_or(0.0),
+        random_probes:         opt_usize("random_probes")?.unwrap_or(0),
         initial_fidelity:      opt_usize("initial_fidelity")?.unwrap_or(1),
         fidelity_step:         opt_usize("fidelity_step")?.unwrap_or(1),
         bound_multiplier:      opt_f64("bound_multiplier")?.unwrap_or(10.0),
@@ -137,29 +143,15 @@ fn run_specialize_inner(
     } else {
         scenario.cores
     };
-    let approach = match scenario.approach.to_lowercase().as_str() {
-        "basic"  => Approach::Basic,
-        "random" => Approach::Random,
-        _        => Approach::Focused,
-    };
     let debug = crate::any_debug_active();
-    let options = IlsOptions {
-        approach,
+    let options = scenario.ils_options(
         n_workers,
-        perturbation_strength: scenario.perturbation_strength,
-        initial_fidelity:      scenario.initial_fidelity,
-        fidelity_step:         scenario.fidelity_step,
-        bound_multiplier:      scenario.bound_multiplier,
-        pruning:               scenario.pruning,
-        tuner_timeout:         scenario.tuner_timeout,
-        run_obj:               scenario.run_obj.clone(),
-        overall_obj:           scenario.overall_obj.clone(),
-        debug: crate::DebugOptions {
+        crate::DebugOptions {
             main:    debug,
             wrapper: scenario.debug_wrapper,
             solver:  scenario.debug_solver,
         },
-    };
+    )?;
 
     let (result, _) = if scenario.iterative_deepening {
         ils::iterative_deepening_ils(

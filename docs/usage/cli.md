@@ -30,6 +30,12 @@ run_obj:               runtime   # runtime | quality
 overall_obj:           mean      # mean | median
 approach:              focused   # focused | basic | random
 perturbation_strength: 4
+restart_probability:   0.0       # ParamILS p_restart; 0 = never
+restart_failures: 0        # restart after k rejected local optima; 0 = never
+restart_target:        incumbent # incumbent | random
+restart_strength:      0         # 0 = 2 * perturbation_strength
+acceptance_tolerance:  0.0       # accept within this margin of the incumbent
+random_probes:         0         # ParamILS R; 0 = start from the given config only
 initial_fidelity:      1
 fidelity_step:         1
 bound_multiplier:      10.0
@@ -102,8 +108,14 @@ started.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `approach` | `focused` | Search mode. `focused` (default) starts at `initial_fidelity` instances and increases fidelity when the incumbent survives a challenge. `basic` uses all instances from the start. `random` currently follows the same full-fidelity ILS path as `basic`; it is not an independent random-search baseline. See [Algorithm](../reference/algorithm.md). |
+| `approach` | `focused` | Search mode. `focused` (default) starts at `initial_fidelity` instances and increases fidelity when the incumbent survives a challenge. `basic` uses all instances from the start. `random` is ParamILS's `pert_rand`: each round starts from a fresh random configuration and the acceptance criterion is skipped, which makes it a random-restart baseline rather than an iterated local search. See [Algorithm](../reference/algorithm.md). |
 | `perturbation_strength` | `4` | Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum. |
+| `restart_probability` | `0.0` | ParamILS's `p_restart`: probability of restarting the home base after each round. `0` disables it. See [Algorithm](../reference/algorithm.md). |
+| `restart_failures` | `0` | Restart the home base after this many consecutive rejected local optima. `0` disables it. Adapts to however many rounds the budget allows, unlike a fixed probability. |
+| `restart_target` | `incumbent` | Where a restart lands: `incumbent` perturbs the best configuration found so far by `restart_strength` steps; `random` draws a uniformly random configuration, as ParamILS does. |
+| `restart_strength` | `0` | Perturbation steps a restart applies to the incumbent. `0` resolves to `2 × perturbation_strength`; the resolved value is printed in the debug header. |
+| `acceptance_tolerance` | `0.0` | Accept a local optimum worse than the home base while it stays within this relative margin of the *incumbent*. `0` keeps the ParamILS rule of accepting only an at-least-as-good local optimum. |
+| `random_probes` | `0` | ParamILS's `R`: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of `0` starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires. |
 | `initial_fidelity` | `1` | Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count. |
 | `fidelity_step` | `1` | Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of `0` are treated as `1`. |
 | `bound_multiplier` | `10.0` | Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds `bound_multiplier × incumbent_score`. Lower values prune more aggressively and can change search results. |

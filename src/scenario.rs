@@ -20,6 +20,12 @@
 //! overall_obj: mean           # mean | median
 //! approach: focused           # focused | basic | random
 //! perturbation_strength: 4
+//! restart_probability: 0.0    # ParamILS p_restart; 0 = never
+//! restart_failures: 0         # restart after k rejected local optima; 0 = never
+//! restart_target: incumbent   # incumbent | random
+//! restart_strength: 0         # steps from the incumbent; 0 = 2 * perturbation_strength
+//! acceptance_tolerance: 0.0   # accept within this margin of the incumbent
+//! random_probes: 0            # ParamILS R; 0 = start from the given config only
 //! initial_fidelity: 1
 //! fidelity_step: 1
 //! bound_multiplier: 10.0
@@ -44,7 +50,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 use std::{collections::HashMap, fs};
 
+use crate::ils::{Approach, IlsOptions, RestartTarget};
 use crate::params::{Config, ParamSpace};
+use crate::DebugOptions;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +70,7 @@ pub enum OverallObjective {
 
 fn default_approach() -> String { "focused".to_string() }
 fn default_perturbation_strength() -> usize { 4 }
+fn default_restart_target() -> String { "incumbent".to_string() }
 fn default_fidelity() -> usize { 1 }
 fn default_bound_multiplier() -> f64 { 10.0 }
 fn default_pruning() -> bool { true }
@@ -122,6 +131,47 @@ pub struct Scenario {
     /// Neighbourhood steps per perturbation.
     #[serde(default = "default_perturbation_strength")]
     pub perturbation_strength: usize,
+
+    /// Probability of restarting the ILS home base after each round, as in
+    /// ParamILS's `p_restart` (0 = never).  Independent of
+    /// `restart_failures`: either trigger fires a restart.
+    #[serde(default)]
+    pub restart_probability: f64,
+
+    /// Restart the home base after this many consecutive rounds whose local
+    /// optimum failed the acceptance criterion (0 = never).  Unlike
+    /// `restart_probability`, this adapts to however many rounds the budget
+    /// turns out to allow.
+    #[serde(default)]
+    pub restart_failures: usize,
+
+    /// Where a restart puts the home base: `"incumbent"` (perturb the best
+    /// configuration found so far by `restart_strength` steps) or `"random"`
+    /// (a uniformly random configuration, as in ParamILS).
+    #[serde(default = "default_restart_target")]
+    pub restart_target: String,
+
+    /// Perturbation steps a restart applies to the incumbent when
+    /// `restart_target` is `"incumbent"`.  0 means `2 * perturbation_strength`;
+    /// the resolved value is printed in the debug header.
+    #[serde(default)]
+    pub restart_strength: usize,
+
+    /// ParamILS's `R`: probe this many random configurations before the first
+    /// descent, stepping to any that beats the starting configuration.
+    /// Defaults to 0 — the supplied configuration is the starting point, which
+    /// is what specializing a strategy handed in by Grackle requires.
+    #[serde(default)]
+    pub random_probes: usize,
+
+    /// Accept a local optimum that is worse than the home base, as long as it
+    /// stays within this relative margin of the *incumbent* (0 = off, i.e. the
+    /// ParamILS rule of accepting only an at-least-as-good local optimum).
+    /// Measured against the incumbent and not against the home base on
+    /// purpose: against the home base the margin compounds, and the search can
+    /// then drift downhill without limit.
+    #[serde(default)]
+    pub acceptance_tolerance: f64,
 
     /// Initial number of instances used to evaluate each configuration.
     #[serde(default = "default_fidelity")]
@@ -189,6 +239,69 @@ pub struct Scenario {
 }
 
 impl Scenario {
+    /// Build the ILS settings this scenario describes.
+    ///
+    /// Both front ends go through here so the CLI and the Python bindings
+    /// cannot drift apart on how a scenario field is interpreted — in
+    /// particular `restart_strength`, which resolves 0 to twice the
+    /// perturbation strength, and `restart_target`, which is validated here
+    /// rather than silently falling back.
+    pub fn ils_options(&self, n_workers: usize, debug: DebugOptions) -> Result<IlsOptions> {
+        let approach = match self.approach.to_lowercase().as_str() {
+            "basic" => Approach::Basic,
+            "random" => Approach::Random,
+            "focused" => Approach::Focused,
+            other => anyhow::bail!(
+                "scenario: unknown approach '{other}' (expected focused, basic or random)"
+            ),
+        };
+
+        let restart_target = match self.restart_target.to_lowercase().as_str() {
+            "incumbent" => RestartTarget::Incumbent,
+            "random" => RestartTarget::Random,
+            other => anyhow::bail!(
+                "scenario: unknown restart_target '{other}' (expected incumbent or random)"
+            ),
+        };
+
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.restart_probability),
+            "scenario: restart_probability must be in [0, 1], got {}",
+            self.restart_probability
+        );
+        anyhow::ensure!(
+            self.acceptance_tolerance >= 0.0,
+            "scenario: acceptance_tolerance must not be negative, got {}",
+            self.acceptance_tolerance
+        );
+
+        let restart_strength = if self.restart_strength == 0 {
+            2 * self.perturbation_strength
+        } else {
+            self.restart_strength
+        };
+
+        Ok(IlsOptions {
+            approach,
+            n_workers,
+            perturbation_strength: self.perturbation_strength,
+            restart_probability: self.restart_probability,
+            restart_failures: self.restart_failures,
+            restart_target,
+            restart_strength,
+            acceptance_tolerance: self.acceptance_tolerance,
+            random_probes: self.random_probes,
+            initial_fidelity: self.initial_fidelity,
+            fidelity_step: self.fidelity_step,
+            bound_multiplier: self.bound_multiplier,
+            pruning: self.pruning,
+            tuner_timeout: self.tuner_timeout,
+            run_obj: self.run_obj.clone(),
+            overall_obj: self.overall_obj.clone(),
+            debug,
+        })
+    }
+
     /// Load a scenario from a YAML file.
     pub fn from_file(path: &str) -> Result<Self> {
         let text = fs::read_to_string(path)

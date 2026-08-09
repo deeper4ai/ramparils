@@ -22,6 +22,36 @@ neighbors. RamParILS submits neighbours to a bounded worker pool and accepts the
 evaluated improvement. The wall-clock cost still depends on neighbourhood width, fidelity,
 worker count, cache hits, and solver runtimes.
 
+The perturbation draws uniformly from the *neighbourhood*, not from the parameters, so a
+parameter with a large domain is perturbed more often than a boolean one: a five-valued parameter
+offers four of the neighbours a boolean offers one.
+
+---
+
+## 🪂 Escaping a frozen home base
+
+The acceptance criterion only ever replaces the home base with an at-least-as-good local optimum,
+so on its own it cannot move the search uphill: once a strong local optimum is found, every later
+round perturbs the same point and the run degenerates into repeated sampling from a fixed ball.
+Four optional knobs address this. All are off by default, so a run that does not set them behaves
+exactly as before they existed.
+
+| Field | What it does |
+|-------|--------------|
+| `acceptance_tolerance` | Accept a *worse* local optimum as the home base while it stays within this relative margin of the **incumbent**. Measured against the incumbent and not against the home base on purpose: against the home base the margin compounds, and the home base can then drift downhill without limit. |
+| `restart_failures` | Restart the home base after this many consecutive rejected local optima. Adapts to however many rounds the budget turns out to allow, which matters when a run gets tens of rounds rather than thousands. |
+| `restart_probability` | ParamILS's `p_restart`: restart with this probability after each round. At the classic `0.01` it is calibrated for thousands of rounds — over 50 rounds it fires half a time. |
+| `random_probes` | ParamILS's `R`: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. Defaults to 0: RamParILS's primary use is specializing a strategy supplied by the caller, so the supplied configuration is the starting point unless asked otherwise. A run given no configuration at all starts from a single random draw, and these probes extend that. |
+
+`restart_target` decides where a restart lands: `incumbent` perturbs the best configuration found
+so far by `restart_strength` steps (default `2 × perturbation_strength`), while `random` draws a
+uniformly random configuration, which is what ParamILS does. Restarts are logged so they can be
+told apart from ordinary acceptance when a run is read back:
+
+```
+ils: restart: reason=stagnation target=incumbent strength=10 score=0.481578 instances=473 after 10 rejected local optima
+```
+
 ---
 
 ## ⚖️ BasicILS vs FocusedILS
@@ -78,9 +108,11 @@ storing a score per fidelity level for every configuration and always comparing 
 their common level (`isBetterWithLesserDetail` in `param_ils_2_3_run.rb`); RamParILS keeps one
 score per state and re-measures instead.
 
-**Random** (`approach: random`) currently uses all instances from the start and otherwise follows
-the same ILS path as `basic`. It should not currently be interpreted as an independent uniform
-random-search baseline.
+**Random** (`approach: random`) is ParamILS's `pert_rand`: it uses all instances from the start,
+but each round begins from a fresh uniformly random configuration and the acceptance criterion is
+skipped entirely, so nothing carries over between rounds except the incumbent. That makes it a
+random-restart baseline to measure an iterated local search against, not a tuning mode to prefer.
+Restarts are inert under it, since every round already restarts.
 
 ---
 
@@ -96,6 +128,25 @@ occasionally discard a configuration that would have been competitive on later i
 The default of 10.0 is conservative for positive cost objectives. Set `pruning: false` when exact
 uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
 for the objective.
+
+**Pick the multiplier against the objective's ceiling, not in the abstract.** Under a PAR1 runtime
+objective no instance can be charged more than `cutoff_time`, so a partial mean can never exceed
+it and capping is *mathematically unable to fire* unless
+
+```text
+bound_multiplier × incumbent_score < cutoff_time
+```
+
+A multiplier just below that ratio is indistinguishable from `pruning: false`. With an incumbent
+of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
+candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
+with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
+fraction of the ceiling and the multiplier follows.
+
+Aggressive settings are safer than the "later results could lower the mean" caveat suggests,
+because results arrive in completion order — the fast ones first. The running mean therefore
+climbs as an evaluation proceeds, and once it has passed a bound above `1 × incumbent_score` it
+rarely comes back down.
 
 ---
 
