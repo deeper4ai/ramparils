@@ -110,6 +110,31 @@ QF_LRA formula containing a propositional variable to the mixed EUF/LRA solver,
 usually much worse but genuinely better on some instances, which is what makes
 it worth a portfolio dimension.
 
+### Options the wrapper covers but this space does not use
+
+Four further primo options are wired into `VALUE_OPTIONS` so that a search space
+can reach them. They are absent from `params-primo.txt` because each needs a
+decision this example does not make.
+
+`boolean_flatten_threshold` and `boolean_flatten_post_threshold` bound the arity
+up to which nested and/or nodes are flattened, before and after the rewriting
+preprocessing passes respectively. The pair exists because preserving shared
+Boolean DAGs stopped the term constructors flattening on construction — right
+for memory, but it cost QF_LRA up to 2.7x until the post-pass was added, since
+the rewriting passes rebuild nesting the pre-pass has already gone past. The
+pre-pass is off by default (`0`); the post-pass defaults to `2048`. Note that
+`0` disables rather than unbounds, so it is the value that reintroduces the
+regression, not a neutral one.
+
+`lra_soi_minimize` and `lra_soi_minimize_order` select how a multi-row SOI
+conflict is shrunk before it becomes a clause. **Both are inert unless
+`lra_pivoting_rule` is `soi`, and the order is inert unless the minimizer is
+`deletion`**, so a space that tunes them has to pin the rule rather than list it
+as one value among four — otherwise most of the budget goes on configurations
+that cannot differ. primo's own measurements find the minimization worth having
+and the ordering within noise, but on clause-length proxies rather than runtime,
+which is the gap a tuning run can close.
+
 ## 📤 Output
 
 The complete starting configuration is declared inline under `initial_config`.

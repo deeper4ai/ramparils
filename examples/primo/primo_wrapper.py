@@ -54,6 +54,18 @@ VALUE_OPTIONS = {
     "mixed_dispatch": "--mixed-dispatch",
     "pure_theory_filter": "--pure-theory-filter",
     "theory_phase": "--theory-phase",
+    # Bounded Boolean flattening (primo f13a184/ac07b56). Two separate passes:
+    # the first runs before the rewriting preprocessing passes and is off by
+    # default, the second runs after them, because those passes build fresh
+    # nodes through constructors that no longer flatten and so reintroduce
+    # nesting the pre-pass has already gone past.
+    "boolean_flatten_threshold": "--boolean-flatten-threshold",
+    "boolean_flatten_post_threshold": "--boolean-flatten-post-threshold",
+    # SOI conflict minimization (primo 2c3fc5c). Both are inert unless
+    # lra_pivoting_rule is soi, and the order is inert unless the minimizer is
+    # deletion, so a space that tunes them must pin the rule.
+    "lra_soi_minimize": "--lra-soi-minimize",
+    "lra_soi_minimize_order": "--lra-soi-minimize-order",
 }
 
 # Three states spread over two primo flags; "auto" is the solver default and
