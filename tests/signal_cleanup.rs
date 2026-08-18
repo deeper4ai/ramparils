@@ -38,7 +38,7 @@ fn sigint_terminates_active_solver_process_tree() {
     .unwrap();
 
     let mut ramparils = Command::new(env!("CARGO_BIN_EXE_ramparils"))
-        .arg("--scenariofile")
+        .arg("run")
         .arg(&scenario)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

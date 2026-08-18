@@ -1,7 +1,9 @@
 //! CLI entry point.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use ramparils::DebugOptions;
 use ramparils::cache::Cache;
@@ -21,9 +23,82 @@ use ramparils::scenario::{OverallObjective, RunObjective, Scenario};
     ),
 )]
 struct Args {
-    /// Scenario file (YAML): defines algo, instances, cutoff, tuner knobs, …
-    #[arg(long)]
-    scenariofile: String,
+    #[command(subcommand)]
+    cmd: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Tune a target algorithm from a scenario file.
+    Run {
+        /// Scenario file (YAML): defines algo, instances, cutoff, tuner knobs, …
+        scenario: String,
+    },
+
+    /// Export the contents of a `.dbcache` to files.
+    #[command(subcommand)]
+    Db(DbCommand),
+}
+
+/// Sub-commands of `ramparils db`.
+///
+/// All three write one file per strategy hash, named `ram-<hash>`, under a
+/// layout that mirrors solverpy's database so an export can be dropped into an
+/// existing `solverpy_db/`. They report a one-line summary on stdout; stderr
+/// carries errors only.
+#[derive(Subcommand, Debug)]
+enum DbCommand {
+    /// Write the instances each strategy solved, one path per line.
+    ///
+    /// A result counts as solved when its status is one of `Theorem`,
+    /// `Unsatisfiable`, `Satisfiable`, `CounterSatisfiable`,
+    /// `ContradictoryAxioms`, `sat`, `unsat` — the union of TPTP's and
+    /// SMT-LIB's success tokens, as solverpy uses. RamParILS stores the status
+    /// verbatim and never interprets it when scoring, so a target algorithm
+    /// reporting anything else is not recognised here and its instances will
+    /// be reported as unsolved.
+    Solved {
+        /// Path to the .dbcache file.
+        dbcache: PathBuf,
+
+        /// Output root directory.
+        #[arg(long, default_value = "solverpy_db")]
+        out_dir: PathBuf,
+    },
+
+    /// Write every result as `instance <TAB> status <TAB> runtime`.
+    Status {
+        /// Path to the .dbcache file.
+        dbcache: PathBuf,
+
+        /// Output root directory.
+        #[arg(long, default_value = "solverpy_db")]
+        out_dir: PathBuf,
+    },
+
+    /// Write the configuration behind each strategy hash, as YAML.
+    ///
+    /// A conf file is a parameter assignment, so it only means anything
+    /// against the parameter space it was tuned in — unlike solverpy's
+    /// `strats/`, which holds solver command lines.
+    ///
+    /// It records the ACTIVE configuration: parameters whose guard was closed
+    /// are absent, because that is what the cache keys on. A conf file is
+    /// therefore a record of what ran rather than a complete configuration,
+    /// and `initial_config_file` will reject it unless every parameter in the
+    /// space happened to be active.
+    Confs {
+        /// Path to the .dbcache file.
+        dbcache: PathBuf,
+
+        /// Output root directory.
+        #[arg(long, default_value = "solverpy_db")]
+        out_dir: PathBuf,
+
+        /// Write the stored JSON instead of YAML.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn sh(cmd: &str) -> String {
@@ -141,10 +216,20 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
 }
 
 fn main() -> Result<()> {
-    ramparils::install_signal_handlers()?;
-    let args = Args::parse();
+    match Args::parse().cmd {
+        Command::Run { scenario } => {
+            ramparils::install_signal_handlers()?;
+            cmd_run(&scenario)
+        }
+        Command::Db(DbCommand::Solved { dbcache, out_dir }) => ramparils::db::solved(&dbcache, &out_dir),
+        Command::Db(DbCommand::Status { dbcache, out_dir }) => ramparils::db::status(&dbcache, &out_dir),
+        Command::Db(DbCommand::Confs { dbcache, out_dir, json }) => ramparils::db::confs(&dbcache, &out_dir, json),
+    }
+}
 
-    let scenario = Scenario::from_file(&args.scenariofile)?;
+/// `ramparils run <scenario>`: the tuning loop.
+fn cmd_run(scenariofile: &str) -> Result<()> {
+    let scenario = Scenario::from_file(scenariofile)?;
 
     if scenario.debug {
         ramparils::enable_debug_stderr();

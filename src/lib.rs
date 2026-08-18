@@ -5,6 +5,7 @@
 //!   2. As a Python extension module (feature = "python") — called from Grackle
 
 pub mod cache; // persistent result cache (SQLite via rusqlite)
+pub mod db; // read-only export of a .dbcache (the `ramparils db` sub-commands)
 pub mod eval; // parallel evaluation engine (rayon thread pool + capping)
 pub mod ils;
 pub mod params; // parameter space: domains, defaults, conditionals, forbidden

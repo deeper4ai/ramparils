@@ -8,10 +8,6 @@ rust-version = "1.85"
 name = "ramparils"
 path = "src/main.rs"
 
-[[bin]]
-name = "ramparils-db"
-path = "src/bin/ramparils_db.rs"
-
 [lib]
 name = "ramparils"
 
