@@ -79,10 +79,10 @@ impl Cache {
     /// Open (or create) the SQLite DB at `path` and ensure the schema exists.
     /// Pass `":memory:"` for an in-process test database.
     pub fn open(path: &str, debug: bool) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("failed to open cache DB: {path}"))?;
+        let conn = Connection::open(path).with_context(|| format!("failed to open cache DB: {path}"))?;
 
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             CREATE TABLE IF NOT EXISTS instances (
@@ -107,7 +107,9 @@ impl Cache {
                 hash   INTEGER PRIMARY KEY,
                 config TEXT NOT NULL
             );
-        ").context("failed to initialise cache schema")?;
+        ",
+        )
+        .context("failed to initialise cache schema")?;
 
         let columns = {
             let mut statement = conn.prepare("PRAGMA table_info(results)")?;
@@ -116,13 +118,16 @@ impl Cache {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         anyhow::ensure!(
-            columns.iter().any(|column| column == "status_id")
-                && columns.iter().any(|column| column == "cutoff"),
+            columns.iter().any(|column| column == "status_id") && columns.iter().any(|column| column == "cutoff"),
             "cache uses an incompatible schema; remove it and create a fresh cache"
         );
 
         crate::debug_line(debug, &format!("[{:8.2}s] cache: opened path={path}", crate::t()));
-        Ok(Cache { conn, debug, status_cache: HashMap::new() })
+        Ok(Cache {
+            conn,
+            debug,
+            status_cache: HashMap::new(),
+        })
     }
 
     /// Register all instance paths and return an in-memory `path → id` map.
@@ -131,9 +136,9 @@ impl Cache {
     /// left untouched, then fetches ids for every path in one query.
     pub fn load_instances(&self, instances: &[String]) -> Result<HashMap<String, i64>> {
         {
-            let mut stmt = self.conn.prepare_cached(
-                "INSERT OR IGNORE INTO instances (path) VALUES (?1)"
-            )?;
+            let mut stmt = self
+                .conn
+                .prepare_cached("INSERT OR IGNORE INTO instances (path) VALUES (?1)")?;
             for path in instances {
                 stmt.execute(params![path])?;
             }
@@ -142,13 +147,13 @@ impl Cache {
         if instances.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders = instances.iter().enumerate()
+        let placeholders = instances
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 1))
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!(
-            "SELECT path, id FROM instances WHERE path IN ({placeholders})"
-        );
+        let sql = format!("SELECT path, id FROM instances WHERE path IN ({placeholders})");
         let mut stmt = self.conn.prepare(&sql)?;
         let map = stmt
             .query_map(rusqlite::params_from_iter(instances.iter()), |row| {
@@ -156,7 +161,10 @@ impl Cache {
             })?
             .collect::<rusqlite::Result<HashMap<_, _>>>()
             .context("failed to load instance ids")?;
-        crate::debug_line(self.debug, &format!("[{:8.2}s] cache: load_instances n={}", crate::t(), map.len()));
+        crate::debug_line(
+            self.debug,
+            &format!("[{:8.2}s] cache: load_instances n={}", crate::t(), map.len()),
+        );
         Ok(map)
     }
 
@@ -175,8 +183,7 @@ impl Cache {
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        let json = serde_json::to_string(&ordered)
-            .context("failed to serialise configuration for the cache")?;
+        let json = serde_json::to_string(&ordered).context("failed to serialise configuration for the cache")?;
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO strategies (hash, config) VALUES (?1, ?2)",
@@ -202,27 +209,25 @@ impl Cache {
             .context("failed to query strategy configuration")?;
         match json {
             None => Ok(None),
-            Some(json) => Ok(Some(
-                serde_json::from_str(&json)
-                    .with_context(|| format!("corrupt strategy record for hash {strategy_hash:016x}"))?,
-            )),
+            Some(json) => {
+                Ok(Some(serde_json::from_str(&json).with_context(|| {
+                    format!("corrupt strategy record for hash {strategy_hash:016x}")
+                })?))
+            }
         }
     }
 
     /// Every recorded strategy, ordered by hash.
     pub fn strategies(&self) -> Result<Vec<(u64, Config)>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT hash, config FROM strategies ORDER BY hash")?;
+        let mut statement = self.conn.prepare("SELECT hash, config FROM strategies ORDER BY hash")?;
         let rows = statement
             .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to list strategies")?;
         rows.into_iter()
             .map(|(hash, json)| {
-                let config: Config = serde_json::from_str(&json).with_context(|| {
-                    format!("corrupt strategy record for hash {:016x}", hash as u64)
-                })?;
+                let config: Config = serde_json::from_str(&json)
+                    .with_context(|| format!("corrupt strategy record for hash {:016x}", hash as u64))?;
                 Ok((hash as u64, config))
             })
             .collect()
@@ -241,7 +246,9 @@ impl Cache {
         if instance_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders = instance_ids.iter().enumerate()
+        let placeholders = instance_ids
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 2)) // ?1 = strategy_hash
             .collect::<Vec<_>>()
             .join(",");
@@ -255,7 +262,7 @@ impl Cache {
         let iter = stmt.query_map(
             rusqlite::params_from_iter(
                 std::iter::once(&hash as &dyn rusqlite::types::ToSql)
-                    .chain(instance_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql))
+                    .chain(instance_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql)),
             ),
             |row| {
                 Ok((
@@ -274,8 +281,7 @@ impl Cache {
         let result = iter
             .filter_map(|row| match row {
                 Ok((instance_id, (cached, stored_cutoff))) => {
-                    adapt_cached_result(cached, stored_cutoff, requested_cutoff)
-                        .map(|cached| Ok((instance_id, cached)))
+                    adapt_cached_result(cached, stored_cutoff, requested_cutoff).map(|cached| Ok((instance_id, cached)))
                 }
                 Err(error) => Some(Err(error)),
             })
@@ -316,19 +322,14 @@ impl Cache {
             return Ok(());
         }
 
-        self.conn.execute(
-            "INSERT OR REPLACE INTO results \
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO results \
              (strategy_hash, instance_id, runtime, quality, status_id, cutoff) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                strategy_hash as i64,
-                instance_id,
-                runtime,
-                quality,
-                status_id,
-                cutoff
-            ],
-        ).context("failed to write to result cache")?;
+                params![strategy_hash as i64, instance_id, runtime, quality, status_id, cutoff],
+            )
+            .context("failed to write to result cache")?;
         Ok(())
     }
 
@@ -340,25 +341,21 @@ impl Cache {
         if let Some(&id) = self.status_cache.get(status) {
             return Ok(id);
         }
-        self.conn.execute(
-            "INSERT OR IGNORE INTO statuses (status) VALUES (?1)",
-            params![status],
-        ).context("failed to intern status")?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM statuses WHERE status = ?1",
-            params![status],
-            |row| row.get(0),
-        ).context("failed to fetch status id")?;
+        self.conn
+            .execute("INSERT OR IGNORE INTO statuses (status) VALUES (?1)", params![status])
+            .context("failed to intern status")?;
+        let id: i64 = self
+            .conn
+            .query_row("SELECT id FROM statuses WHERE status = ?1", params![status], |row| {
+                row.get(0)
+            })
+            .context("failed to fetch status id")?;
         self.status_cache.insert(status.to_string(), id);
         Ok(id)
     }
 }
 
-fn adapt_cached_result(
-    cached: CachedResult,
-    stored_cutoff: f64,
-    requested_cutoff: f64,
-) -> Option<CachedResult> {
+fn adapt_cached_result(cached: CachedResult, stored_cutoff: f64, requested_cutoff: f64) -> Option<CachedResult> {
     if cached.status.eq_ignore_ascii_case("timeout") {
         if stored_cutoff < requested_cutoff {
             return None;
@@ -532,9 +529,7 @@ mod tests {
         // The column is JSON precisely so a value containing `,` or `=` cannot
         // corrupt the record.
         let cache = open();
-        let config: Config = [("expr".to_string(), "a=1,b=2".to_string())]
-            .into_iter()
-            .collect();
+        let config: Config = [("expr".to_string(), "a=1,b=2".to_string())].into_iter().collect();
         let hash = hash_config(&config);
         cache.put_strategy(hash, &config).unwrap();
         assert_eq!(cache.get_strategy(hash).unwrap(), Some(config));

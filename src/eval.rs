@@ -30,12 +30,12 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam::channel::{unbounded, Receiver, Sender};
 use anyhow::Result;
+use crossbeam::channel::{Receiver, Sender, unbounded};
 
 use crate::cache::{Cache, CachedResult};
 use crate::params::Config;
@@ -85,7 +85,11 @@ impl EvalResult {
         let mut s = self.runtimes.clone();
         s.sort_by(f64::total_cmp);
         let n = s.len();
-        if n % 2 == 0 { (s[n / 2 - 1] + s[n / 2]) / 2.0 } else { s[n / 2] }
+        if n % 2 == 0 {
+            (s[n / 2 - 1] + s[n / 2]) / 2.0
+        } else {
+            s[n / 2]
+        }
     }
 }
 
@@ -153,8 +157,7 @@ impl Scheduler {
                             if batch.batch_id != current_batch.load(Ordering::Relaxed) {
                                 break;
                             }
-                            let (instance_id, instance_path) =
-                                &batch.instances[instance_index];
+                            let (instance_id, instance_path) = &batch.instances[instance_index];
                             let Some((runtime, quality, status)) = run_solver_inner(
                                 &algo,
                                 &batch.config,
@@ -185,7 +188,10 @@ impl Scheduler {
             })
             .collect();
 
-        crate::debug_line(debug.main, &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()));
+        crate::debug_line(
+            debug.main,
+            &format!("[{:8.2}s] eval: scheduler started workers={n_workers}", crate::t()),
+        );
         Scheduler {
             work_tx,
             result_tx,
@@ -219,8 +225,7 @@ impl Scheduler {
             cache.put_strategy(task.hash, &task.config)?;
 
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
-            let hits: HashMap<i64, CachedResult> =
-                cache.get_batch(task.hash, &ids, self.cutoff_time)?;
+            let hits: HashMap<i64, CachedResult> = cache.get_batch(task.hash, &ids, self.cutoff_time)?;
             let mut missing_indices = Vec::with_capacity(task.instances.len() - hits.len());
 
             for (index, (instance_id, _)) in task.instances.iter().enumerate() {
@@ -266,7 +271,14 @@ impl Scheduler {
         }
         #[cfg(test)]
         self.submitted_work_batches.store(n_work_batches, Ordering::Relaxed);
-        crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}", crate::t(), n_hits + n_misses));
+        crate::debug_line(
+            self.debug.main,
+            &format!(
+                "[{:8.2}s] eval: submitted tasks={} hits={n_hits} misses={n_misses}",
+                crate::t(),
+                n_hits + n_misses
+            ),
+        );
         Ok(batch_id)
     }
 
@@ -348,12 +360,7 @@ fn run_solver_inner(
     let cmd = format!("{algo} {instance} {cutoff_time} {paramstring}");
     crate::debug_line(debug.wrapper, &format!("[{:8.2}s] wrapper: {cmd}", crate::t()));
 
-    let output = run_wrapper_process(
-        &cmd,
-        batch_id,
-        current_batch,
-        active_process_groups,
-    );
+    let output = run_wrapper_process(&cmd, batch_id, current_batch, active_process_groups);
 
     let (runtime, quality, status, result_line) = match output {
         Ok(Some(out)) => {
@@ -368,13 +375,22 @@ fn run_solver_inner(
         Ok(None) => return None,
         Err(e) => {
             crate::log_crash(&cmd, "", &e.to_string(), None);
-            (cutoff_time, UNKNOWN_QUALITY, "UNKNOWN".to_string(),
-             format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}"))
+            (
+                cutoff_time,
+                UNKNOWN_QUALITY,
+                "UNKNOWN".to_string(),
+                format!("#%# RamParIls #%# UNKNOWN, {cutoff_time}, {UNKNOWN_QUALITY}"),
+            )
         }
     };
     let iname = std::path::Path::new(instance)
-        .file_name().and_then(|n| n.to_str()).unwrap_or(instance);
-    crate::debug_line(debug.solver, &format!("[{:8.2}s] solver: {hash:016x} @ {iname} {result_line}", crate::t()));
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(instance);
+    crate::debug_line(
+        debug.solver,
+        &format!("[{:8.2}s] solver: {hash:016x} @ {iname} {result_line}", crate::t()),
+    );
     Some((runtime, quality, status))
 }
 
@@ -405,8 +421,7 @@ fn run_wrapper_process(
     });
 
     let status = loop {
-        let canceled =
-            crate::interrupted() || batch_id != current_batch.load(Ordering::Relaxed);
+        let canceled = crate::interrupted() || batch_id != current_batch.load(Ordering::Relaxed);
         if canceled {
             terminate_child_process_group(&mut child, process_group)?;
             break None;
@@ -418,17 +433,16 @@ fn run_wrapper_process(
     };
     crate::unregister_process_group(process_group);
     active_process_groups.lock().unwrap().remove(&process_group);
-    let stdout = stdout_reader.join()
+    let stdout = stdout_reader
+        .join()
         .map_err(|_| std::io::Error::other("stdout reader thread panicked"))??;
-    let stderr = stderr_reader.join()
+    let stderr = stderr_reader
+        .join()
         .map_err(|_| std::io::Error::other("stderr reader thread panicked"))??;
     Ok(status.map(|status| std::process::Output { status, stdout, stderr }))
 }
 
-fn terminate_child_process_group(
-    child: &mut std::process::Child,
-    process_group: libc::pid_t,
-) -> std::io::Result<()> {
+fn terminate_child_process_group(child: &mut std::process::Child, process_group: libc::pid_t) -> std::io::Result<()> {
     unsafe {
         libc::kill(-process_group, libc::SIGTERM);
     }
@@ -442,24 +456,18 @@ fn terminate_child_process_group(
     Ok(())
 }
 
-fn terminate_batch_process_groups(
-    active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>,
-    batch_id: u64,
-) {
+fn terminate_batch_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>, batch_id: u64) {
     let groups: Vec<libc::pid_t> = active_process_groups
         .lock()
         .unwrap()
         .iter()
-        .filter_map(|(&process_group, &active_batch)| {
-            (active_batch == batch_id).then_some(process_group)
-        })
+        .filter_map(|(&process_group, &active_batch)| (active_batch == batch_id).then_some(process_group))
         .collect();
     terminate_groups(&groups);
 }
 
 fn terminate_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>) {
-    let groups: Vec<libc::pid_t> =
-        active_process_groups.lock().unwrap().keys().copied().collect();
+    let groups: Vec<libc::pid_t> = active_process_groups.lock().unwrap().keys().copied().collect();
     terminate_groups(&groups);
 }
 
@@ -508,10 +516,7 @@ mod tests {
 
     #[test]
     fn parse_ok_line() {
-        let (rt, q, st, raw) = parse_solver_output(
-            "some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n",
-            10.0,
-        );
+        let (rt, q, st, raw) = parse_solver_output("some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n", 10.0);
         assert!((rt - 1.23).abs() < 1e-9);
         assert!((q - 42.0).abs() < 1e-9);
         assert_eq!(st, "Theorem");
@@ -557,21 +562,26 @@ mod tests {
         cache.put(hash, id2, 1.0, 0.0, "Theorem", 10.0).unwrap();
 
         let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
-        sched.submit(vec![EvalTask {
-            neighbor_id: 7,
-            config,
-            hash,
-            instances: Arc::new(vec![
-                (id1, paths[0].clone()),
-                (id2, paths[1].clone()),
-            ]),
-        }], &cache).unwrap();
+        sched
+            .submit(
+                vec![EvalTask {
+                    neighbor_id: 7,
+                    config,
+                    hash,
+                    instances: Arc::new(vec![(id1, paths[0].clone()), (id2, paths[1].clone())]),
+                }],
+                &cache,
+            )
+            .unwrap();
 
         let mut results = vec![];
         for _ in 0..2 {
-            results.push(sched.results().recv_timeout(
-                std::time::Duration::from_millis(100)
-            ).expect("expected cache hit result"));
+            results.push(
+                sched
+                    .results()
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .expect("expected cache hit result"),
+            );
         }
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.neighbor_id == 7));
@@ -591,8 +601,7 @@ mod tests {
         let hash = hash_config(&config);
         cache.put(hash, instance_id, 8.0, 0.0, "sat", 10.0).unwrap();
 
-        let scheduler =
-            Scheduler::new(1, "unused".to_string(), 5.0, crate::DebugOptions::default());
+        let scheduler = Scheduler::new(1, "unused".to_string(), 5.0, crate::DebugOptions::default());
         scheduler
             .submit(
                 vec![EvalTask {
@@ -652,41 +661,32 @@ mod tests {
         let instance = "instance.cnf".to_string();
         let ids = cache.load_instances(std::slice::from_ref(&instance)).unwrap();
         let config: Config = [("alpha".to_string(), "1".to_string())].into();
-        let sched = Scheduler::new(
-            1,
-            wrapper.display().to_string(),
-            300.0,
-            crate::DebugOptions::default(),
-        );
-        sched.submit(
-            vec![EvalTask {
-                neighbor_id: 0,
-                hash: hash_config(&config),
-                config,
-                instances: Arc::new(vec![(ids[&instance], instance)]),
-            }],
-            &cache,
-        )
-        .unwrap();
+        let sched = Scheduler::new(1, wrapper.display().to_string(), 300.0, crate::DebugOptions::default());
+        sched
+            .submit(
+                vec![EvalTask {
+                    neighbor_id: 0,
+                    hash: hash_config(&config),
+                    config,
+                    instances: Arc::new(vec![(ids[&instance], instance)]),
+                }],
+                &cache,
+            )
+            .unwrap();
 
         let start_deadline = Instant::now() + Duration::from_secs(5);
         while !pid_file.exists() {
-            assert!(
-                Instant::now() < start_deadline,
-                "solver process did not start"
-            );
+            assert!(Instant::now() < start_deadline, "solver process did not start");
             std::thread::sleep(Duration::from_millis(20));
         }
-        let solver_pid: libc::pid_t =
-            fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let solver_pid: libc::pid_t = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
 
         sched.reset();
 
         let exit_deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let exists = unsafe {
-                libc::kill(solver_pid, 0) == 0
-                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+                libc::kill(solver_pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
             };
             if !exists {
                 break;
@@ -708,25 +708,21 @@ mod tests {
         let cache = Cache::open(":memory:", false).unwrap();
         let paths: Vec<String> = (0..10_000).map(|i| format!("i{i}.cnf")).collect();
         let id_map = cache.load_instances(&paths).unwrap();
-        let instances = Arc::new(
-            paths.iter()
-                .map(|path| (id_map[path], path.clone()))
-                .collect(),
-        );
+        let instances = Arc::new(paths.iter().map(|path| (id_map[path], path.clone())).collect());
         let config: Config = [("alpha".to_string(), "1".to_string())].into();
-        let sched = Scheduler::new(
-            4,
-            "true".to_string(),
-            10.0,
-            crate::DebugOptions::default(),
-        );
+        let sched = Scheduler::new(4, "true".to_string(), 10.0, crate::DebugOptions::default());
 
-        sched.submit(vec![EvalTask {
-            neighbor_id: 0,
-            hash: hash_config(&config),
-            config,
-            instances,
-        }], &cache).unwrap();
+        sched
+            .submit(
+                vec![EvalTask {
+                    neighbor_id: 0,
+                    hash: hash_config(&config),
+                    config,
+                    instances,
+                }],
+                &cache,
+            )
+            .unwrap();
 
         assert_eq!(sched.submitted_work_batches(), 4);
         sched.reset();

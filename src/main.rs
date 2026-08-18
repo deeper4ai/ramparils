@@ -3,11 +3,11 @@
 use anyhow::Result;
 use clap::Parser;
 
+use ramparils::DebugOptions;
 use ramparils::cache::Cache;
 use ramparils::ils;
 use ramparils::params::{ParamSpace, config_to_yaml};
-use ramparils::scenario::{RunObjective, OverallObjective, Scenario};
-use ramparils::DebugOptions;
+use ramparils::scenario::{OverallObjective, RunObjective, Scenario};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -27,43 +27,84 @@ struct Args {
 }
 
 fn sh(cmd: &str) -> String {
-    std::process::Command::new("sh").args(["-c", cmd])
+    std::process::Command::new("sh")
+        .args(["-c", cmd])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "?".to_string())
 }
 
 fn print_debug_header() {
-    if !ramparils::any_debug_active() { return; }
+    if !ramparils::any_debug_active() {
+        return;
+    }
     let t = ramparils::t();
     let d = true;
     let sep = "-".repeat(60);
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] binary:  {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] binary:  {} v{}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
     ramparils::debug_line(d, &format!("[{t:8.2}s] git:     {}", ramparils::GIT_REVISION));
     ramparils::debug_line(d, &format!("[{t:8.2}s] build:   {}", ramparils::BUILD_INFO));
     ramparils::debug_line(d, &format!("[{t:8.2}s] date:    {}", sh("date")));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] host:    {}  ({})", sh("hostname"), sh("uname -sr")));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] user:    {}", std::env::var("USER").unwrap_or_else(|_| sh("whoami"))));
+    ramparils::debug_line(
+        d,
+        &format!("[{t:8.2}s] host:    {}  ({})", sh("hostname"), sh("uname -sr")),
+    );
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] user:    {}",
+            std::env::var("USER").unwrap_or_else(|_| sh("whoami"))
+        ),
+    );
     ramparils::debug_line(d, &format!("[{t:8.2}s] pid:     {}", std::process::id()));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] cwd:     {}", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".to_string())));
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] cwd:     {}",
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "?".to_string())
+        ),
+    );
     let argv: Vec<String> = std::env::args().collect();
     ramparils::debug_line(d, &format!("[{t:8.2}s] args:    {}", argv.join(" ")));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
 
 fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
-    if !ramparils::any_debug_active() { return; }
+    if !ramparils::any_debug_active() {
+        return;
+    }
     let t = ramparils::t();
     let d = true;
     let sep = "-".repeat(60);
-    let run_obj = match s.run_obj { RunObjective::Runtime => "runtime", RunObjective::Quality => "quality" };
-    let overall_obj = match s.overall_obj { OverallObjective::Mean => "mean", OverallObjective::Median => "median" };
+    let run_obj = match s.run_obj {
+        RunObjective::Runtime => "runtime",
+        RunObjective::Quality => "quality",
+    };
+    let overall_obj = match s.overall_obj {
+        OverallObjective::Mean => "mean",
+        OverallObjective::Median => "median",
+    };
     let test = s.test_instance_file.as_deref().unwrap_or("-");
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] algo:       {}", s.algo));
     ramparils::debug_line(d, &format!("[{t:8.2}s] paramfile:  {}", s.paramfile));
-    ramparils::debug_line(d, &format!("[{t:8.2}s] instances:  {} ({n_instances} loaded)", s.instance_source_label()));
+    ramparils::debug_line(
+        d,
+        &format!(
+            "[{t:8.2}s] instances:  {} ({n_instances} loaded)",
+            s.instance_source_label()
+        ),
+    );
     ramparils::debug_line(d, &format!("[{t:8.2}s] test:       {test}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] cutoff:     {}s", s.cutoff_time));
     ramparils::debug_line(d, &format!("[{t:8.2}s] timeout:    {}s", s.tuner_timeout));
@@ -81,18 +122,18 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
         &format!(
             "[{t:8.2}s] perturb:    strength={} restart_strength={}",
             s.perturbation_strength,
-            if s.restart_strength == 0 { 2 * s.perturbation_strength } else { s.restart_strength },
+            if s.restart_strength == 0 {
+                2 * s.perturbation_strength
+            } else {
+                s.restart_strength
+            },
         ),
     );
     ramparils::debug_line(
         d,
         &format!(
             "[{t:8.2}s] restart:    p={} failures={} target={} tolerance={} probes={}",
-            s.restart_probability,
-            s.restart_failures,
-            s.restart_target,
-            s.acceptance_tolerance,
-            s.random_probes,
+            s.restart_probability, s.restart_failures, s.restart_target, s.acceptance_tolerance, s.random_probes,
         ),
     );
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
@@ -105,9 +146,15 @@ fn main() -> Result<()> {
 
     let scenario = Scenario::from_file(&args.scenariofile)?;
 
-    if scenario.debug { ramparils::enable_debug_stderr(); }
-    if let Some(ref path) = scenario.debug_log { ramparils::init_log_file(path)?; }
-    if let Some(ref path) = scenario.error_log { ramparils::init_error_log(path)?; }
+    if scenario.debug {
+        ramparils::enable_debug_stderr();
+    }
+    if let Some(ref path) = scenario.debug_log {
+        ramparils::init_log_file(path)?;
+    }
+    if let Some(ref path) = scenario.error_log {
+        ramparils::init_error_log(path)?;
+    }
     let main_debug = ramparils::any_debug_active();
     print_debug_header();
 
@@ -118,9 +165,7 @@ fn main() -> Result<()> {
 
     let mut cache = Cache::open(&scenario.cache_db, main_debug)?;
     let id_map = cache.load_instances(&instance_paths)?;
-    let instances: Vec<(i64, String)> = instance_paths.iter()
-        .map(|p| (id_map[p], p.clone()))
-        .collect();
+    let instances: Vec<(i64, String)> = instance_paths.iter().map(|p| (id_map[p], p.clone())).collect();
 
     let n_workers = if scenario.cores == 0 {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
@@ -172,10 +217,7 @@ fn main() -> Result<()> {
     let result_yaml = config_to_yaml(&result)?;
     ramparils::debug_line(
         main_debug,
-        &format!(
-            "[{:8.2}s] ils: final config: score={best_score:.6}",
-            ramparils::t()
-        ),
+        &format!("[{:8.2}s] ils: final config: score={best_score:.6}", ramparils::t()),
     );
     ramparils::debug_block(main_debug, &result_yaml);
     print!("{result_yaml}");

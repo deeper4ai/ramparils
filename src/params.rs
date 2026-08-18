@@ -5,8 +5,8 @@
 //!   child {a, b} [a] | parent in {val1}          # conditional: only active when parent=val1
 //!   {alpha=1.01, rho=0}                          # forbidden combination
 
-use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context, Result};
+use std::collections::{BTreeMap, HashMap};
 
 /// A configuration is a map from parameter name → value string.
 pub type Config = HashMap<String, String>;
@@ -48,8 +48,7 @@ pub struct ParamSpace {
 
 impl ParamSpace {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read params file: {path}"))?;
+        let content = std::fs::read_to_string(path).with_context(|| format!("failed to read params file: {path}"))?;
 
         let mut params: Vec<Param> = Vec::new();
         let mut forbidden: Vec<Forbidden> = Vec::new();
@@ -77,7 +76,9 @@ impl ParamSpace {
                             let mut it = part.trim().splitn(2, '=');
                             let k = it.next()?.trim().to_string();
                             let v = it.next()?.trim().to_string();
-                            if k.is_empty() { return None; }
+                            if k.is_empty() {
+                                return None;
+                            }
                             Some((k, v))
                         })
                         .collect();
@@ -155,13 +156,19 @@ impl ParamSpace {
                 );
             }
 
-            let condition = cond_str.map(|cond| {
-                parse_condition_str(cond).with_context(|| {
-                    format!("line {}: malformed condition '{cond}'", lineno + 1)
+            let condition = cond_str
+                .map(|cond| {
+                    parse_condition_str(cond)
+                        .with_context(|| format!("line {}: malformed condition '{cond}'", lineno + 1))
                 })
-            }).transpose()?;
+                .transpose()?;
 
-            params.push(Param { name, domain, default, condition });
+            params.push(Param {
+                name,
+                domain,
+                default,
+                condition,
+            });
         }
 
         Ok(ParamSpace { params, forbidden })
@@ -169,7 +176,10 @@ impl ParamSpace {
 
     /// Default configuration: every param at its default value.
     pub fn default_config(&self) -> Config {
-        self.params.iter().map(|p| (p.name.clone(), p.default.clone())).collect()
+        self.params
+            .iter()
+            .map(|p| (p.name.clone(), p.default.clone()))
+            .collect()
     }
 
     /// Validate that `config` contains exactly one in-domain value for every parameter.
@@ -182,12 +192,9 @@ impl ParamSpace {
         }
 
         for param in &self.params {
-            let value = config.get(&param.name).with_context(|| {
-                format!(
-                    "initial configuration is missing parameter '{}'",
-                    param.name
-                )
-            })?;
+            let value = config
+                .get(&param.name)
+                .with_context(|| format!("initial configuration is missing parameter '{}'", param.name))?;
             anyhow::ensure!(
                 param.domain.contains(value),
                 "initial configuration value '{}' is not in domain {:?} for parameter '{}'",
@@ -219,7 +226,10 @@ impl ParamSpace {
                     continue;
                 }
                 if let Some(cond) = &self.params[i].condition {
-                    let parent_active = self.params.iter().enumerate()
+                    let parent_active = self
+                        .params
+                        .iter()
+                        .enumerate()
                         .any(|(j, p)| active[j] && p.name == cond.parent);
                     let parent_val_ok = config
                         .get(&cond.parent)
@@ -234,7 +244,9 @@ impl ParamSpace {
                 break;
             }
         }
-        self.params.iter().enumerate()
+        self.params
+            .iter()
+            .enumerate()
             .filter(|(i, _)| active[*i])
             .map(|(_, p)| p)
             .collect()
@@ -266,7 +278,9 @@ fn parse_condition_str(cond: &str) -> Option<Condition> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if parent.is_empty() || allowed_values.is_empty() { return None; }
+    if parent.is_empty() || allowed_values.is_empty() {
+        return None;
+    }
     Some(Condition { parent, allowed_values })
 }
 
@@ -329,10 +343,13 @@ thresh {1, 2, 3} [2] | mode in {slow}
     fn forbidden_combo() {
         let space = parse(WITH_COND_AND_FORBIDDEN);
         assert_eq!(space.forbidden.len(), 1);
-        assert_eq!(space.forbidden[0], vec![
-            ("mode".to_string(), "fast".to_string()),
-            ("thresh".to_string(), "1".to_string()),
-        ]);
+        assert_eq!(
+            space.forbidden[0],
+            vec![
+                ("mode".to_string(), "fast".to_string()),
+                ("thresh".to_string(), "1".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -341,7 +358,8 @@ thresh {1, 2, 3} [2] | mode in {slow}
         let mut config: Config = [
             ("mode".to_string(), "fast".to_string()),
             ("thresh".to_string(), "2".to_string()),
-        ].into();
+        ]
+        .into();
         // thresh is only active when mode=slow
         let active = space.active_params(&config);
         assert_eq!(active.len(), 1);
@@ -358,13 +376,15 @@ thresh {1, 2, 3} [2] | mode in {slow}
         let config: Config = [
             ("mode".to_string(), "fast".to_string()),
             ("thresh".to_string(), "1".to_string()),
-        ].into();
+        ]
+        .into();
         assert!(space.is_forbidden(&config));
 
         let config2: Config = [
             ("mode".to_string(), "slow".to_string()),
             ("thresh".to_string(), "1".to_string()),
-        ].into();
+        ]
+        .into();
         assert!(!space.is_forbidden(&config2));
     }
 
@@ -382,7 +402,8 @@ thresh {1, 2, 3} [2] | mode in {slow}
         let config: Config = [
             ("mode".to_string(), "slow".to_string()),
             ("thresh".to_string(), "2".to_string()),
-        ].into();
+        ]
+        .into();
         space.validate_config(&config).unwrap();
     }
 
@@ -403,7 +424,8 @@ thresh {1, 2, 3} [2] | mode in {slow}
             ("mode".to_string(), "slow".to_string()),
             ("thresh".to_string(), "2".to_string()),
             ("other".to_string(), "x".to_string()),
-        ].into();
+        ]
+        .into();
         assert!(
             space
                 .validate_config(&unknown)
@@ -415,7 +437,8 @@ thresh {1, 2, 3} [2] | mode in {slow}
         let invalid: Config = [
             ("mode".to_string(), "slow".to_string()),
             ("thresh".to_string(), "4".to_string()),
-        ].into();
+        ]
+        .into();
         assert!(
             space
                 .validate_config(&invalid)
@@ -432,9 +455,6 @@ thresh {1, 2, 3} [2] | mode in {slow}
             ("alpha".to_string(), "0.25".to_string()),
         ]
         .into();
-        assert_eq!(
-            config_to_yaml(&config).unwrap(),
-            "alpha: '0.25'\nzeta: 'true'\n"
-        );
+        assert_eq!(config_to_yaml(&config).unwrap(), "alpha: '0.25'\nzeta: 'true'\n");
     }
 }

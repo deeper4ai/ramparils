@@ -4,11 +4,11 @@
 //!   1. As a CLI binary (`src/main.rs`) — drop-in for `param_ils_2_3_run.rb`
 //!   2. As a Python extension module (feature = "python") — called from Grackle
 
-pub mod params;    // parameter space: domains, defaults, conditionals, forbidden
-pub mod scenario;  // scenario file parser (algo, instances, cutoff_time, …)
-pub mod eval;      // parallel evaluation engine (rayon thread pool + capping)
-pub mod cache;     // persistent result cache (SQLite via rusqlite)
-pub mod ils;       // ILS loop: local search, perturbation, acceptance
+pub mod cache; // persistent result cache (SQLite via rusqlite)
+pub mod eval; // parallel evaluation engine (rayon thread pool + capping)
+pub mod ils;
+pub mod params; // parameter space: domains, defaults, conditionals, forbidden
+pub mod scenario; // scenario file parser (algo, instances, cutoff_time, …) // ILS loop: local search, perturbation, acceptance
 
 /// Source revision this binary was built from, suffixed `-dirty` when the
 /// worktree had uncommitted changes, or `"unknown"` when it was built without
@@ -28,23 +28,20 @@ pub const BUILD_INFO: &str = env!("RAMPARILS_BUILD");
 // Shared debug helpers
 // ---------------------------------------------------------------------------
 
-use std::io::Write;
 use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Instant;
 
 static START: OnceLock<Instant> = OnceLock::new();
 // Mutable so it can be opened, closed, and re-opened between Python `specialize()` calls.
-static LOG_FILE: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> =
-    LazyLock::new(|| Mutex::new(None));
-static ERROR_LOG: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> =
-    LazyLock::new(|| Mutex::new(None));
+static LOG_FILE: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> = LazyLock::new(|| Mutex::new(None));
+static ERROR_LOG: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> = LazyLock::new(|| Mutex::new(None));
 /// Set to true when `--debug` is passed — controls stderr output.
 static DEBUG_STDERR: AtomicBool = AtomicBool::new(false);
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-static ACTIVE_PROCESS_GROUPS: LazyLock<Mutex<HashSet<libc::pid_t>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static ACTIVE_PROCESS_GROUPS: LazyLock<Mutex<HashSet<libc::pid_t>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 extern "C" fn handle_termination_signal(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::Relaxed);
@@ -57,16 +54,14 @@ pub fn install_signal_handlers() -> anyhow::Result<()> {
         if libc::signal(
             libc::SIGINT,
             handle_termination_signal as *const () as libc::sighandler_t,
-        )
-            == libc::SIG_ERR
+        ) == libc::SIG_ERR
         {
             return Err(anyhow::anyhow!("failed to install SIGINT handler"));
         }
         if libc::signal(
             libc::SIGTERM,
             handle_termination_signal as *const () as libc::sighandler_t,
-        )
-            == libc::SIG_ERR
+        ) == libc::SIG_ERR
         {
             return Err(anyhow::anyhow!("failed to install SIGTERM handler"));
         }
@@ -87,8 +82,7 @@ pub(crate) fn unregister_process_group(process_group: libc::pid_t) {
 }
 
 pub fn terminate_active_process_groups() {
-    let groups: Vec<libc::pid_t> =
-        ACTIVE_PROCESS_GROUPS.lock().unwrap().iter().copied().collect();
+    let groups: Vec<libc::pid_t> = ACTIVE_PROCESS_GROUPS.lock().unwrap().iter().copied().collect();
     for process_group in &groups {
         unsafe {
             libc::kill(-process_group, libc::SIGTERM);
@@ -114,8 +108,7 @@ pub fn enable_debug_stderr() {
 
 /// Open (or replace) the debug log file (`--debug-log` / `specialize(debug_log=…)`).
 pub fn init_log_file(path: &str) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path)
-        .map_err(|e| anyhow::anyhow!("failed to open debug log {path}: {e}"))?;
+    let file = std::fs::File::create(path).map_err(|e| anyhow::anyhow!("failed to open debug log {path}: {e}"))?;
     *LOG_FILE.lock().unwrap() = Some(std::io::LineWriter::new(file));
     Ok(())
 }
@@ -127,8 +120,7 @@ pub fn close_log_file() {
 
 /// Open (or replace) the error log file (`--error-log` / `specialize(error_log=…)`).
 pub fn init_error_log(path: &str) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path)
-        .map_err(|e| anyhow::anyhow!("failed to open error log {path}: {e}"))?;
+    let file = std::fs::File::create(path).map_err(|e| anyhow::anyhow!("failed to open error log {path}: {e}"))?;
     *ERROR_LOG.lock().unwrap() = Some(std::io::LineWriter::new(file));
     Ok(())
 }
@@ -146,7 +138,9 @@ pub fn log_crash(cmd: &str, stdout: &str, stderr: &str, exit_code: Option<i32>) 
     let mut guard = ERROR_LOG.lock().unwrap();
     let Some(f) = guard.as_mut() else { return };
     let t = t();
-    let exit_str = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "spawn_failed".to_string());
+    let exit_str = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "spawn_failed".to_string());
     let sep = "=".repeat(60);
     let _ = writeln!(f, "{sep}");
     let _ = writeln!(f, "crash  t={t:.2}s  exit={exit_str}");
@@ -154,12 +148,16 @@ pub fn log_crash(cmd: &str, stdout: &str, stderr: &str, exit_code: Option<i32>) 
     if !stdout.is_empty() {
         let _ = writeln!(f, "--- stdout ---");
         let _ = write!(f, "{stdout}");
-        if !stdout.ends_with('\n') { let _ = writeln!(f); }
+        if !stdout.ends_with('\n') {
+            let _ = writeln!(f);
+        }
     }
     if !stderr.is_empty() {
         let _ = writeln!(f, "--- stderr ---");
         let _ = write!(f, "{stderr}");
-        if !stderr.ends_with('\n') { let _ = writeln!(f); }
+        if !stderr.ends_with('\n') {
+            let _ = writeln!(f);
+        }
     }
     let _ = writeln!(f, "{sep}");
 }
@@ -187,23 +185,31 @@ pub struct DebugOptions {
 /// Messages are only emitted when their category flag is on — this ensures
 /// wrapper/solver lines don't appear in the log unless those flags are set.
 pub fn debug_line(enabled: bool, line: &str) {
-    if !enabled { return; }
-    if DEBUG_STDERR.load(Ordering::Relaxed) { eprintln!("{line}"); }
+    if !enabled {
+        return;
+    }
+    if DEBUG_STDERR.load(Ordering::Relaxed) {
+        eprintln!("{line}");
+    }
     if let Ok(mut guard) = LOG_FILE.lock() {
-        if let Some(f) = guard.as_mut() { let _ = writeln!(f, "{line}"); }
+        if let Some(f) = guard.as_mut() {
+            let _ = writeln!(f, "{line}");
+        }
     }
 }
 
 /// Write multiline debug output through the configured debug destinations.
 pub fn debug_block(enabled: bool, block: &str) {
-    if !enabled { return; }
+    if !enabled {
+        return;
+    }
     for line in block.lines() {
         debug_line(true, line);
     }
 }
 
 #[cfg(feature = "python")]
-mod python;        // PyO3 bindings — only compiled when building the Python .so
+mod python; // PyO3 bindings — only compiled when building the Python .so
 
 #[cfg(test)]
 mod tests {

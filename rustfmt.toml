@@ -1,0 +1,20 @@
+# Line width, against rustfmt's default of 100.
+#
+# This codebase was hand-formatted for its first 62 commits and only run
+# through rustfmt when it was prepared for release, so `cargo fmt` had a lot to
+# say. 120 was chosen by measuring: it cuts the reformat from +1150/-492 lines
+# at the default 100 to +928/-701, because the dominant pattern here is a
+# `debug_line(d, &format!(...))` call written to read like the log line it
+# produces, and those run to 100-120 characters.
+#
+# Two things worth knowing before changing this number:
+#
+#   * widening is not free in one direction only. At 120 rustfmt also pulls
+#     some deliberately split calls back onto a single line, so the deletion
+#     count rises as the insertion count falls.
+#
+#   * max_width alone does not decide when a call is exploded across lines.
+#     With the default `use_small_heuristics = "Default"` the call-argument
+#     budget is 60% of max_width -- 72 columns here -- so a wider max_width
+#     helps a long call far less than it looks.
+max_width = 120

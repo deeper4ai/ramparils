@@ -48,8 +48,7 @@ fn fidelity_increases_remeasure_both_retained_states() {
     let mut cache = Cache::open(":memory:", false).unwrap();
     let paths: Vec<String> = (1..=N_INSTANCES).map(|i| format!("inst{i:02}")).collect();
     let ids = cache.load_instances(&paths).unwrap();
-    let instances: Vec<(i64, String)> =
-        paths.iter().map(|path| (ids[path], path.clone())).collect();
+    let instances: Vec<(i64, String)> = paths.iter().map(|path| (ids[path], path.clone())).collect();
 
     let options = IlsOptions {
         approach: Approach::Focused,

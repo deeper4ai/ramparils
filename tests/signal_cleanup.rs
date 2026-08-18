@@ -50,8 +50,7 @@ fn sigint_terminates_active_solver_process_tree() {
         assert!(Instant::now() < pid_deadline, "solver process did not start");
         thread::sleep(Duration::from_millis(20));
     }
-    let solver_pid: libc::pid_t =
-        fs::read_to_string(&solver_pid).unwrap().trim().parse().unwrap();
+    let solver_pid: libc::pid_t = fs::read_to_string(&solver_pid).unwrap().trim().parse().unwrap();
 
     unsafe {
         assert_eq!(libc::kill(ramparils.id() as libc::pid_t, libc::SIGINT), 0);
@@ -62,10 +61,7 @@ fn sigint_terminates_active_solver_process_tree() {
         if let Some(status) = ramparils.try_wait().unwrap() {
             break status;
         }
-        assert!(
-            Instant::now() < exit_deadline,
-            "ramparils did not exit after SIGINT"
-        );
+        assert!(Instant::now() < exit_deadline, "ramparils did not exit after SIGINT");
         thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(status.code(), Some(130));
@@ -83,31 +79,35 @@ fn llm2smt_wrapper_forwards_sigterm_to_solver_session() {
     let solver_pid = dir.path().join("solver.pid");
     let instance = dir.path().join("instance.smt2");
     fs::write(&instance, "(set-logic QF_EUF)\n").unwrap();
-    fs::write(
-        &solver,
-        "#!/bin/sh\necho \"$$\" > \"$SOLVER_PID_FILE\"\nsleep 300\n",
-    )
-    .unwrap();
+    fs::write(&solver, "#!/bin/sh\necho \"$$\" > \"$SOLVER_PID_FILE\"\nsleep 300\n").unwrap();
     let mut permissions = fs::metadata(&solver).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&solver, permissions).unwrap();
 
-    let wrapper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/llm2smt/llm2smt_wrapper.py");
+    let wrapper = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/llm2smt/llm2smt_wrapper.py");
     let mut process = Command::new("python3")
         .arg(wrapper)
         .arg(&instance)
         .arg("300")
         .args([
-            "-preprocess_passes", "1",
-            "-nary", "true",
-            "-flatten", "true",
-            "-finite_domain_amo", "true",
-            "-finite_domain_eq_defs", "true",
-            "-theory_prop", "true",
-            "-prop_interval", "1",
-            "-prop_assign_threshold", "1",
-            "-prop_delivery_budget", "1",
+            "-preprocess_passes",
+            "1",
+            "-nary",
+            "true",
+            "-flatten",
+            "true",
+            "-finite_domain_amo",
+            "true",
+            "-finite_domain_eq_defs",
+            "true",
+            "-theory_prop",
+            "true",
+            "-prop_interval",
+            "1",
+            "-prop_assign_threshold",
+            "1",
+            "-prop_delivery_budget",
+            "1",
         ])
         .env("LLM2SMT", &solver)
         .env("SOLVER_PID_FILE", &solver_pid)
@@ -121,8 +121,7 @@ fn llm2smt_wrapper_forwards_sigterm_to_solver_session() {
         assert!(Instant::now() < pid_deadline, "fake llm2smt did not start");
         thread::sleep(Duration::from_millis(20));
     }
-    let solver_pid: libc::pid_t =
-        fs::read_to_string(&solver_pid).unwrap().trim().parse().unwrap();
+    let solver_pid: libc::pid_t = fs::read_to_string(&solver_pid).unwrap().trim().parse().unwrap();
 
     unsafe {
         assert_eq!(libc::kill(process.id() as libc::pid_t, libc::SIGTERM), 0);
@@ -140,16 +139,14 @@ fn llm2smt_wrapper_forwards_sigterm_to_solver_session() {
     }
 
     let process_exists = unsafe {
-        libc::kill(solver_pid, 0) == 0
-            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        libc::kill(solver_pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     };
     assert!(!process_exists, "llm2smt solver process {solver_pid} was orphaned");
 }
 
 #[test]
 fn llm2smt_wrapper_handles_sigterm_during_solver_spawn() {
-    let wrapper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/llm2smt/llm2smt_wrapper.py");
+    let wrapper = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/llm2smt/llm2smt_wrapper.py");
     let script = r#"
 import importlib.util
 import os

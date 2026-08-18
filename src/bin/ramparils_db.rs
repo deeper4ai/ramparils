@@ -44,10 +44,9 @@ use rusqlite::{Connection, OpenFlags};
 // ---------------------------------------------------------------------------
 
 fn is_solved(status: &str) -> bool {
-    matches!(status,
-        "Theorem" | "Unsatisfiable" | "Satisfiable" |
-        "CounterSatisfiable" | "ContradictoryAxioms" |
-        "sat" | "unsat"
+    matches!(
+        status,
+        "Theorem" | "Unsatisfiable" | "Satisfiable" | "CounterSatisfiable" | "ContradictoryAxioms" | "sat" | "unsat"
     )
 }
 
@@ -102,8 +101,8 @@ enum Cmd {
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.cmd {
-        Cmd::Solved  { dbcache, out_dir } => cmd_solved(&dbcache, &out_dir),
-        Cmd::Status  { dbcache, out_dir } => cmd_status(&dbcache, &out_dir),
+        Cmd::Solved { dbcache, out_dir } => cmd_solved(&dbcache, &out_dir),
+        Cmd::Status { dbcache, out_dir } => cmd_status(&dbcache, &out_dir),
         Cmd::Strategies { dbcache, json } => cmd_strategies(&dbcache, json),
     }
 }
@@ -137,9 +136,7 @@ fn cmd_strategies(dbcache: &Path, as_json: bool) -> Result<()> {
     );
 
     let mut stmt = conn.prepare("SELECT hash, config FROM strategies ORDER BY hash")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
 
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -152,10 +149,7 @@ fn cmd_strategies(dbcache: &Path, as_json: bool) -> Result<()> {
         } else {
             let config: BTreeMap<String, String> = serde_json::from_str(&json)
                 .with_context(|| format!("corrupt strategy record for hash {:016x}", hash as u64))?;
-            let body: Vec<String> = config
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect();
+            let body: Vec<String> = config.iter().map(|(name, value)| format!("{name}={value}")).collect();
             writeln!(out, "{:016x}\t{}", hash as u64, body.join(","))?;
         }
     }
@@ -181,16 +175,12 @@ fn db_stem(dbcache: &Path) -> Result<&str> {
 }
 
 fn basename(path: &str) -> &str {
-    Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path)
+    Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
 fn write_dir(out_dir: &Path, subdir: &str, stem: &str) -> Result<PathBuf> {
     let dir = out_dir.join(subdir).join(stem);
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create directory {}", dir.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create directory {}", dir.display()))?;
     Ok(dir)
 }
 
@@ -212,7 +202,11 @@ fn cmd_solved(dbcache: &Path, out_dir: &Path) -> Result<()> {
 
     let mut solved: BTreeMap<i64, Vec<String>> = BTreeMap::new();
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
     for row in rows {
         let (hash, path, status) = row.context("failed to read row")?;
@@ -231,9 +225,12 @@ fn cmd_solved(dbcache: &Path, out_dir: &Path) -> Result<()> {
         names.sort_unstable();
         names.dedup();
         let file_path = dir.join(format!("ram-{:016x}", hash as u64));
-        let mut w = BufWriter::new(fs::File::create(&file_path)
-            .with_context(|| format!("failed to create {}", file_path.display()))?);
-        for name in &names { writeln!(w, "{name}")?; }
+        let mut w = BufWriter::new(
+            fs::File::create(&file_path).with_context(|| format!("failed to create {}", file_path.display()))?,
+        );
+        for name in &names {
+            writeln!(w, "{name}")?;
+        }
         println!("{} ({} solved)", file_path.display(), names.len());
     }
     Ok(())
@@ -267,7 +264,9 @@ fn cmd_status(dbcache: &Path, out_dir: &Path) -> Result<()> {
     })?;
     for row in rows {
         let (hash, path, status, runtime) = row.context("failed to read row")?;
-        table.entry(hash).or_default()
+        table
+            .entry(hash)
+            .or_default()
             .push((basename(&path).to_string(), status, runtime));
     }
 
@@ -279,8 +278,9 @@ fn cmd_status(dbcache: &Path, out_dir: &Path) -> Result<()> {
     let dir = write_dir(out_dir, "status", stem)?;
     for (hash, rows) in table {
         let file_path = dir.join(format!("ram-{:016x}", hash as u64));
-        let mut w = BufWriter::new(fs::File::create(&file_path)
-            .with_context(|| format!("failed to create {}", file_path.display()))?);
+        let mut w = BufWriter::new(
+            fs::File::create(&file_path).with_context(|| format!("failed to create {}", file_path.display()))?,
+        );
         for (name, status, runtime) in &rows {
             writeln!(w, "{name}\t{status}\t{runtime:.3}")?;
         }

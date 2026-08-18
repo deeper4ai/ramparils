@@ -50,9 +50,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 use std::{collections::HashMap, fs};
 
+use crate::DebugOptions;
 use crate::ils::{Approach, IlsOptions, RestartTarget};
 use crate::params::{Config, ParamSpace};
-use crate::DebugOptions;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,16 +68,36 @@ pub enum OverallObjective {
     Median,
 }
 
-fn default_approach() -> String { "focused".to_string() }
-fn default_perturbation_strength() -> usize { 4 }
-fn default_restart_target() -> String { "incumbent".to_string() }
-fn default_fidelity() -> usize { 1 }
-fn default_bound_multiplier() -> f64 { 10.0 }
-fn default_pruning() -> bool { true }
-fn default_lambda() -> f64 { 0.5 }
-fn default_cache_db() -> String { ":memory:".to_string() }
-fn default_run_obj() -> RunObjective { RunObjective::Runtime }
-fn default_overall_obj() -> OverallObjective { OverallObjective::Mean }
+fn default_approach() -> String {
+    "focused".to_string()
+}
+fn default_perturbation_strength() -> usize {
+    4
+}
+fn default_restart_target() -> String {
+    "incumbent".to_string()
+}
+fn default_fidelity() -> usize {
+    1
+}
+fn default_bound_multiplier() -> f64 {
+    10.0
+}
+fn default_pruning() -> bool {
+    true
+}
+fn default_lambda() -> f64 {
+    0.5
+}
+fn default_cache_db() -> String {
+    ":memory:".to_string()
+}
+fn default_run_obj() -> RunObjective {
+    RunObjective::Runtime
+}
+fn default_overall_obj() -> OverallObjective {
+    OverallObjective::Mean
+}
 
 /// Full scenario description — the single source of truth for all tuning knobs.
 #[derive(Debug, Clone, Deserialize)]
@@ -251,17 +271,13 @@ impl Scenario {
             "basic" => Approach::Basic,
             "random" => Approach::Random,
             "focused" => Approach::Focused,
-            other => anyhow::bail!(
-                "scenario: unknown approach '{other}' (expected focused, basic or random)"
-            ),
+            other => anyhow::bail!("scenario: unknown approach '{other}' (expected focused, basic or random)"),
         };
 
         let restart_target = match self.restart_target.to_lowercase().as_str() {
             "incumbent" => RestartTarget::Incumbent,
             "random" => RestartTarget::Random,
-            other => anyhow::bail!(
-                "scenario: unknown restart_target '{other}' (expected incumbent or random)"
-            ),
+            other => anyhow::bail!("scenario: unknown restart_target '{other}' (expected incumbent or random)"),
         };
 
         anyhow::ensure!(
@@ -304,10 +320,8 @@ impl Scenario {
 
     /// Load a scenario from a YAML file.
     pub fn from_file(path: &str) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("Cannot read scenario file: {path}"))?;
-        serde_yaml::from_str(&text)
-            .with_context(|| format!("Failed to parse scenario YAML: {path}"))
+        let text = fs::read_to_string(path).with_context(|| format!("Cannot read scenario file: {path}"))?;
+        serde_yaml::from_str(&text).with_context(|| format!("Failed to parse scenario YAML: {path}"))
     }
 
     /// Resolve the instance list from either `instances` or `instance_file`.
@@ -315,7 +329,9 @@ impl Scenario {
         if let Some(ref list) = self.instances {
             return Ok(list.clone());
         }
-        let file = self.instance_file.as_deref()
+        let file = self
+            .instance_file
+            .as_deref()
             .ok_or_else(|| anyhow::anyhow!("scenario: neither 'instance_file' nor 'instances' is set"))?;
         load_instances(file)
     }
@@ -342,10 +358,9 @@ impl Scenario {
         let config = if let Some(config) = &self.initial_config {
             config.clone()
         } else if let Some(path) = &self.initial_config_file {
-            let text = fs::read_to_string(path)
-                .with_context(|| format!("Cannot read initial configuration file: {path}"))?;
-            parse_config_yaml(&text)
-                .with_context(|| format!("Failed to parse initial configuration YAML: {path}"))?
+            let text =
+                fs::read_to_string(path).with_context(|| format!("Cannot read initial configuration file: {path}"))?;
+            parse_config_yaml(&text).with_context(|| format!("Failed to parse initial configuration YAML: {path}"))?
         } else {
             space.default_config()
         };
@@ -355,9 +370,7 @@ impl Scenario {
     }
 }
 
-fn deserialize_optional_config<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<Config>, D::Error>
+fn deserialize_optional_config<'de, D>(deserializer: D) -> std::result::Result<Option<Config>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -380,16 +393,14 @@ fn config_from_yaml_value(value: serde_yaml::Value) -> Result<Config> {
     let mut config = HashMap::with_capacity(mapping.len());
 
     for (key, value) in mapping {
-        let name = key.as_str().ok_or_else(|| {
-            anyhow::anyhow!("initial configuration parameter names must be strings")
-        })?;
+        let name = key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("initial configuration parameter names must be strings"))?;
         let value = match value {
             serde_yaml::Value::String(value) => value.clone(),
             serde_yaml::Value::Bool(value) => value.to_string(),
             serde_yaml::Value::Number(value) => value.to_string(),
-            _ => anyhow::bail!(
-                "initial configuration value for '{name}' must be a string, number, or boolean"
-            ),
+            _ => anyhow::bail!("initial configuration value for '{name}' must be a string, number, or boolean"),
         };
         config.insert(name.to_string(), value);
     }
@@ -404,9 +415,9 @@ impl pyo3::FromPyObject<'_> for RunObjective {
         match ob.extract::<String>()?.to_lowercase().as_str() {
             "runtime" => Ok(RunObjective::Runtime),
             "quality" => Ok(RunObjective::Quality),
-            s => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("unknown run_obj '{s}': expected 'runtime' or 'quality'"),
-            )),
+            s => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown run_obj '{s}': expected 'runtime' or 'quality'"
+            ))),
         }
     }
 }
@@ -416,11 +427,11 @@ impl pyo3::FromPyObject<'_> for OverallObjective {
     fn extract_bound(ob: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::prelude::PyAnyMethods;
         match ob.extract::<String>()?.to_lowercase().as_str() {
-            "mean"   => Ok(OverallObjective::Mean),
+            "mean" => Ok(OverallObjective::Mean),
             "median" => Ok(OverallObjective::Median),
-            s => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("unknown overall_obj '{s}': expected 'mean' or 'median'"),
-            )),
+            s => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown overall_obj '{s}': expected 'mean' or 'median'"
+            ))),
         }
     }
 }
@@ -428,9 +439,9 @@ impl pyo3::FromPyObject<'_> for OverallObjective {
 /// Read instance paths from a file: one path per line, blank lines and
 /// lines starting with `#` are ignored.
 pub fn load_instances(path: &str) -> Result<Vec<String>> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("Cannot read instance file: {path}"))?;
-    Ok(text.lines()
+    let text = fs::read_to_string(path).with_context(|| format!("Cannot read instance file: {path}"))?;
+    Ok(text
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(str::to_string)
@@ -466,9 +477,7 @@ mod tests {
 
     #[test]
     fn rejects_both_initial_config_forms() {
-        let scenario = scenario(
-            "initial_config:\n  mode: slow\n  limit: 2\ninitial_config_file: initial.yaml\n",
-        );
+        let scenario = scenario("initial_config:\n  mode: slow\n  limit: 2\ninitial_config_file: initial.yaml\n");
         assert!(
             scenario
                 .resolve_initial_config(&space())
@@ -482,10 +491,7 @@ mod tests {
     fn resolves_initial_config_file() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "mode: slow\nlimit: 2").unwrap();
-        let scenario = scenario(&format!(
-            "initial_config_file: {:?}\n",
-            file.path().to_str().unwrap()
-        ));
+        let scenario = scenario(&format!("initial_config_file: {:?}\n", file.path().to_str().unwrap()));
         let config = scenario.resolve_initial_config(&space()).unwrap();
         assert_eq!(config["mode"], "slow");
         assert_eq!(config["limit"], "2");

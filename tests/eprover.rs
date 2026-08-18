@@ -77,8 +77,14 @@ fn parse_eprover_params_default_active() {
     let active: Vec<&str> = space.active_params(&default).iter().map(|p| p.name.as_str()).collect();
 
     // tord default = LPO4 → tord_weight and tord_const are inactive
-    assert!(!active.contains(&"tord_weight"), "tord_weight should be inactive with tord=LPO4");
-    assert!(!active.contains(&"tord_const"), "tord_const should be inactive with tord=LPO4");
+    assert!(
+        !active.contains(&"tord_weight"),
+        "tord_weight should be inactive with tord=LPO4"
+    );
+    assert!(
+        !active.contains(&"tord_const"),
+        "tord_const should be inactive with tord=LPO4"
+    );
 
     // slots default = 4 → heur1 (slots∈{2,3,4}), heur2 (slots∈{3,4}), heur3 (slots∈{4}) all active
     assert!(active.contains(&"heur1"), "heur1 should be active with slots=4");
@@ -95,22 +101,14 @@ fn run_ils_eprover() {
     let wrapper = dir.join("grackle-eprover.sh");
 
     // Pass SOLVERPY_BENCHMARKS inline so the wrapper can find the .p files.
-    let algo = format!(
-        "SOLVERPY_BENCHMARKS={} {}",
-        benchmarks_dir.display(),
-        wrapper.display(),
-    );
+    let algo = format!("SOLVERPY_BENCHMARKS={} {}", benchmarks_dir.display(), wrapper.display(),);
 
     let space = ParamSpace::from_file(dir.join("params-eprover.txt").to_str().unwrap()).unwrap();
-    let instance_paths =
-        scenario::load_instances(dir.join("instances-bushy010.txt").to_str().unwrap()).unwrap();
+    let instance_paths = scenario::load_instances(dir.join("instances-bushy010.txt").to_str().unwrap()).unwrap();
 
     let mut cache = Cache::open(":memory:", false).unwrap();
     let id_map = cache.load_instances(&instance_paths).unwrap();
-    let instances: Vec<(i64, String)> = instance_paths
-        .iter()
-        .map(|p| (id_map[p], p.clone()))
-        .collect();
+    let instances: Vec<(i64, String)> = instance_paths.iter().map(|p| (id_map[p], p.clone())).collect();
 
     let options = IlsOptions {
         approach: Approach::Focused,

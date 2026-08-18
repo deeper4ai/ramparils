@@ -39,14 +39,7 @@ use crate::eval::{EvalTask, Scheduler};
 use crate::params::{Config, ParamSpace, config_to_yaml};
 use crate::scenario::{OverallObjective, RunObjective};
 
-
-fn log_incumbent(
-    enabled: bool,
-    incumbent: &Config,
-    score: f64,
-    n_runs: usize,
-    space: &ParamSpace,
-) -> Result<()> {
+fn log_incumbent(enabled: bool, incumbent: &Config, score: f64, n_runs: usize, space: &ParamSpace) -> Result<()> {
     if !enabled {
         return Ok(());
     }
@@ -76,14 +69,7 @@ fn log_incumbent(
 /// home base can change every round, and the diff is enough to replay the
 /// trajectory. Replacements with no *effective* change (a differing value on a
 /// parameter whose guard is off) produce an empty diff and are not logged.
-fn log_home_base(
-    enabled: bool,
-    previous: &Config,
-    home_base: &Config,
-    score: f64,
-    n_runs: usize,
-    space: &ParamSpace,
-) {
+fn log_home_base(enabled: bool, previous: &Config, home_base: &Config, score: f64, n_runs: usize, space: &ParamSpace) {
     if !enabled {
         return;
     }
@@ -104,11 +90,7 @@ fn log_home_base(
 fn format_argument_changes(current: &Config, next: &Config, space: &ParamSpace) -> String {
     let current = active_config(current, space);
     let next = active_config(next, space);
-    let names: BTreeSet<&str> = current
-        .keys()
-        .chain(next.keys())
-        .map(String::as_str)
-        .collect();
+    let names: BTreeSet<&str> = current.keys().chain(next.keys()).map(String::as_str).collect();
 
     names
         .into_iter()
@@ -242,9 +224,17 @@ pub fn run(
         let t = crate::t();
         let d = true;
         let approach_str = match options.approach {
-            Approach::Basic => "basic", Approach::Focused => "focused", Approach::Random => "random",
+            Approach::Basic => "basic",
+            Approach::Focused => "focused",
+            Approach::Random => "random",
         };
-        crate::debug_line(d, &format!("[{t:8.2}s] ils: starting approach={approach_str} instances={n_total} timeout={:.0}s", options.tuner_timeout));
+        crate::debug_line(
+            d,
+            &format!(
+                "[{t:8.2}s] ils: starting approach={approach_str} instances={n_total} timeout={:.0}s",
+                options.tuner_timeout
+            ),
+        );
         crate::debug_line(d, &format!("[{t:8.2}s] ils: initial config:"));
         match &initial {
             Some(cfg) => crate::debug_block(d, &config_to_yaml(cfg)?),
@@ -260,8 +250,16 @@ pub fn run(
         None => random_config(space, &mut rng),
     };
 
-    let mut current_score =
-        evaluate_config(&current, &instances[..n_runs], &scheduler, cache, options, space, None, deadline)?;
+    let mut current_score = evaluate_config(
+        &current,
+        &instances[..n_runs],
+        &scheduler,
+        cache,
+        options,
+        space,
+        None,
+        deadline,
+    )?;
 
     // ParamILS's `R` random probes: sample configurations and step to any that
     // beats the starting point, before the first descent commits to a region.
@@ -271,17 +269,28 @@ pub fn run(
     // is the point of the run, and probing away from it by default would
     // defeat that.
     for _ in 0..options.random_probes {
-        if Instant::now() >= deadline || crate::interrupted() { break; }
+        if Instant::now() >= deadline || crate::interrupted() {
+            break;
+        }
         let probe = random_config(space, &mut rng);
         let probe_score = evaluate_config(
-            &probe, &instances[..n_runs], &scheduler, cache, options, space,
-            Some(current_score), deadline,
+            &probe,
+            &instances[..n_runs],
+            &scheduler,
+            cache,
+            options,
+            space,
+            Some(current_score),
+            deadline,
         )?;
         if dominates(probe_score, n_runs, current_score, n_runs, options) {
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] ils: random probe improves: score={probe_score:.6} (was {current_score:.6}) instances={n_runs}",
-                crate::t()
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: random probe improves: score={probe_score:.6} (was {current_score:.6}) instances={n_runs}",
+                    crate::t()
+                ),
+            );
             current = probe;
             current_score = probe_score;
         }
@@ -295,20 +304,22 @@ pub fn run(
 
     // --- First BLS ---
     let (lm, lm_score) = basic_local_search(
-        current, current_score,
-        instances, n_runs, &scheduler, cache, options, space,
-        incumbent_score, &mut rng, deadline,
+        current,
+        current_score,
+        instances,
+        n_runs,
+        &scheduler,
+        cache,
+        options,
+        space,
+        incumbent_score,
+        &mut rng,
+        deadline,
     )?;
     if dominates(lm_score, n_runs, incumbent_score, n_runs, options) {
         incumbent = lm.clone();
         incumbent_score = lm_score;
-        log_incumbent(
-            options.debug.main,
-            &incumbent,
-            incumbent_score,
-            n_runs,
-            space,
-        )?;
+        log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
     }
     let mut last_lm = lm;
     let mut last_lm_score = lm_score;
@@ -334,46 +345,72 @@ pub fn run(
         // acceptance criterion entirely, which makes the run a random-restart
         // baseline rather than an iterated local search.
         let perturbed = if options.approach == Approach::Random {
-            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: random restart (approach=random)", crate::t()));
+            crate::debug_line(
+                options.debug.main,
+                &format!("[{:8.2}s] ils: random restart (approach=random)", crate::t()),
+            );
             random_config(space, &mut rng)
         } else {
-            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: perturbation strength={}", crate::t(), options.perturbation_strength));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: perturbation strength={}",
+                    crate::t(),
+                    options.perturbation_strength
+                ),
+            );
             perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng)
         };
         current = perturbed;
         current_score = evaluate_config(
-            &current, &instances[..n_runs], &scheduler, cache, options, space, Some(incumbent_score), deadline,
+            &current,
+            &instances[..n_runs],
+            &scheduler,
+            cache,
+            options,
+            space,
+            Some(incumbent_score),
+            deadline,
         )?;
 
-        if Instant::now() >= deadline || crate::interrupted() { break; }
+        if Instant::now() >= deadline || crate::interrupted() {
+            break;
+        }
 
         // BLS from the perturbed point — evaluate neighbours on n_runs instances
         if options.debug.main {
             let nb = neighbourhood(&current, space).len();
-            crate::debug_line(options.debug.main, &format!("[{:8.2}s] ils: bls neighborhood={nb} instances={n_runs} incumbent={incumbent_score:.6}", crate::t()));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: bls neighborhood={nb} instances={n_runs} incumbent={incumbent_score:.6}",
+                    crate::t()
+                ),
+            );
         }
         let (new_lm, new_lm_score) = basic_local_search(
-            current, current_score,
-            instances, n_runs, &scheduler, cache, options, space,
-            incumbent_score, &mut rng, deadline,
+            current,
+            current_score,
+            instances,
+            n_runs,
+            &scheduler,
+            cache,
+            options,
+            space,
+            incumbent_score,
+            &mut rng,
+            deadline,
         )?;
 
         // Update incumbent.  `new_lm_score`, `incumbent_score` and
         // `last_lm_score` are all measured on `instances[..n_runs]` here — the
         // fidelity block at the end of the loop re-measures the two retained
         // states together, so the comparisons below never cross fidelities.
-        let incumbent_survived =
-            !dominates(new_lm_score, n_runs, incumbent_score, n_runs, options);
+        let incumbent_survived = !dominates(new_lm_score, n_runs, incumbent_score, n_runs, options);
         if !incumbent_survived {
             incumbent = new_lm.clone();
             incumbent_score = new_lm_score;
-            log_incumbent(
-                options.debug.main,
-                &incumbent,
-                incumbent_score,
-                n_runs,
-                space,
-            )?;
+            log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
         }
 
         // Acceptance criterion: keep new local opt only if it dominates the
@@ -398,8 +435,12 @@ pub fn run(
 
         let previous_home_base = last_lm.clone();
         let (accepted, accepted_score, took_new) = acceptance_criterion(
-            new_lm, new_lm_score, n_runs,
-            last_lm.clone(), last_lm_score, last_lm_runs,
+            new_lm,
+            new_lm_score,
+            n_runs,
+            last_lm.clone(),
+            last_lm_score,
+            last_lm_runs,
             incumbent_score,
             options,
         );
@@ -422,24 +463,20 @@ pub fn run(
         // the budget and every later round perturbs the same point.  Either
         // trigger below breaks that.
         rejections = if took_new { 0 } else { rejections + 1 };
-        let reason = if options.restart_failures > 0
-            && rejections >= options.restart_failures
-        {
+        let reason = if options.restart_failures > 0 && rejections >= options.restart_failures {
             Some(RestartReason::Stagnation)
-        } else if options.restart_probability > 0.0
-            && rng.gen_range(0.0..1.0) < options.restart_probability
-        {
+        } else if options.restart_probability > 0.0 && rng.gen_range(0.0..1.0) < options.restart_probability {
             Some(RestartReason::Probability)
         } else {
             None
         };
 
         if let Some(reason) = reason {
-            if Instant::now() >= deadline || crate::interrupted() { break; }
+            if Instant::now() >= deadline || crate::interrupted() {
+                break;
+            }
             let restarted = match options.restart_target {
-                RestartTarget::Incumbent => {
-                    perturbation(incumbent.clone(), options.restart_strength, space, &mut rng)
-                }
+                RestartTarget::Incumbent => perturbation(incumbent.clone(), options.restart_strength, space, &mut rng),
                 RestartTarget::Random => random_config(space, &mut rng),
             };
             // Capped against the incumbent: a restart lands on a configuration
@@ -448,22 +485,31 @@ pub fn run(
             // the cap, which is exactly the "bad home base" the next round is
             // meant to escape from anyway.
             let restarted_score = evaluate_config(
-                &restarted, &instances[..n_runs], &scheduler, cache, options, space,
-                Some(incumbent_score), deadline,
+                &restarted,
+                &instances[..n_runs],
+                &scheduler,
+                cache,
+                options,
+                space,
+                Some(incumbent_score),
+                deadline,
             )?;
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] ils: restart: reason={} target={} strength={} score={restarted_score:.6} instances={n_runs} after {rejections} rejected local optima",
-                crate::t(),
-                reason.as_str(),
-                match options.restart_target {
-                    RestartTarget::Incumbent => "incumbent",
-                    RestartTarget::Random => "random",
-                },
-                match options.restart_target {
-                    RestartTarget::Incumbent => options.restart_strength,
-                    RestartTarget::Random => 0,
-                },
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: restart: reason={} target={} strength={} score={restarted_score:.6} instances={n_runs} after {rejections} rejected local optima",
+                    crate::t(),
+                    reason.as_str(),
+                    match options.restart_target {
+                        RestartTarget::Incumbent => "incumbent",
+                        RestartTarget::Random => "random",
+                    },
+                    match options.restart_target {
+                        RestartTarget::Incumbent => options.restart_strength,
+                        RestartTarget::Random => 0,
+                    },
+                ),
+            );
             let before_restart = last_lm.clone();
             last_lm = restarted;
             last_lm_score = restarted_score;
@@ -486,13 +532,23 @@ pub fn run(
             let next = next_n_runs(n_runs, options.fidelity_step, n_total);
             if next > n_runs {
                 let next_evaluation = evaluate_config_outcome(
-                    &incumbent, &instances[..next], &scheduler, cache, options, space, None, deadline,
+                    &incumbent,
+                    &instances[..next],
+                    &scheduler,
+                    cache,
+                    options,
+                    space,
+                    None,
+                    deadline,
                 )?;
                 if !(next_evaluation.complete && next_evaluation.score.is_finite()) {
-                    crate::debug_line(options.debug.main, &format!(
-                        "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete; retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
-                        crate::t()
-                    ));
+                    crate::debug_line(
+                        options.debug.main,
+                        &format!(
+                            "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete; retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
+                            crate::t()
+                        ),
+                    );
                     break;
                 }
 
@@ -505,19 +561,29 @@ pub fn run(
                 // which freezes the perturbation centre for the rest of the run.
                 // The home base is usually the incumbent, in which case the
                 // evaluation is already done.
-                let home_base_is_incumbent = hash_config(&active_config(&last_lm, space))
-                    == hash_config(&active_config(&incumbent, space));
+                let home_base_is_incumbent =
+                    hash_config(&active_config(&last_lm, space)) == hash_config(&active_config(&incumbent, space));
                 let home_base_score = if home_base_is_incumbent {
                     next_evaluation.score
                 } else {
                     let home_base_evaluation = evaluate_config_outcome(
-                        &last_lm, &instances[..next], &scheduler, cache, options, space, None, deadline,
+                        &last_lm,
+                        &instances[..next],
+                        &scheduler,
+                        cache,
+                        options,
+                        space,
+                        None,
+                        deadline,
                     )?;
                     if !(home_base_evaluation.complete && home_base_evaluation.score.is_finite()) {
-                        crate::debug_line(options.debug.main, &format!(
-                            "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete (home base); retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
-                            crate::t()
-                        ));
+                        crate::debug_line(
+                            options.debug.main,
+                            &format!(
+                                "[{:8.2}s] ils: fidelity increase to {next}/{n_total} incomplete (home base); retaining {n_runs}-run incumbent_score={incumbent_score:.6}",
+                                crate::t()
+                            ),
+                        );
                         break;
                     }
                     home_base_evaluation.score
@@ -527,10 +593,13 @@ pub fn run(
                 incumbent_score = next_evaluation.score;
                 last_lm_score = home_base_score;
                 last_lm_runs = next;
-                crate::debug_line(options.debug.main, &format!(
-                    "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6} home_base_score={last_lm_score:.6}",
-                    crate::t()
-                ));
+                crate::debug_line(
+                    options.debug.main,
+                    &format!(
+                        "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6} home_base_score={last_lm_score:.6}",
+                        crate::t()
+                    ),
+                );
             }
         }
     }
@@ -551,7 +620,9 @@ pub fn neighbourhood(config: &Config, space: &ParamSpace) -> Vec<Config> {
     for param in active {
         let current_val = config.get(&param.name).unwrap_or(&empty);
         for value in &param.domain {
-            if value == current_val { continue; }
+            if value == current_val {
+                continue;
+            }
             let mut new_cfg = config.clone();
             new_cfg.insert(param.name.clone(), value.clone());
             if !space.is_forbidden(&new_cfg) {
@@ -564,11 +635,15 @@ pub fn neighbourhood(config: &Config, space: &ParamSpace) -> Vec<Config> {
 
 /// Random walk: take `strength` steps through the neighbourhood.
 pub fn perturbation(config: Config, strength: usize, space: &ParamSpace, rng: &mut impl Rng) -> Config {
-    if matches!(strength, 0) { return config; }
+    if matches!(strength, 0) {
+        return config;
+    }
     let mut current = config;
     for _ in 0..strength {
         let neighbors = neighbourhood(&current, space);
-        if neighbors.is_empty() { break; }
+        if neighbors.is_empty() {
+            break;
+        }
         current = neighbors[rng.gen_range(0..neighbors.len())].clone();
     }
     current
@@ -583,11 +658,7 @@ pub fn perturbation(config: Config, strength: usize, space: &ParamSpace, rng: &m
 ///
 /// ParamILS spells this `dominates(a, b, equalIsBetter=false)`; the `≤` variant
 /// is [`weakly_dominates`].
-pub fn dominates(
-    a_score: f64, a_runs: usize,
-    b_score: f64, b_runs: usize,
-    options: &IlsOptions,
-) -> bool {
+pub fn dominates(a_score: f64, a_runs: usize, b_score: f64, b_runs: usize, options: &IlsOptions) -> bool {
     match options.approach {
         Approach::Basic | Approach::Random => a_score < b_score,
         Approach::Focused => a_runs >= b_runs && a_score < b_score,
@@ -602,11 +673,7 @@ pub fn dominates(
 /// while the incumbent stays put, which is what lets the two diverge and the
 /// search drift away from a basin it cannot improve on. The incumbent
 /// comparison keeps the strict [`dominates`], so fidelity growth is unaffected.
-pub fn weakly_dominates(
-    a_score: f64, a_runs: usize,
-    b_score: f64, b_runs: usize,
-    options: &IlsOptions,
-) -> bool {
+pub fn weakly_dominates(a_score: f64, a_runs: usize, b_score: f64, b_runs: usize, options: &IlsOptions) -> bool {
     match options.approach {
         Approach::Basic | Approach::Random => a_score <= b_score,
         Approach::Focused => a_runs >= b_runs && a_score <= b_score,
@@ -635,8 +702,12 @@ pub fn weakly_dominates(
 /// the caller counts consecutive rejections to drive the stagnation restart.
 #[allow(clippy::too_many_arguments)]
 fn acceptance_criterion(
-    new: Config, new_score: f64, new_runs: usize,
-    last: Config, last_score: f64, last_runs: usize,
+    new: Config,
+    new_score: f64,
+    new_runs: usize,
+    last: Config,
+    last_score: f64,
+    last_runs: usize,
     incumbent_score: f64,
     options: &IlsOptions,
 ) -> (Config, f64, bool) {
@@ -727,14 +798,26 @@ fn evaluate_config_outcome(
 
     let eval_config = active_config(config, space);
     let hash = hash_config(&eval_config);
-    let batch_id = scheduler.submit(vec![EvalTask {
-        neighbor_id: 0,
-        config: eval_config,
-        hash,
-        instances: Arc::new(instances.to_vec()),
-    }], cache)?;
+    let batch_id = scheduler.submit(
+        vec![EvalTask {
+            neighbor_id: 0,
+            config: eval_config,
+            hash,
+            instances: Arc::new(instances.to_vec()),
+        }],
+        cache,
+    )?;
 
-    collect_one(batch_id, instances.len(), 0, scheduler, cache, options, incumbent_score, deadline)
+    collect_one(
+        batch_id,
+        instances.len(),
+        0,
+        scheduler,
+        cache,
+        options,
+        incumbent_score,
+        deadline,
+    )
 }
 
 /// Parallel first-improvement BLS.
@@ -744,7 +827,8 @@ fn evaluate_config_outcome(
 /// evaluation-completion order).  Resets the scheduler when a better
 /// neighbour is found (so we don't wait for the rest).
 fn basic_local_search(
-    start: Config, start_score: f64,
+    start: Config,
+    start_score: f64,
     instances: &[(i64, String)],
     n_runs: usize,
     scheduler: &Scheduler,
@@ -765,7 +849,9 @@ fn basic_local_search(
         changed = false;
 
         let mut neighbors = neighbourhood(&current, space);
-        if neighbors.is_empty() { break; }
+        if neighbors.is_empty() {
+            break;
+        }
 
         // Shuffle for random first-improvement ordering
         for i in (1..neighbors.len()).rev() {
@@ -777,16 +863,20 @@ fn basic_local_search(
 
         // Submit all neighbours (evaluated on the first n_runs instances only)
         let shared_instances = Arc::new(eval_instances.to_vec());
-        let tasks: Vec<EvalTask> = neighbors.iter().enumerate().map(|(i, cfg)| {
-            let eval_config = active_config(cfg, space);
-            let hash = hash_config(&eval_config);
-            EvalTask {
-                neighbor_id: i,
-                config: eval_config,
-                hash,
-                instances: Arc::clone(&shared_instances),
-            }
-        }).collect();
+        let tasks: Vec<EvalTask> = neighbors
+            .iter()
+            .enumerate()
+            .map(|(i, cfg)| {
+                let eval_config = active_config(cfg, space);
+                let hash = hash_config(&eval_config);
+                EvalTask {
+                    neighbor_id: i,
+                    config: eval_config,
+                    hash,
+                    instances: Arc::clone(&shared_instances),
+                }
+            })
+            .collect();
         let batch_id = scheduler.submit(tasks, cache)?;
 
         // Per-neighbour tracking
@@ -797,11 +887,18 @@ fn basic_local_search(
         let mut n_done = 0usize;
 
         'collect: loop {
-            if n_done >= n { break; }
+            if n_done >= n {
+                break;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || crate::interrupted() { break; }
+            if remaining.is_zero() || crate::interrupted() {
+                break;
+            }
 
-            let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
+            let result = match scheduler
+                .results()
+                .recv_timeout(remaining.min(Duration::from_millis(500)))
+            {
                 Ok(r) => r,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -817,12 +914,16 @@ fn basic_local_search(
                     result.cutoff,
                 )?;
             }
-            if result.batch_id != batch_id { continue; }
+            if result.batch_id != batch_id {
+                continue;
+            }
 
             let nid = result.neighbor_id;
             // Guard against stale results from a previous reset (shouldn't
             // normally happen, but the window between reset() and drain is tiny).
-            if nid >= n || done[nid] { continue; }
+            if nid >= n || done[nid] {
+                continue;
+            }
 
             runtimes[nid].push(result.runtime);
             qualities[nid].push(result.quality);
@@ -837,10 +938,14 @@ fn basic_local_search(
             if options.pruning {
                 let pm = partial[nid] / runtimes[nid].len() as f64;
                 if pm > options.bound_multiplier * incumbent_score {
-                    crate::debug_line(options.debug.wrapper, &format!(
-                        "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
-                        crate::t(), options.bound_multiplier * incumbent_score
-                    ));
+                    crate::debug_line(
+                        options.debug.wrapper,
+                        &format!(
+                            "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
+                            crate::t(),
+                            options.bound_multiplier * incumbent_score
+                        ),
+                    );
                     done[nid] = true;
                     n_done += 1;
                     continue;
@@ -856,14 +961,17 @@ fn basic_local_search(
                     // Accept — stop evaluating the rest
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
-                if r.cacheable && r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
-                }
-            }
-                    crate::debug_line(options.debug.main, &format!(
-                        "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
-                        crate::t()
-                    ));
+                        if r.cacheable && r.status != "UNKNOWN" {
+                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
+                        }
+                    }
+                    crate::debug_line(
+                        options.debug.main,
+                        &format!(
+                            "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
+                            crate::t()
+                        ),
+                    );
                     crate::debug_line(
                         options.debug.main,
                         &format!(
@@ -887,10 +995,10 @@ fn basic_local_search(
                     cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
                 }
             }
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] ils: bls local optimum score={current_score:.6}",
-                crate::t()
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!("[{:8.2}s] ils: bls local optimum score={current_score:.6}", crate::t()),
+            );
         }
     }
 
@@ -916,9 +1024,14 @@ fn collect_one(
 
     while runtimes.len() < n_instances {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || crate::interrupted() { break; }
+        if remaining.is_zero() || crate::interrupted() {
+            break;
+        }
 
-        let result = match scheduler.results().recv_timeout(remaining.min(Duration::from_millis(500))) {
+        let result = match scheduler
+            .results()
+            .recv_timeout(remaining.min(Duration::from_millis(500)))
+        {
             Ok(r) => r,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -934,8 +1047,12 @@ fn collect_one(
                 result.cutoff,
             )?;
         }
-        if result.batch_id != batch_id { continue; }
-        if result.neighbor_id != expected_nid { continue; }
+        if result.batch_id != batch_id {
+            continue;
+        }
+        if result.neighbor_id != expected_nid {
+            continue;
+        }
 
         let val = match options.run_obj {
             RunObjective::Runtime => result.runtime,
@@ -951,10 +1068,10 @@ fn collect_one(
                 if pm > options.bound_multiplier * inc {
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
-                if r.cacheable && r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
-                }
-            }
+                        if r.cacheable && r.status != "UNKNOWN" {
+                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
+                        }
+                    }
                     break;
                 }
             }
@@ -982,18 +1099,20 @@ fn compute_score(runtimes: &[f64], qualities: &[f64], options: &IlsOptions) -> f
             let mut s = values.to_vec();
             s.sort_by(f64::total_cmp);
             let n = s.len();
-            if n % 2 == 0 { (s[n / 2 - 1] + s[n / 2]) / 2.0 } else { s[n / 2] }
+            if n % 2 == 0 {
+                (s[n / 2 - 1] + s[n / 2]) / 2.0
+            } else {
+                s[n / 2]
+            }
         }
     }
 }
 
 fn active_config(config: &Config, space: &ParamSpace) -> Config {
-    space.active_params(config)
+    space
+        .active_params(config)
         .into_iter()
-        .filter_map(|param| {
-            config.get(&param.name)
-                .map(|value| (param.name.clone(), value.clone()))
-        })
+        .filter_map(|param| config.get(&param.name).map(|value| (param.name.clone(), value.clone())))
         .collect()
 }
 
@@ -1037,25 +1156,35 @@ pub fn iterative_deepening_ils(
     };
 
     // Build schedule: (n_instances, phase_cutoff, phase_t_budget_from_start)
-    let schedule: Vec<(usize, f64, f64)> = (0..num_depths).map(|i| {
-        let exp = (num_depths - 1 - i) as f64;
-        let n = ((n_total as f64) * lambda_n.powf(exp)).ceil() as usize;
-        let n = n.max(1).min(n_total);
-        let c = (cutoff_time * lambda_c.powf(exp)).ceil();
-        let t = options.tuner_timeout * lambda_t.powf(exp);
-        (n, c, t)
-    }).collect();
+    let schedule: Vec<(usize, f64, f64)> = (0..num_depths)
+        .map(|i| {
+            let exp = (num_depths - 1 - i) as f64;
+            let n = ((n_total as f64) * lambda_n.powf(exp)).ceil() as usize;
+            let n = n.max(1).min(n_total);
+            let c = (cutoff_time * lambda_c.powf(exp)).ceil();
+            let t = options.tuner_timeout * lambda_t.powf(exp);
+            (n, c, t)
+        })
+        .collect();
 
     if options.debug.main {
-        crate::debug_line(options.debug.main, &format!(
-            "[{:8.2}s] id: {} phases  λ_n={lambda_n} λ_c={lambda_c} λ_t={lambda_t}",
-            crate::t(), num_depths
-        ));
+        crate::debug_line(
+            options.debug.main,
+            &format!(
+                "[{:8.2}s] id: {} phases  λ_n={lambda_n} λ_c={lambda_c} λ_t={lambda_t}",
+                crate::t(),
+                num_depths
+            ),
+        );
         for (i, (n, c, t)) in schedule.iter().enumerate() {
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] id:   phase {} n={n} cutoff={c:.1}s timeout={t:.1}s",
-                crate::t(), i + 1
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] id:   phase {} n={n} cutoff={c:.1}s timeout={t:.1}s",
+                    crate::t(),
+                    i + 1
+                ),
+            );
         }
     }
 
@@ -1071,19 +1200,29 @@ pub fn iterative_deepening_ils(
         let phase_remaining = t - elapsed;
         if phase_remaining <= 0.0 {
             if options.debug.main {
-                crate::debug_line(options.debug.main, &format!(
-                    "[{:8.2}s] id: phase {}/{} skipped (budget exhausted)",
-                    crate::t(), depth + 1, num_depths
-                ));
+                crate::debug_line(
+                    options.debug.main,
+                    &format!(
+                        "[{:8.2}s] id: phase {}/{} skipped (budget exhausted)",
+                        crate::t(),
+                        depth + 1,
+                        num_depths
+                    ),
+                );
             }
             break;
         }
 
         if options.debug.main {
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] id: starting phase {}/{} n={n} cutoff={c:.1}s remaining={phase_remaining:.1}s",
-                crate::t(), depth + 1, num_depths
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] id: starting phase {}/{} n={n} cutoff={c:.1}s remaining={phase_remaining:.1}s",
+                    crate::t(),
+                    depth + 1,
+                    num_depths
+                ),
+            );
         }
 
         let mut phase_options = options.clone();
@@ -1100,10 +1239,15 @@ pub fn iterative_deepening_ils(
         )?;
 
         if options.debug.main {
-            crate::debug_line(options.debug.main, &format!(
-                "[{:8.2}s] id: phase {}/{} done — score={score:.6}",
-                crate::t(), depth + 1, num_depths
-            ));
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] id: phase {}/{} done — score={score:.6}",
+                    crate::t(),
+                    depth + 1,
+                    num_depths
+                ),
+            );
         }
 
         current_initial = Some(inc.clone());
@@ -1116,10 +1260,14 @@ pub fn iterative_deepening_ils(
 /// Sample a random non-forbidden configuration.
 fn random_config(space: &ParamSpace, rng: &mut impl Rng) -> Config {
     loop {
-        let cfg: Config = space.params.iter()
+        let cfg: Config = space
+            .params
+            .iter()
             .map(|p| (p.name.clone(), p.domain[rng.gen_range(0..p.domain.len())].clone()))
             .collect();
-        if !space.is_forbidden(&cfg) { return cfg; }
+        if !space.is_forbidden(&cfg) {
+            return cfg;
+        }
     }
 }
 
@@ -1197,9 +1345,7 @@ mod tests {
         assert_eq!(n.len(), 3);
         // All neighbours differ in exactly one param
         for nb in &n {
-            let diffs: usize = nb.iter()
-                .filter(|(k, v)| config.get(*k) != Some(v))
-                .count();
+            let diffs: usize = nb.iter().filter(|(k, v)| config.get(*k) != Some(v)).count();
             assert_eq!(diffs, 1);
         }
     }
@@ -1271,34 +1417,52 @@ mod tests {
     fn dominates_basic() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
-            restart_probability: 0.0, restart_failures: 0,
-            restart_target: RestartTarget::Incumbent, restart_strength: 8,
-            acceptance_tolerance: 0.0, random_probes: 0,
-            initial_fidelity: 1, fidelity_step: 1,
-            bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
-            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+            n_workers: 1,
+            perturbation_strength: 4,
+            debug: crate::DebugOptions::default(),
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: true,
+            tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
         };
-        assert!(dominates(1.0, 5, 2.0, 5, &opts));   // strictly better
-        assert!(dominates(1.0, 1, 2.0, 10, &opts));  // BasicILS ignores run counts
-        assert!(!dominates(2.0, 5, 1.0, 5, &opts));  // worse
-        assert!(!dominates(1.0, 5, 1.0, 5, &opts));  // tie — does NOT dominate
+        assert!(dominates(1.0, 5, 2.0, 5, &opts)); // strictly better
+        assert!(dominates(1.0, 1, 2.0, 10, &opts)); // BasicILS ignores run counts
+        assert!(!dominates(2.0, 5, 1.0, 5, &opts)); // worse
+        assert!(!dominates(1.0, 5, 1.0, 5, &opts)); // tie — does NOT dominate
     }
 
     #[test]
     fn dominates_focused() {
         let opts = IlsOptions {
             approach: Approach::Focused,
-            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
-            restart_probability: 0.0, restart_failures: 0,
-            restart_target: RestartTarget::Incumbent, restart_strength: 8,
-            acceptance_tolerance: 0.0, random_probes: 0,
-            initial_fidelity: 1, fidelity_step: 1,
-            bound_multiplier: 10.0, pruning: true, tuner_timeout: 60.0,
-            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+            n_workers: 1,
+            perturbation_strength: 4,
+            debug: crate::DebugOptions::default(),
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: true,
+            tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
         };
-        assert!(dominates(1.0, 10, 2.0, 5, &opts));  // strictly better score, more runs
-        assert!(!dominates(1.0, 3, 2.0, 5, &opts));  // better score but fewer runs
+        assert!(dominates(1.0, 10, 2.0, 5, &opts)); // strictly better score, more runs
+        assert!(!dominates(1.0, 3, 2.0, 5, &opts)); // better score but fewer runs
         assert!(!dominates(1.0, 10, 1.0, 5, &opts)); // tie — does NOT dominate
     }
 
@@ -1329,26 +1493,23 @@ mod tests {
         let incumbent_score = 2.0;
 
         // Worse than the home base but within 5% of the incumbent: accepted.
-        let (config, score, took_new) = acceptance_criterion(
-            new.clone(), 2.05, 8, old.clone(), 2.0, 8, incumbent_score, &opts,
-        );
+        let (config, score, took_new) =
+            acceptance_criterion(new.clone(), 2.05, 8, old.clone(), 2.0, 8, incumbent_score, &opts);
         assert_eq!(config, new);
         assert!(took_new);
         assert!((score - 2.05).abs() < 1e-9);
 
         // Outside the band: rejected.
-        let (config, score, took_new) = acceptance_criterion(
-            new.clone(), 2.2, 8, old.clone(), 2.0, 8, incumbent_score, &opts,
-        );
+        let (config, score, took_new) =
+            acceptance_criterion(new.clone(), 2.2, 8, old.clone(), 2.0, 8, incumbent_score, &opts);
         assert_eq!(config, old);
         assert!(!took_new);
         assert!((score - 2.0).abs() < 1e-9);
 
         // The band does not drift with the home base: a home base that already
         // sits inside the band cannot pull the bar up behind it.
-        let (config, _, took_new) = acceptance_criterion(
-            new.clone(), 2.15, 8, old.clone(), 2.1, 8, incumbent_score, &opts,
-        );
+        let (config, _, took_new) =
+            acceptance_criterion(new.clone(), 2.15, 8, old.clone(), 2.1, 8, incumbent_score, &opts);
         assert_eq!(config, old);
         assert!(!took_new);
     }
@@ -1362,8 +1523,7 @@ mod tests {
         let old = cfg(&[("alpha", "1")]);
         let new = cfg(&[("alpha", "2")]);
 
-        let (config, _, took_new) =
-            acceptance_criterion(new.clone(), 2.000_001, 8, old.clone(), 2.0, 8, 2.0, &opts);
+        let (config, _, took_new) = acceptance_criterion(new.clone(), 2.000_001, 8, old.clone(), 2.0, 8, 2.0, &opts);
         assert_eq!(config, old, "any worse score is rejected when tolerance is 0");
         assert!(!took_new);
     }
@@ -1419,22 +1579,19 @@ mod tests {
         let new = cfg(&[("alpha", "2")]);
 
         // Strictly better: accepted.
-        let (config, score, took_new) =
-            acceptance_criterion(new.clone(), 1.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        let (config, score, took_new) = acceptance_criterion(new.clone(), 1.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
         assert!(took_new);
         assert_eq!(config, new);
         assert!((score - 1.0).abs() < 1e-9);
 
         // Tie: accepted, so the home base can cross plateaus.
-        let (config, score, took_new) =
-            acceptance_criterion(new.clone(), 2.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        let (config, score, took_new) = acceptance_criterion(new.clone(), 2.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
         assert!(took_new);
         assert_eq!(config, new);
         assert!((score - 2.0).abs() < 1e-9);
 
         // Worse: rejected, home base unchanged.
-        let (config, score, took_new) =
-            acceptance_criterion(new.clone(), 3.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
+        let (config, score, took_new) = acceptance_criterion(new.clone(), 3.0, 8, old.clone(), 2.0, 8, 1.0, &opts);
         assert!(!took_new);
         assert_eq!(config, old);
         assert!((score - 2.0).abs() < 1e-9);
@@ -1463,13 +1620,22 @@ mod tests {
     fn compute_score_mean_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
-            restart_probability: 0.0, restart_failures: 0,
-            restart_target: RestartTarget::Incumbent, restart_strength: 8,
-            acceptance_tolerance: 0.0, random_probes: 0,
-            initial_fidelity: 1, fidelity_step: 1,
-            bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
-            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Mean,
+            n_workers: 1,
+            perturbation_strength: 4,
+            debug: crate::DebugOptions::default(),
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: false,
+            tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
         };
         assert!((compute_score(&[1.0, 2.0, 3.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
     }
@@ -1478,13 +1644,22 @@ mod tests {
     fn compute_score_median_runtime() {
         let opts = IlsOptions {
             approach: Approach::Basic,
-            n_workers: 1, perturbation_strength: 4, debug: crate::DebugOptions::default(),
-            restart_probability: 0.0, restart_failures: 0,
-            restart_target: RestartTarget::Incumbent, restart_strength: 8,
-            acceptance_tolerance: 0.0, random_probes: 0,
-            initial_fidelity: 1, fidelity_step: 1,
-            bound_multiplier: 10.0, pruning: false, tuner_timeout: 60.0,
-            run_obj: RunObjective::Runtime, overall_obj: OverallObjective::Median,
+            n_workers: 1,
+            perturbation_strength: 4,
+            debug: crate::DebugOptions::default(),
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: false,
+            tuner_timeout: 60.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Median,
         };
         assert!((compute_score(&[3.0, 1.0, 2.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
     }
@@ -1553,7 +1728,8 @@ mod tests {
             &simple_space(),
             None,
             started + Duration::from_secs(2),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(started.elapsed() >= Duration::from_millis(650));
         assert!((score - 0.7).abs() < 1e-9);
@@ -1564,16 +1740,11 @@ mod tests {
         let mut cache = Cache::open(":memory:", false).unwrap();
         let paths = vec!["cached.cnf".to_string(), "slow.cnf".to_string()];
         let ids = cache.load_instances(&paths).unwrap();
-        let instances = paths
-            .iter()
-            .map(|path| (ids[path], path.clone()))
-            .collect::<Vec<_>>();
+        let instances = paths.iter().map(|path| (ids[path], path.clone())).collect::<Vec<_>>();
         let space = simple_space();
         let config = cfg(&[("alpha", "1"), ("beta", "a")]);
         let hash = hash_config(&active_config(&config, &space));
-        cache
-            .put(hash, ids["cached.cnf"], 0.1, 0.0, "sat", 2.0)
-            .unwrap();
+        cache.put(hash, ids["cached.cnf"], 0.1, 0.0, "sat", 2.0).unwrap();
 
         let scheduler = Scheduler::new(
             1,
