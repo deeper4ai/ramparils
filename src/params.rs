@@ -233,7 +233,7 @@ impl ParamSpace {
                         .any(|(j, p)| active[j] && p.name == cond.parent);
                     let parent_val_ok = config
                         .get(&cond.parent)
-                        .map_or(false, |v| cond.allowed_values.contains(v));
+                        .is_some_and(|v| cond.allowed_values.contains(v));
                     if !parent_active || !parent_val_ok {
                         active[i] = false;
                         changed = true;
@@ -256,7 +256,7 @@ impl ParamSpace {
     pub fn is_forbidden(&self, config: &Config) -> bool {
         'outer: for combo in &self.forbidden {
             for (param, val) in combo {
-                if config.get(param).map_or(true, |v| v != val) {
+                if config.get(param) != Some(val) {
                     continue 'outer;
                 }
             }
