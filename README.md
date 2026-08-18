@@ -294,6 +294,11 @@ tuner. All three sub-commands produce one file per strategy hash, named
 can be dropped straight into an existing `solverpy_db/`:
 
 ```sh
+# All three at once.
+ramparils db results.dbcache
+
+# Or one at a time:
+
 # Instances each strategy solved, one path per line.
 ramparils db solved results.dbcache      # -> solverpy_db/solved/results/ram-<hash>
 

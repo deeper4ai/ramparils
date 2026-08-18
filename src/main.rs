@@ -36,8 +36,21 @@ enum Command {
     },
 
     /// Export the contents of a `.dbcache` to files.
-    #[command(subcommand)]
-    Db(DbCommand),
+    ///
+    /// Given a cache and no sub-command, exports all three at once —
+    /// `ramparils db results.dbcache` is `solved`, `status` and `confs`.
+    #[command(args_conflicts_with_subcommands = true, arg_required_else_help = true)]
+    Db {
+        /// Path to the .dbcache file: exports solved, status and confs.
+        dbcache: Option<PathBuf>,
+
+        /// Output root directory.
+        #[arg(long, default_value = "solverpy_db")]
+        out_dir: PathBuf,
+
+        #[command(subcommand)]
+        cmd: Option<DbCommand>,
+    },
 }
 
 /// Sub-commands of `ramparils db`.
@@ -216,14 +229,19 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
 }
 
 fn main() -> Result<()> {
+    ramparils::restore_default_sigpipe();
     match Args::parse().cmd {
         Command::Run { scenario } => {
             ramparils::install_signal_handlers()?;
             cmd_run(&scenario)
         }
-        Command::Db(DbCommand::Solved { dbcache, out_dir }) => ramparils::db::solved(&dbcache, &out_dir),
-        Command::Db(DbCommand::Status { dbcache, out_dir }) => ramparils::db::status(&dbcache, &out_dir),
-        Command::Db(DbCommand::Confs { dbcache, out_dir, json }) => ramparils::db::confs(&dbcache, &out_dir, json),
+        Command::Db { dbcache, out_dir, cmd } => match cmd {
+            Some(DbCommand::Solved { dbcache, out_dir }) => ramparils::db::solved(&dbcache, &out_dir),
+            Some(DbCommand::Status { dbcache, out_dir }) => ramparils::db::status(&dbcache, &out_dir),
+            Some(DbCommand::Confs { dbcache, out_dir, json }) => ramparils::db::confs(&dbcache, &out_dir, json),
+            // `arg_required_else_help` means one of the two is always present.
+            None => ramparils::db::export_all(&dbcache.expect("clap requires a cache or a sub-command"), &out_dir),
+        },
     }
 }
 

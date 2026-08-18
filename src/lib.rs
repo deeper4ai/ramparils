@@ -70,6 +70,21 @@ pub fn install_signal_handlers() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Die on a closed stdout instead of panicking, as a Unix tool should.
+///
+/// Rust ignores `SIGPIPE` at startup so that a write to a closed pipe surfaces
+/// as an `EPIPE` error; `println!` then panics on it, which turns
+/// `ramparils db cache | head` into a backtrace. Restoring the default
+/// disposition makes the process exit quietly at the point the reader goes
+/// away, which is what every other command-line tool does.
+///
+/// Called once from `main`, before any output.
+pub fn restore_default_sigpipe() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::Relaxed)
 }

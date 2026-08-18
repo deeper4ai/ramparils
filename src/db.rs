@@ -224,3 +224,14 @@ pub fn confs(dbcache: &Path, out_dir: &Path, as_json: bool) -> Result<()> {
     println!("{files} exported to {}/", dir.display());
     Ok(())
 }
+
+/// Run all three exports over one cache.
+///
+/// What `ramparils db <cache>` does with no sub-command. Each writes its own
+/// summary line, so the caller sees the same three lines as running them
+/// separately. `confs` is written as YAML; use the sub-command for `--json`.
+pub fn export_all(dbcache: &Path, out_dir: &Path) -> Result<()> {
+    solved(dbcache, out_dir)?;
+    status(dbcache, out_dir)?;
+    confs(dbcache, out_dir, false)
+}

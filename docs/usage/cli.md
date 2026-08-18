@@ -11,7 +11,9 @@ live in a single YAML scenario file.  `run` takes the scenario path and nothing 
 is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.
 
 ```bash
-ramparils db solved  results.dbcache
+ramparils db results.dbcache             # all three at once
+
+ramparils db solved  results.dbcache     # or one at a time
 ramparils db status  results.dbcache
 ramparils db confs   results.dbcache [--json]
 ```
@@ -25,7 +27,12 @@ ramparils db confs   results.dbcache [--json]
 | `status` | `<out-dir>/status/<dbcache-stem>/ram-<hash>` | `instance <TAB> status <TAB> runtime` |
 | `confs` | `<out-dir>/confs/<dbcache-stem>/ram-<hash>` | the configuration, as YAML |
 
-Each prints a one-line summary on stdout; stderr carries errors only.
+Each prints a one-line summary on stdout; stderr carries errors only. Given a cache and no
+sub-command, `db` runs all three, so `ramparils db results.dbcache` is the usual invocation and the
+sub-commands are there for when you want one of them or `--json`.
+
+A cache whose filename happens to be `solved`, `status` or `confs` is read as the sub-command
+instead; write `./status` to disambiguate.
 
 `solved` counts a result as solved when its status is one of `Theorem`, `Unsatisfiable`,
 `Satisfiable`, `CounterSatisfiable`, `ContradictoryAxioms`, `sat` or `unsat` — the union of TPTP's

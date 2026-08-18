@@ -89,6 +89,13 @@ mechanism, the provenance stamping and the reworked documentation land in.
     complete one, and `initial_config_file` will reject it unless every
     parameter was active.
   - `solved`'s success-status set is now documented in `--help`.
+  - given a cache and no sub-command, `db` runs all three:
+    `ramparils db results.dbcache` is `solved`, `status` and `confs` in one go.
+- **A closed stdout no longer panics.** Rust ignores `SIGPIPE` at startup, so
+  `println!` panicked with a backtrace when the reader went away — piping any
+  of this into `head` did it, including the old `ramparils-db strategies`,
+  whose table output existed to be piped. `main` now restores the default
+  disposition, so the process exits quietly with 141 as any Unix tool does.
 - **`approach: random` is now ParamILS's `pert_rand`** — a fresh random
   configuration each round with the acceptance criterion skipped, i.e. a
   random-restart baseline. It was previously a silent alias for `basic`, so any
