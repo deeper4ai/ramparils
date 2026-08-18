@@ -1,26 +1,108 @@
+# primo QF_LRA tuning scenario — BasicILS.
+#
+# The tuning knobs below are the ones that came out of a nine-run campaign on
+# the full SMT-LIB QF_LRA division (2026-08), rescaled to this space's 24
+# parameters. They are a starting point that is known not to fail in the ways
+# earlier runs did, not an optimum.
+#
+# ── WHAT TO ADJUST FIRST, AND WHY ───────────────────────────────────────────
+#
+# `cutoff_time` — the single most consequential setting here.
+#   Tune at the cutoff you intend to deploy at. In the campaign the same search
+#   at a 1 s cutoff could not see `lra_model_phase`, the option worth the most
+#   on the benchmark by a wide margin, simply because a heuristic that pays for
+#   itself over seconds cannot show a profit inside one. Raising the cutoff
+#   costs run time proportionally, so this trades directly against
+#   `tuner_timeout`.
+#
+# `instance_file` — the second most consequential, and the cheapest to get
+#   wrong.
+#   The bundled 21 instances are a pipeline smoke test (see Scope in README).
+#   For a real campaign, point this at a few hundred instances chosen to
+#   DISCRIMINATE. In the campaign 36% of a 1,753-instance set timed out under
+#   every configuration measured: those instances consumed 72% of the compute
+#   and contributed nothing to the ranking. Selecting 473 instances by
+#   cross-configuration variance kept 95% of the signal at 31% of the cost.
+#
+# `tuner_timeout` — 300 s here is a smoke test; 45 s is enough to exercise
+#   every path. For a campaign, note that 12 h was ~4x more than the search
+#   could use: across four runs the last incumbent landed at 2.2%, 12.8%, 23%
+#   and 30% of budget. Prefer several shorter runs from different starting
+#   points over one long one, and evaluate the incumbent TRAJECTORY rather than
+#   only the final configuration — one run's third incumbent beat its own final
+#   by 6 instances on the benchmark.
+#
+# `initial_config` — below, currently primo's own defaults.
+#   Starting from a known-good configuration was tested against starting from
+#   the defaults, same space, same budget: the good start was a hard local
+#   optimum (2 incumbents in 101 descents) and the default start improved
+#   10.6%, and the two finals agreed on 9 of 11 parameters. So the defaults are
+#   the better default. Seed a known-good configuration only when you want to
+#   confirm it is locally optimal.
+#
+# `cores` — 0 means every LOGICAL core, which is usually the wrong number.
+#   Running 112 workers on 64 physical cores cost 48 instances of measured
+#   performance and 2.7x the run-to-run variance, for 41% less wall clock — not
+#   a trade, strictly worse. Set this to the PHYSICAL core count, leave one
+#   core for the tuner and the daemons, and pin one thread per core, e.g.
+#   `taskset -c 0-62 ramparils ...` with `cores: 63` on a 64-core two-socket
+#   machine. Check `lscpu -e` for which CPU ids are siblings.
+#
+# ── APPROACH ────────────────────────────────────────────────────────────────
+#
+# `basic` evaluates every configuration on the whole instance list, so scores
+# are directly comparable and there is no fidelity schedule to reason about.
+# Every run from 3 to 9 of the campaign used it.
+#
+# `focused` is the FocusedILS of the ParamILS paper: it scores cheaply on a
+# prefix of the instance list and raises the fidelity when an incumbent
+# survives. It is the right approach when a single full evaluation is too
+# expensive to do repeatedly — but **it is much less exercised than `basic`
+# here**. The two campaign runs that used it predate the fidelity-consistency
+# fix in v0.1.3, and no long run has used it since; today it is covered by
+# `tests/focused_fidelity.rs` and by this example's history, not by a campaign.
+# Treat it as usable and under-tested, and watch the fidelity trajectory in the
+# debug log rather than only the final score.
+#
+# To switch:
+#
+#   approach: focused
+#   initial_fidelity: 4     # instances in the first evaluation
+#   fidelity_step: 4        # added each time the incumbent survives
+#
+# Both fields are parsed but IGNORED under `basic`; the header line printing
+# them is an artefact. Note the reachable fidelity grows only as the square
+# root of the step, so a small step buys many cheap rounds that never reach a
+# score you can trust, and the instance file's ORDER decides what the early,
+# low-fidelity search optimises for — shuffle it.
+
 algo: "python3 primo_wrapper.py"
-paramfile: "params-primo.txt"
+paramfile: "params-primo-qflra.txt"
 instance_file: "instances.txt"
+
+# primo's own defaults, spelled out. Conditional parameters are listed too,
+# even though several are inactive at this setting.
 initial_config:
   lra_propagation: true
   lra_row_propagation: false
   lra_row_propagation_max_row_size: 64
   lra_row_propagation_max_fanout: 64
   lra_bidirectional_row_propagation: false
-  lra_bidirectional_row_propagation_max_row_size: 32
-  lra_bidirectional_row_propagation_max_fanout: 32
   lra_pivoting_rule: sparse
+  lra_soi_minimize: quickxplain
+  lra_soi_minimize_order: id
   lra_least_violated_leaving: false
   lra_sparse_leaving: true
   lra_sparse_pricing_candidates: 16
   lra_bland_fallback_factor: 4
-  lra_bland_fallback_offset: 64
   lra_theory_decisions: false
   lra_model_phase: false
   lra_fixed_elimination: false
   gaussian_elimination: true
   monotone_elimination: false
   guarded_real_equality_lowering: false
+  boolean_flatten_threshold: 0
+  boolean_flatten_post_threshold: 2048
   mixed_dispatch: narrow
   top_level_or_tseitin: auto
   pure_theory_filter: auto
@@ -28,18 +110,77 @@ initial_config:
 
 cutoff_time: 10.0
 tuner_timeout: 300.0
+
+# PAR1: the wrapper charges the full cutoff for a timeout, an error or an
+# `unknown`, so at a short cutoff this objective is close to a solved count and
+# its gradient is coarse. A tuning score is a property of the RUN, not of the
+# configuration — the same configuration scored 16% apart on two machines — so
+# never compare scores across runs, and score any final configuration on the
+# benchmark you care about before believing it.
 run_obj: runtime
 overall_obj: mean
 
-approach: focused
+approach: basic
+
+# Ignored under `basic`; see the note above.
 initial_fidelity: 4
 fidelity_step: 4
-perturbation_strength: 4
-bound_multiplier: 10.0
+
+# How many parameters a perturbation changes. ParamILS's own rule is
+# max(2, ceil(0.2 * parameters)), which is 5 for this 24-parameter space. Keep
+# it at that rule if you edit the space: holding a number fixed while the space
+# shrinks silently turns a perturbation into a restart.
+perturbation_strength: 5
+
+# The escape mechanism. Without it every run in the campaign froze: the home
+# base each perturbation starts from is only replaced by an at-least-as-good
+# local optimum, so nothing could move the search uphill and one strong local
+# optimum ended the run. Two of the runs moved their home base once and twice
+# respectively across an entire 12 h budget.
+#
+# `acceptance_tolerance` did the work — it accepts a local optimum within this
+# relative margin of the incumbent, and it carried a run to two new incumbents
+# in its last 17% of budget. **It must be recalibrated for the cutoff**: pick
+# the value from how many of your own local optima the band admits, not in
+# instances' worth of runtime. At a 10 s cutoff 0.01 admitted a few per cent of
+# them and 0.02 admitted half, which would have suppressed restarts entirely,
+# since every acceptance resets the stagnation counter.
+acceptance_tolerance: 0.01
+
+# Restart after this many consecutive descents that fail to beat the incumbent.
+restart_failures: 5
+restart_target: incumbent
+
+# How far a restart jumps from the restart target. This is the least settled
+# knob here. At 2x the perturbation strength (10 of 22 parameters) it landed
+# 22% worse than the incumbent in one step and produced ZERO new incumbents in
+# the 52% of budget that followed — it escaped the good region rather than the
+# local optimum. At 1.33x it was harmless and helped in one run of three. 7 is
+# 1.4x the perturbation strength above; if restarts appear to hurt, lower it
+# before disabling them.
+restart_strength: 7
+
+# Capping: abandon a candidate once its running mean exceeds this multiple of
+# the incumbent's score. Under PAR1 no run is charged more than the cutoff, so
+# capping can only ever fire while `bound_multiplier * incumbent < cutoff` —
+# at 2.0 and a 1 s cutoff it was almost pruning-off, firing only for a
+# candidate already timing out on ~96% of the instances seen. Results arrive
+# fastest-first, so the running mean climbs during an evaluation and rarely
+# comes back: 1.2 is safer than it looks. This is the only knob here that can
+# lose a better configuration, since a cap is a guess on a partial mean.
+bound_multiplier: 1.2
 pruning: true
 
+# 0 = every logical core. See the `cores` note at the top before using this on
+# a machine where the numbers matter.
 cores: 0
+
+# The cache key is the hash of the ACTIVE configuration, so a cache cannot be
+# shared across parameter files or across a change to this one — start a fresh
+# database whenever the space changes, or every lookup is a miss under a key
+# that means something else.
 cache_db: "primo.dbcache"
+
 debug: true
 debug_log: "ramparils.log"
 error_log: "ramparils-errors.log"

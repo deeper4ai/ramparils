@@ -1,0 +1,207 @@
+# primo QF_LRA configuration space
+#
+# Defaults match `primo --help` (checked against primo 0.1.0, git ac07b56).
+#
+# Revised 2026-08-18 from a nine-run tuning campaign plus ~90 evaluated
+# configurations on the full SMT-LIB QF_LRA division (1,753 instances, 30 s
+# cutoff). Numbers quoted below in `+N` / `-N` instances are from that campaign
+# and are recorded as evidence, NOT as pins: they describe one benchmark, one
+# solver build and one cutoff. **Nothing here is excluded for scoring badly.**
+# Options are excluded only when they are redundant with another parameter in
+# this file, and numeric domains are coarsened but never narrowed in range.
+#
+# What changed, and why:
+#
+#   removed  lra_bland_fallback_offset                        (redundant)
+#   removed  lra_bidirectional_row_propagation_max_row_size   (redundant)
+#   removed  lra_bidirectional_row_propagation_max_fanout     (redundant)
+#   added    boolean_flatten_threshold                        (new in primo)
+#   added    boolean_flatten_post_threshold                   (new in primo)
+#   added    lra_soi_minimize                                 (new in primo)
+#   added    lra_soi_minimize_order                           (new in primo)
+#   trimmed  the numeric ladders, keeping every range intact
+#
+# The QF_UF/EUF options stay out: with no uninterpreted functions the EUF atoms
+# are Boolean constants, shared_real_constants (check_sat.cpp:5629) intersects
+# to the empty set, and congruence closure has nothing to merge. Measured:
+# `--euf-engine lazy` +1 and `--euf-explain-search structural-proof-forest` +0.
+#
+# --model-equality-branching stays out for a DIFFERENT reason, and the earlier
+# version of this file had it wrong. It is not inert on pure QF_LRA: it is a
+# control-flow switch. check_sat.cpp:10420 skips constructing
+# OnlineLraPropagator when it is set, with NO else branch, so lra_model_phase,
+# lra_propagation, lra_row_propagation, lra_bidirectional_row_propagation,
+# lra_theory_decisions and the row-propagation caps are then parsed, put on the
+# command line, and never read. Measured -97 instances. If a space ever wants
+# it, the correct encoding is CONDITIONALS, not a forbidden clause -- the
+# combination is legal and runs, it just means something else:
+#
+#   model_equality_branching {false, true} [false]
+#   lra_model_phase      {false, true} [false] | model_equality_branching in {false}
+#   lra_propagation      {true, false} [true]  | model_equality_branching in {false}
+#   lra_row_propagation  {false, true} [false] | model_equality_branching in {false}
+#   lra_theory_decisions {false, true} [false] | model_equality_branching in {false}
+#
+# That is not cosmetic. The cache key is hash_config(active_config), so with the
+# guard declared the configurations differing only in inactive parameters
+# collapse to ONE evaluation; without it a search evaluates all of them, gets
+# identical scores, and reads a dead option as a plateau.
+#
+# Check the shape of any edit before running it -- parameters, exact
+# configuration count, neighbourhood at the default, and which parameters are
+# unreachable from the starting configuration.
+
+# ── Simplex bound propagation ────────────────────────────────────────────────
+# Turning lra_propagation off costs ~47 instances here, so `true` is a strong
+# default rather than an arbitrary one -- but it is the ablation switch for the
+# whole mechanism and stays tunable.
+#
+# Row propagation is off by default and measured harmful at a 30 s cutoff,
+# monotonically worse as the caps widen (on -13, wide -34, uncapped -42,
+# bidirectional -41, up to +50% core runtime). It is kept, and deliberately:
+# at a 1200 s competition cutoff the same option line is +1 instance and 2.7%
+# FASTER than the default, and it solves 19-24 instances the tuned default
+# misses, which makes it the best portfolio arm primo has. A cap that is
+# load-bearing at one cutoff is not dead at another.
+lra_propagation {true, false} [true]
+lra_row_propagation {false, true} [false] | lra_propagation in {true}
+lra_row_propagation_max_row_size {8, 64, 256} [64] | lra_row_propagation in {true}
+lra_row_propagation_max_fanout {8, 64, 256} [64] | lra_row_propagation in {true}
+lra_bidirectional_row_propagation {false, true} [false] | lra_row_propagation in {true}
+
+# The reverse-direction caps are gone. They were the only parameters in this
+# file three guards deep (lra_propagation -> lra_row_propagation ->
+# lra_bidirectional_row_propagation), so a search reaches them only after two
+# moves that both have to pay for themselves first; and they widen the same
+# propagation the forward caps above already widen, along a response measured
+# to be monotone in cap width. Two knobs on one monotone axis is one knob.
+# primo's defaults (32 / 32) apply.
+
+# ── Check/Pivot variable selection ───────────────────────────────────────────
+# bland measured -168 and soi -641 here, and soi adds zero instances to the
+# best configuration. Both stay: bland is the anti-cycling-proven rule and soi
+# is a different algorithm, not a worse setting of the same one.
+lra_pivoting_rule {sparse, bland, dantzig, soi} [sparse]
+
+# SOI conflict minimization (primo 2c3fc5c), reachable only under `soi`. These
+# are in the space for a structural reason rather than a hopeful one: with
+# `soi` in the domain above and its knobs pinned, a search can only ever
+# evaluate soi at their defaults, so a sub-space that might pay would be
+# unreachable at any budget. They cost nothing at the default configuration --
+# hash_config(active_config) collapses every setting of an inactive parameter
+# to one entry -- and they cost a neighbour only once soi has been selected.
+lra_soi_minimize {quickxplain, deletion, none} [quickxplain] | lra_pivoting_rule in {soi}
+lra_soi_minimize_order {id, row-support, violation} [id] | lra_soi_minimize in {deletion}
+
+# Leaving side, sparse rule only. The two heuristics are not independent:
+# lra_tableau.cpp tests least-violated first and skips the short-row branch
+# entirely when it fires, so lra_sparse_leaving is declared under
+# lra_least_violated_leaving rather than under the pivoting rule. RamParILS
+# resolves the chain transitively, so it is still inactive under every other
+# rule.
+lra_least_violated_leaving {false, true} [false] | lra_pivoting_rule in {sparse}
+lra_sparse_leaving {true, false} [true] | lra_least_violated_leaving in {false}
+
+# Entering side, sparse rule only: how many eligible candidates are scored
+# before the best one seen is taken. 0 scores every eligible candidate; 1 is
+# the cheapest possible pricing. Any value is sound -- the bound never cuts
+# short the search for *whether* an eligible candidate exists.
+#
+# The ladder is coarse on purpose but spans the full range, because the
+# response is a SPIKE at the default and not a plateau: 16 -> 1430, 0 -> 1416,
+# 4 -> 1409, 1 -> 1353, and primo's own sweep on constraint-199552 is
+# non-monotone across 1/4/8/16/32/64/0. Do not read the ladder as an ordering.
+lra_sparse_pricing_candidates {1, 4, 16, 0} [16] | lra_pivoting_rule in {sparse}
+
+# Anti-cycling fallback point: factor * variables + offset pivots within one
+# check() before selection switches to Bland's rule. Inactive under the bland
+# rule, which is already there. Smaller is slower but anti-cycling-proven;
+# every value is sound, since termination needs the fallback to happen after
+# finitely many pivots and not after any particular count. Measured peak is
+# primo's own default (0 -> 1407, 1 -> 1427, 2 -> -4, 4 -> 1430, 8 -> -4,
+# 16 -> 1423, 32 -> 1418), i.e. a smooth unimodal response, which is what
+# justifies a coarse ladder here where it does not above.
+#
+# lra_bland_fallback_offset is gone: it is the constant term of the same
+# threshold, dominated by factor * variables on any tableau with more than a
+# handful of variables. With it pinned at primo's 64, factor = 0 becomes a
+# legitimate distinct setting -- a flat 64-pivot fallback -- rather than a
+# second route to lra_pivoting_rule = bland, so the forbidden clause the old
+# file needed is gone too.
+lra_bland_fallback_factor {0, 1, 4, 32} [4] | lra_pivoting_rule in {sparse, dantzig, soi}
+
+# ── SAT-search guidance from the arithmetic theory ───────────────────────────
+# Independent of each other: theory decisions supply the decision literal,
+# model phase only refreshes atom polarity from the tableau assignment.
+#
+# lra_model_phase is the largest single effect measured anywhere in this space
+# (+45 to +59 instances as a main effect, over two builds, two cutoffs and two
+# hosts). lra_theory_decisions is the opposite extreme -- catastrophic on the
+# tropical family per primo's docs, 9.2M theory decisions and a 90 s timeout
+# against 3.5 s without -- and is kept as the ablation switch it is.
+lra_theory_decisions {false, true} [false]
+lra_model_phase {false, true} [false]
+
+# Nets to nothing overall but doubles the >5MB band (primo docs), and it forces
+# model_phase_backtrack_may_change_beta, so it interacts with lra_model_phase.
+lra_fixed_elimination {false, true} [false]
+
+# -5.2 as a main effect to disable it here. Kept: it is a preprocessing
+# ablation, and a benchmark whose formulas are dominated by equalities is
+# exactly where the other sign is plausible.
+gaussian_elimination {true, false} [true]
+
+# Monotone (one-sided) real-variable elimination: a variable every constraint
+# pushes the same way is discharged and its atoms folded to constants. +15 to
+# +17 as a main effect here, second only to lra_model_phase, and almost all of
+# it on Farkas-encoded program-analysis families whose Boolean structure is an
+# artefact of linearisation -- so expect it to travel with the encoding rather
+# than with the logic.
+monotone_elimination {false, true} [false]
+
+# Preprocessing rewrite that distributes a guard over a disjunction's single
+# Real equality child, saving one Tseitin layer. Opt-in in primo because its
+# measured effect is mixed, and unconditional: it depends on no other option.
+# Measured -0.2 to -1.5 here, i.e. nothing, although three independent tuning
+# runs chose it -- a good reminder that cross-run agreement is not evidence
+# unless the effect clears the noise floor.
+guarded_real_equality_lowering {false, true} [false]
+
+# ── Bounded Boolean flattening (primo f13a184 / ac07b56) ─────────────────────
+# New since the previous version of this file, and on this benchmark the most
+# live option in it: disabling the post-pass costs -20 instances and +21.8%
+# core runtime. Two separate passes, because the rewriting preprocessing passes
+# build fresh nodes through constructors that no longer flatten and so
+# reintroduce nesting the pre-pass has already gone past.
+#
+# 0 DISABLES rather than unbounds, so it is the value that reintroduces the
+# 2.7x QF_LRA regression the post-pass repairs. It is kept in both domains
+# anyway: preserving shared Boolean DAGs is what the flattening gives up, and
+# on a formula with a very long and/or chain that trade goes the other way --
+# the synthetic case that motivated the change went 1.88 GB -> 57 MB.
+boolean_flatten_threshold {0, 2048} [0]
+boolean_flatten_post_threshold {0, 256, 2048, 16384} [2048]
+
+# ── Dispatch and the SAT/DPLL(T) boundary ────────────────────────────────────
+# Which formulas reach the mixed EUF/LRA solver. Under "narrow" only a
+# Bool-sorted function application counts as an EUF predicate, so a formula
+# that is pure QF_LRA apart from propositional variables stays on the pure
+# path; "wide" routes it to the mixed solver, which is usually much worse but
+# genuinely better on some instances. -4.5 as a main effect and -16 as a single
+# change here, but it carries the strongest positive interaction in the whole
+# matrix (+5.9 with theory_phase polarity, which cancels the loss almost
+# exactly) and it adds instances nothing else reaches. Kept as a portfolio
+# dimension.
+mixed_dispatch {narrow, wide} [narrow]
+
+# "auto" for top_level_or_tseitin is primo's automatic rule; "always" and
+# "never" pin the encoding.
+top_level_or_tseitin {auto, always, never} [auto]
+pure_theory_filter {auto, on, off} [auto]
+
+# A plateau with one hole in it here: polarity, positive, negative and auto all
+# sit within the noise floor of each other and only `none` is clearly bad (-9).
+# All five values stay -- the effect splits by family, +2.6 outside the
+# dominant family against +0.1 within it, which is the mirror image of
+# monotone_elimination and exactly the shape that moves on a different set.
+theory_phase {negative, positive, none, polarity, auto} [negative]
