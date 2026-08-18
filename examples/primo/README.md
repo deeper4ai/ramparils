@@ -12,7 +12,7 @@ Run the example from this directory:
 
 ```bash
 cd examples/primo
-ramparils --scenariofile scenario.yaml
+ramparils run scenario.yaml
 ```
 
 The working directory matters because the scenario refers to the wrapper,
@@ -22,7 +22,7 @@ By default the wrapper runs `primo` from `PATH`. Override the executable when
 needed:
 
 ```bash
-PRIMO=/path/to/primo ramparils --scenariofile scenario.yaml
+PRIMO=/path/to/primo ramparils run scenario.yaml
 ```
 
 Each solver run has a 4096 MiB virtual-memory limit by default. The limit is
@@ -30,7 +30,7 @@ applied with `RLIMIT_AS` and inherited by solver subprocesses. Override it with
 `PRIMO_MEMORY_MB`, for example:
 
 ```bash
-PRIMO_MEMORY_MB=8192 ramparils --scenariofile scenario.yaml
+PRIMO_MEMORY_MB=8192 ramparils run scenario.yaml
 ```
 
 When developing RamParILS locally, run the same scenario through Cargo:
@@ -38,7 +38,7 @@ When developing RamParILS locally, run the same scenario through Cargo:
 ```bash
 cd examples/primo
 cargo run --release --manifest-path ../../Cargo.toml -- \
-  --scenariofile scenario.yaml
+  run scenario.yaml
 ```
 
 ## ⏱️ Scope

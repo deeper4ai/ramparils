@@ -11,7 +11,7 @@ Run the example from this directory:
 
 ```bash
 cd examples/llm2smt
-ramparils --scenariofile scenario.yaml
+ramparils run scenario.yaml
 ```
 
 The working directory matters because the scenario refers to the wrapper,
@@ -21,7 +21,7 @@ By default the wrapper runs `llm2smt` from `PATH`. Override the executable when
 needed:
 
 ```bash
-LLM2SMT=/path/to/llm2smt ramparils --scenariofile scenario.yaml
+LLM2SMT=/path/to/llm2smt ramparils run scenario.yaml
 ```
 
 Each solver run has a 4096 MiB virtual-memory limit by default. The limit is
@@ -29,7 +29,7 @@ applied with `RLIMIT_AS` and inherited by solver subprocesses. Override it with
 `LLM2SMT_MEMORY_MB`, for example:
 
 ```bash
-LLM2SMT_MEMORY_MB=8192 ramparils --scenariofile scenario.yaml
+LLM2SMT_MEMORY_MB=8192 ramparils run scenario.yaml
 ```
 
 When developing RamParILS locally, run the same scenario through Cargo:
@@ -37,7 +37,7 @@ When developing RamParILS locally, run the same scenario through Cargo:
 ```bash
 cd examples/llm2smt
 cargo run --release --manifest-path ../../Cargo.toml -- \
-  --scenariofile scenario.yaml
+  run scenario.yaml
 ```
 
 The scenario starts FocusedILS at four instances per configuration and raises

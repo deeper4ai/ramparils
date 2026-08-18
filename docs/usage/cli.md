@@ -1,12 +1,45 @@
 # ⌨️ CLI
 
+One binary with two sub-commands: `run` tunes, `db` exports a cache.
+
 ```bash
-ramparils --scenariofile path/to/scenario.yaml
+ramparils run path/to/scenario.yaml
 ```
 
 All tuning options — instances, cutoff times, algorithm settings, cache location, debug flags —
-live in a single YAML scenario file.  Apart from `--version`, the CLI has no other flags: every
-knob is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.
+live in a single YAML scenario file.  `run` takes the scenario path and nothing else: every knob
+is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.
+
+```bash
+ramparils db solved  results.dbcache
+ramparils db status  results.dbcache
+ramparils db confs   results.dbcache [--json]
+```
+
+`db` writes one file per strategy hash, named `ram-<hash>`, under `--out-dir` (default
+`solverpy_db`), in a layout that mirrors solverpy's database:
+
+| sub-command | writes | content |
+|---|---|---|
+| `solved` | `<out-dir>/solved/<dbcache-stem>/ram-<hash>` | one instance path per line |
+| `status` | `<out-dir>/status/<dbcache-stem>/ram-<hash>` | `instance <TAB> status <TAB> runtime` |
+| `confs` | `<out-dir>/confs/<dbcache-stem>/ram-<hash>` | the configuration, as YAML |
+
+Each prints a one-line summary on stdout; stderr carries errors only.
+
+`solved` counts a result as solved when its status is one of `Theorem`, `Unsatisfiable`,
+`Satisfiable`, `CounterSatisfiable`, `ContradictoryAxioms`, `sat` or `unsat` — the union of TPTP's
+and SMT-LIB's success tokens, as solverpy uses. RamParILS itself stores the status verbatim and
+never interprets it when scoring, so a target algorithm reporting anything else is not recognised
+here and its instances are reported as unsolved.
+
+`confs/` is deliberately not solverpy's `strats/`: a strategy file there holds a solver command
+line, a conf file here holds a parameter assignment, which only means anything against the
+parameter space it was tuned in. It records the **active** configuration — parameters whose guard
+was closed are absent, because that is what the cache keys on, and what collapses a guarded
+sub-space to a single entry. A conf file is therefore a record of what ran rather than a complete
+configuration, and [`initial_config_file`](#initial-configuration) will reject it unless every
+parameter in the space happened to be active.
 
 ```console
 $ ramparils --version

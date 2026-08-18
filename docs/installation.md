@@ -16,7 +16,7 @@ cd ramparils
 cargo install --path . --locked
 ```
 
-This installs `ramparils` and `ramparils-db` into Cargo's binary directory,
+This installs the `ramparils` binary into Cargo's binary directory,
 normally `~/.cargo/bin`. Make sure that directory is on `PATH`.
 
 For a repository-local build instead:
@@ -24,7 +24,6 @@ For a repository-local build instead:
 ```bash
 cargo build --release --locked
 ./target/release/ramparils --help
-./target/release/ramparils-db --help
 ```
 
 Both methods require [Rust 1.85+](https://rustup.rs).
@@ -53,7 +52,7 @@ Verify a Cargo installation:
 
 ```bash
 ramparils --help
-ramparils-db --help
+ramparils db --help
 ```
 
 The Python package requires Python 3.9 or newer. The command-line tools do not

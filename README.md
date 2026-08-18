@@ -38,7 +38,7 @@ spending the full cutoff on configurations that are already losing.
 |---|---|---|
 | Candidate evaluation | Sequential | **Parallel** over all `(neighbour, instance)` pairs |
 | Result cache | In-memory, per run | **Persistent SQLite**, shared across runs, self-describing |
-| Cache inspection | — | `ramparils-db solved \| status \| strategies` |
+| Cache inspection | — | `ramparils db solved \| status \| confs` |
 | Integration | Command line | Command line and **native Python extension** (PyO3) |
 | Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`) |
 | Escaping a local optimum | Random restart at fixed probability (`p_restart`), `R` random probes | Both, **plus soft acceptance within a tolerance and stagnation-triggered restarts** |
@@ -88,7 +88,7 @@ above exist to prevent.
 
 ### 🦀 Command-line tools
 
-Build the `ramparils` tuner and the `ramparils-db` cache inspector with Cargo:
+Build the `ramparils` binary with Cargo:
 
 ```sh
 git clone https://github.com/deeper4ai/ramparils.git
@@ -100,7 +100,6 @@ The executables are written to:
 
 ```text
 target/release/ramparils
-target/release/ramparils-db
 ```
 
 Install Rust with [rustup](https://rustup.rs/) if `cargo` is not available.
@@ -207,7 +206,7 @@ debug: true
 Then run:
 
 ```sh
-ramparils --scenariofile scenario.yaml
+ramparils run scenario.yaml
 ```
 
 The complete best configuration is printed to stdout as YAML:
@@ -287,22 +286,27 @@ fidelity, adaptive capping, random probes, debug traces, and separate crash
 logs. They are all covered in the
 [CLI scenario reference](docs/usage/cli.md).
 
-## 🗄️ Inspecting the cache
+## 🗄️ Exporting the cache
 
-`ramparils-db` exports per-strategy summaries from an existing cache without
-running the tuner:
+`ramparils db` writes out what an existing cache holds, without running the
+tuner. All three sub-commands produce one file per strategy hash, named
+`ram-<hash>`, under a layout that mirrors solverpy's database — so an export
+can be dropped straight into an existing `solverpy_db/`:
 
 ```sh
-# Files containing the solved instance names for each strategy.
-ramparils-db solved results.dbcache --out-dir reports
+# Instances each strategy solved, one path per line.
+ramparils db solved results.dbcache      # -> solverpy_db/solved/results/ram-<hash>
 
-# Tab-separated instance, status, and runtime tables.
-ramparils-db status results.dbcache --out-dir reports
+# Every result, as instance <TAB> status <TAB> runtime.
+ramparils db status results.dbcache      # -> solverpy_db/status/results/ram-<hash>
 
-# What each strategy hash actually is.
-ramparils-db strategies results.dbcache
-ramparils-db strategies results.dbcache --json
+# The configuration behind each hash, as YAML.
+ramparils db confs results.dbcache       # -> solverpy_db/confs/results/ram-<hash>
+ramparils db confs results.dbcache --json
 ```
+
+`--out-dir` moves the root; it defaults to `solverpy_db`. Each command prints a
+one-line summary on stdout and uses stderr for errors only.
 
 Results are keyed by a hash of the active configuration, and the cache records
 what each hash means in a `strategies` table, written the first time a
@@ -314,8 +318,15 @@ compiler versions.
 
 Opening a cache written before the table existed adds it automatically;
 existing results stay usable, but their hashes are only described from that
-point on. `ramparils-db strategies` says so rather than reporting an empty
-table.
+point on. `ramparils db confs` says so rather than writing an empty directory.
+
+**`confs/` is not solverpy's `strats/`.** A strategy file there holds a solver
+command line; a conf file here holds a parameter assignment, which only means
+anything against the parameter space it was tuned in. It also records the
+*active* configuration — parameters whose guard was closed are absent, since
+that is exactly what the cache keys on — so it is a record of what ran rather
+than a complete configuration, and `initial_config_file` will reject it unless
+every parameter happened to be active.
 
 The cache is most valuable when several tuning runs use exactly the same
 solver semantics. Keep separate cache files when the algorithm command,

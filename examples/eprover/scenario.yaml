@@ -5,3 +5,6 @@ cutoff_time: 1.0                          # per-run time limit (seconds)
 tuner_timeout: 10.0                       # total wall-clock budget (seconds)
 run_obj: quality                          # runtime | quality
 overall_obj: mean                         # mean | median
+cache_db: "eprover-bushy010.dbcache"     # persist results across runs
+debug: true                               # structured progress on stderr
+debug_log: "ramparils.log"                # ... and to this file

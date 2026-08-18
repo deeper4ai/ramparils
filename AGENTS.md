@@ -13,7 +13,7 @@
 RamParILS is a parallel Rust implementation of ParamILS. It is exposed as:
 
 - the `ramparils` CLI;
-- the `ramparils-db` cache inspection CLI;
+- `ramparils db`, its cache-export sub-commands;
 - a Python extension built with PyO3 and maturin.
 
 The primary use case is strategy specialization inside Grackle. Target

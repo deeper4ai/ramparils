@@ -26,7 +26,7 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 |---|---|---|
 | Evaluation | Sequential | **Parallel** over all `(neighbour, instance)` pairs |
 | Cache | In-memory, per-run | **Persistent SQLite**, shared across runs, self-describing |
-| Cache inspection | — | `ramparils-db solved \| status \| strategies` |
+| Cache inspection | — | `ramparils db solved \| status \| confs` |
 | Python API | subprocess call | **Native extension** via PyO3 |
 | Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`) |
 | Escaping a local optimum | Random restart at fixed probability (`p_restart`), `R` random probes | Both, **plus soft acceptance within a tolerance and stagnation-triggered restarts** |

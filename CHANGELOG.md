@@ -66,6 +66,29 @@ mechanism, the provenance stamping and the reworked documentation land in.
 
 ### Changed
 
+- **BREAKING: one binary, two sub-commands.** `ramparils run <scenario.yaml>`
+  replaces `ramparils --scenariofile <scenario.yaml>`, and the separate
+  `ramparils-db` binary is gone — its sub-commands are now `ramparils db`.
+  There is no compatibility shim: the old forms are errors.
+
+  `db` also changes shape. All three sub-commands are exports now, writing one
+  file per strategy hash named `ram-<hash>` under `--out-dir`, which defaults
+  to `solverpy_db` rather than the current directory, in a layout that mirrors
+  solverpy's database so an export can be dropped into an existing
+  `solverpy_db/`. Each prints a one-line summary on stdout and uses stderr for
+  errors only.
+
+  - `solved` and `status` now record the **full instance path** the cache
+    stored, not the basename, matching solverpy's files.
+  - `strategies` is renamed **`confs`** and writes files rather than a table on
+    stdout: one per hash, holding the configuration as YAML (`--json` for the
+    stored JSON). It is deliberately not solverpy's `strats/` — that holds a
+    solver command line, this holds a parameter assignment, which only means
+    anything against the parameter space it was tuned in. Note it records the
+    *active* configuration, so it is a record of what ran rather than a
+    complete one, and `initial_config_file` will reject it unless every
+    parameter was active.
+  - `solved`'s success-status set is now documented in `--help`.
 - **`approach: random` is now ParamILS's `pert_rand`** — a fresh random
   configuration each round with the acceptance criterion skipped, i.e. a
   random-restart baseline. It was previously a silent alias for `basic`, so any
@@ -78,6 +101,10 @@ mechanism, the provenance stamping and the reworked documentation land in.
 
 ### Fixed
 
+- `examples/eprover/run.sh` had been broken since 0.1.2: it passed `--debug`,
+  `--debug-log` and `--cachedb`, which became scenario fields in that release,
+  so the script could not have run. Those three settings moved into its
+  `scenario.yaml`, where they belong.
 - The SAPS example in the parameter-file reference did not parse: `wp`'s
   default `0.03` was absent from its domain, so anyone copying it hit
   `default '0.03' not in domain`.
