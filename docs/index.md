@@ -22,17 +22,33 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 
 ## 🚀 Key differences from Ruby ParamILS
 
-|                | Ruby ParamILS                | RamParILS                                      |
-|----------------|------------------------------|------------------------------------------------|
-| Evaluation     | Sequential                   | Parallel over all `(neighbor, instance)` pairs |
-| Cache          | In-memory, per-run           | Persistent SQLite, shared across runs          |
-| Python API     | subprocess call              | Native extension via PyO3                      |
+| | Ruby ParamILS | RamParILS |
+|---|---|---|
+| Evaluation | Sequential | **Parallel** over all `(neighbour, instance)` pairs |
+| Cache | In-memory, per-run | **Persistent SQLite**, shared across runs, self-describing |
+| Cache inspection | — | `ramparils-db solved \| status \| strategies` |
+| Python API | subprocess call | **Native extension** via PyO3 |
+| Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`) |
+| Escaping a local optimum | Random restart at fixed probability (`p_restart`), `R` random probes | Both, **plus soft acceptance within a tolerance and stagnation-triggered restarts** |
+| Restart target | Uniformly random configuration | Random, **or a bounded perturbation of the incumbent** |
+| Comparing across fidelities | Score vector per configuration, compared at a common level | **Single score, re-measured** for the incumbent and the home base at every fidelity increase |
+| Multi-phase schedules | — | **Iterative deepening**: geometric growth of instances, cutoff and deadline |
+| Provenance | — | Source revision in `--version` and every log header; full scenario echoed at startup |
 | Non-deterministic algorithms (multiple seeds) | Supported | Not (yet) supported |
 
 Parallel evaluation is the primary motivation for the rewrite. Actual speedup depends on worker
 count, neighbourhood width, current fidelity, solver runtimes, early acceptance, and cache hits.
 The persistent cache compounds this advantage across compatible Grackle tuning runs on overlapping
 problem sets.
+
+<p align="center">
+  <img src="figures/basic-ils.svg" width="100%"
+       alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+The search in its `basic` form: θ is the current candidate, θ_base the point each perturbation
+starts from, and θ_inc the incumbent that the run returns. See [Algorithm](reference/algorithm.md)
+for what each box does and for the FocusedILS fidelity schedule.
 
 ## 🔗 Quick links
 

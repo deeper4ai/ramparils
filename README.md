@@ -36,16 +36,46 @@ spending the full cutoff on configurations that are already losing.
 
 | | Original Ruby ParamILS | RamParILS |
 |---|---|---|
-| Candidate evaluation | Sequential | Parallel |
-| Result cache | In-memory, per run | SQLite, optionally persistent |
-| Integration | Command line | Command line and native Python extension |
-| Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` compatibility mode |
+| Candidate evaluation | Sequential | **Parallel** over all `(neighbour, instance)` pairs |
+| Result cache | In-memory, per run | **Persistent SQLite**, shared across runs, self-describing |
+| Cache inspection | — | `ramparils-db solved \| status \| strategies` |
+| Integration | Command line | Command line and **native Python extension** (PyO3) |
+| Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`) |
+| Escaping a local optimum | Random restart at fixed probability (`p_restart`), `R` random probes | Both, **plus soft acceptance within a tolerance and stagnation-triggered restarts** |
+| Restart target | Uniformly random configuration | Random, **or a bounded perturbation of the incumbent** |
+| Comparing across fidelities | Score vector per configuration, compared at a common level | **Single score, re-measured** for the incumbent and the home base at every fidelity increase |
+| Multi-phase schedules | — | **Iterative deepening**: geometric growth of instances, cutoff and deadline |
+| Adaptive capping | Yes | Yes, with the ceiling rule documented — see [Algorithm](docs/reference/algorithm.md) |
+| Provenance | — | Source revision in `--version` and in every log header; full scenario echoed at startup |
 | Multiple random seeds | Supported | Not currently supported |
+
+Parallel evaluation is the primary motivation for the rewrite. The actual
+speedup depends on worker count, neighbourhood width, current fidelity, solver
+runtimes, early acceptance, and cache hits.
 
 RamParILS currently assumes that the target algorithm is deterministic. Cache
 entries are keyed only by the active configuration and instance path. The
 algorithm command, cutoff, objective, solver version, and random seed are not
 part of the key. Use a separate cache whenever any of those change.
+
+### 🖼️ What a run looks like
+
+`approach: basic` — the variant that evaluates every candidate on the whole
+instance set, so all scores are directly comparable. `focused` wraps the same
+loop in a growing instance prefix; see [Algorithm](docs/reference/algorithm.md).
+
+<p align="center">
+  <img src="docs/figures/basic-ils.svg" width="100%"
+       alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+Three configurations are in play at once, and keeping them apart is most of
+understanding the search: **θ** the current candidate, **θ_base** the point
+each perturbation starts from, and **θ_inc** the incumbent — the best seen, and
+what the run returns. Only θ_base is perturbed, so once it stops moving the
+search degenerates into repeated sampling from a fixed ball no matter what the
+incumbent does. That is what `acceptance_tolerance` and the restart triggers
+above exist to prevent.
 
 ## 📋 Requirements
 
@@ -245,12 +275,17 @@ including parameters that may become inactive. See the
 | `run_obj` | Minimize `runtime` or the numeric `quality` cost |
 | `overall_obj` | Aggregate results with `mean` or `median` |
 | `approach` | `focused`, `basic`, or `random` |
+| `perturbation_strength` | Parameters changed per perturbation; ParamILS's rule is `max(2, ceil(0.2 × parameters))` |
+| `acceptance_tolerance` | Accept a home base within this relative margin of the incumbent; `0` keeps the ParamILS rule |
+| `restart_failures` / `restart_probability` | Restart after *k* rejected local optima, or with a fixed probability per round |
+| `restart_target` / `restart_strength` | Where a restart lands, and how far it jumps |
 | `cores` | Worker count; `0` selects all available cores |
 | `cache_db` | SQLite cache path; defaults to `:memory:` |
 
 Useful optional controls include iterative deepening, initial evaluation
-fidelity, adaptive capping, debug traces, and separate crash logs. They are all
-covered in the [CLI scenario reference](docs/usage/cli.md).
+fidelity, adaptive capping, random probes, debug traces, and separate crash
+logs. They are all covered in the
+[CLI scenario reference](docs/usage/cli.md).
 
 ## 🗄️ Inspecting the cache
 
@@ -289,6 +324,10 @@ changes.
 
 ## 🧪 Examples
 
+- [`examples/primo`](examples/primo/README.md): tune the `primo` QF_LRA SMT
+  solver. The most developed example — a 24-parameter conditional space with
+  the evidence for each choice recorded inline, a BasicILS scenario whose knobs
+  come from a nine-run campaign, and a header comment on what to adjust first
 - [`examples/llm2smt`](examples/llm2smt/README.md): tune an SMT solver with a
   standalone Python wrapper
 - [`examples/eprover`](examples/eprover): specialize E prover strategies for
@@ -316,6 +355,7 @@ clean, committed tree to
 
 ## 📚 Documentation
 
+- [Changelog](CHANGELOG.md)
 - [Installation](docs/installation.md)
 - [CLI and scenario files](docs/usage/cli.md)
 - [Python API](docs/usage/python.md)

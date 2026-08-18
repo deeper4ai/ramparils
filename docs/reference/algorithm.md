@@ -26,6 +26,24 @@ The perturbation draws uniformly from the *neighbourhood*, not from the paramete
 parameter with a large domain is perturbed more often than a boolean one: a five-valued parameter
 offers four of the neighbours a boolean offers one.
 
+<p align="center">
+  <img src="../figures/basic-ils.svg" width="100%"
+       alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+The figure is `approach: basic`, where every candidate is scored on the whole
+instance set; FocusedILS wraps the same loop in a growing prefix, described below.
+
+**Three configurations are in play at once, and keeping them apart is most of understanding the
+search.** θ is the round's candidate. θ_base is the point each perturbation starts from — the ILS
+*home base*. θ_inc is the incumbent: the best configuration seen, and what the run returns.
+
+Note where each is written. The local search sets θ and, if the descent improved on it, θ_inc; the
+acceptance criterion sets θ_base. **Only θ_base is perturbed**, so the incumbent improving does not
+by itself move the search: once the home base stops moving, every later round samples the same ball
+around a fixed point. That asymmetry is the reason for the knobs in the next section, and the source
+of the failure they were added to fix.
+
 ---
 
 ## 🪂 Escaping a frozen home base

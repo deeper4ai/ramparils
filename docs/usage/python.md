@@ -4,8 +4,10 @@
 import ramparils
 ```
 
-The Python extension provides a single function, `specialize`, that runs FocusedILS from an
-initial strategy and returns the best configuration found within the time budget.  It is a
+The Python extension provides a single function, `specialize`, that runs ILS from an initial
+strategy and returns the best configuration found within the time budget. The variant is whatever
+`scenario["approach"]` selects — `focused` by default, `basic` to score every candidate on the
+whole instance set.  It is a
 native Rust extension built with PyO3, so there is no subprocess overhead — the ILS loop,
 parallel evaluation, and SQLite cache all run in-process.  All tuning options are passed as
 fields in the `scenario` dict, matching the YAML keys documented in the [CLI reference](cli.md).
