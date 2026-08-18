@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a772311d.js";
+            window.path_to_searchindex_js = "../searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28bd6c43.js"></script>
@@ -198,6 +198,49 @@ For a space with P parameters and average domain size D, each configuration has 
 neighbors. RamParILS submits neighbours to a bounded worker pool and accepts the first fully
 evaluated improvement. The wall-clock cost still depends on neighbourhood width, fidelity,
 worker count, cache hits, and solver runtimes.</p>
+<p>The perturbation draws uniformly from the <em>neighbourhood</em>, not from the parameters, so a
+parameter with a large domain is perturbed more often than a boolean one: a five-valued parameter
+offers four of the neighbours a boolean offers one.</p>
+<p align="center">
+  <img src="../figures/basic-ils.svg" width="100%" alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+<p>The figure is <code>approach: basic</code>, where every candidate is scored on the whole
+instance set; FocusedILS wraps the same loop in a growing prefix, described below.</p>
+<p><strong>Three configurations are in play at once, and keeping them apart is most of understanding the
+search.</strong> θ is the round’s candidate. θ_base is the point each perturbation starts from — the ILS
+<em>home base</em>. θ_inc is the incumbent: the best configuration seen, and what the run returns.</p>
+<p>Note where each is written. The local search sets θ and, if the descent improved on it, θ_inc; the
+acceptance criterion sets θ_base. <strong>Only θ_base is perturbed</strong>, so the incumbent improving does not
+by itself move the search: once the home base stops moving, every later round samples the same ball
+around a fixed point. That asymmetry is the reason for the knobs in the next section, and the source
+of the failure they were added to fix.</p>
+<hr>
+<h2 id="-escaping-a-frozen-home-base"><a class="header" href="#-escaping-a-frozen-home-base">🪂 Escaping a frozen home base</a></h2>
+<p>The acceptance criterion only ever replaces the home base with an at-least-as-good local optimum,
+so on its own it cannot move the search uphill: once a strong local optimum is found, every later
+round perturbs the same point and the run degenerates into repeated sampling from a fixed ball.
+Four optional knobs address this. All are off by default, so a run that does not set them behaves
+exactly as before they existed.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>acceptance_tolerance</code></td><td>Accept a <em>worse</em> local optimum as the home base while it stays within this relative margin of the <strong>incumbent</strong>. Measured against the incumbent and not against the home base on purpose: against the home base the margin compounds, and the home base can then drift downhill without limit.</td></tr>
+<tr><td><code>restart_failures</code></td><td>Restart the home base after this many consecutive rejected local optima. Adapts to however many rounds the budget turns out to allow, which matters when a run gets tens of rounds rather than thousands.</td></tr>
+<tr><td><code>restart_probability</code></td><td>ParamILS’s <code>p_restart</code>: restart with this probability after each round. At the classic <code>0.01</code> it is calibrated for thousands of rounds — over 50 rounds it fires half a time.</td></tr>
+<tr><td><code>random_probes</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. Defaults to 0: RamParILS’s primary use is specializing a strategy supplied by the caller, so the supplied configuration is the starting point unless asked otherwise. A run given no configuration at all starts from a single random draw, and these probes extend that.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>restart_target</code> decides where a restart lands: <code>incumbent</code> perturbs the best configuration found
+so far by <code>restart_strength</code> steps (default <code>2 × perturbation_strength</code>), while <code>random</code> draws a
+uniformly random configuration, which is what ParamILS does. Restarts are logged so they can be
+told apart from ordinary acceptance when a run is read back:</p>
+<pre><code>ils: restart: reason=stagnation target=incumbent strength=10 score=0.481578 instances=473 after 10 rejected local optima
+</code></pre>
 <hr>
 <h2 id="-basicils-vs-focusedils"><a class="header" href="#-basicils-vs-focusedils">⚖️ BasicILS vs FocusedILS</a></h2>
 <p>The <code>approach</code> field selects the ILS variant.</p>
@@ -215,9 +258,34 @@ once. Increasing F therefore uses more workers on instances of the same neighbor
 speculative work on neighbors that may become irrelevant after the first improving move.</p>
 <p>Fidelity always uses the first F entries in the supplied instance list. The list is not shuffled,
 so its early prefixes should be reasonably representative of the complete training set.</p>
-<p><strong>Random</strong> (<code>approach: random</code>) currently uses all instances from the start and otherwise follows
-the same ILS path as <code>basic</code>. It should not currently be interpreted as an independent uniform
-random-search baseline.</p>
+<p>A score is only meaningful relative to the prefix it was measured on — different fidelities are
+different objective functions, and comparing across them is meaningless. Two configurations
+outlive a fidelity increase: the incumbent, and the local optimum the next perturbation starts
+from (the ILS home base). <strong>Both are re-measured on the new prefix whenever the fidelity grows</strong>,
+so every comparison the ILS makes is between scores taken on the same instances. Each increase is
+logged as</p>
+<pre><code class="language-text">ils: n_runs increased to 64/1753 incumbent_score=0.456619 home_base_score=0.456619
+</code></pre>
+<p>The home base is usually the incumbent, in which case the second measurement costs nothing.</p>
+<p>Home-base replacements are logged too, one line each, with the parameter diff against the
+previous home base rather than a full configuration block — it can change every round:</p>
+<pre><code class="language-text">ils: new home base: hash=bd4315273a9356dd score=0.025000 instances=4 changes: alpha: 3 -&gt; 2; beta: a -&gt; b
+</code></pre>
+<p>Replacements with no effective change (a differing value on a parameter whose guard is off)
+produce an empty diff and are not logged.</p>
+<p>This matters more than it may appear. Prefix means drift as the prefix grows — typically upward,
+if the early instances are cheaper — while the acceptance criterion is monotone: the home base is
+only ever replaced by something that beats it. A home base left on an old, smaller prefix
+therefore holds an optimistically low bar that the only mechanism able to update it can no longer
+clear, and the perturbation centre freezes for the rest of the run. ParamILS avoids this by
+storing a score per fidelity level for every configuration and always comparing two states at
+their common level (<code>isBetterWithLesserDetail</code> in <code>param_ils_2_3_run.rb</code>); RamParILS keeps one
+score per state and re-measures instead.</p>
+<p><strong>Random</strong> (<code>approach: random</code>) is ParamILS’s <code>pert_rand</code>: it uses all instances from the start,
+but each round begins from a fresh uniformly random configuration and the acceptance criterion is
+skipped entirely, so nothing carries over between rounds except the incumbent. That makes it a
+random-restart baseline to measure an iterated local search against, not a tuning mode to prefer.
+Restarts are inert under it, since every round already restarts.</p>
 <hr>
 <h2 id="-adaptive-capping"><a class="header" href="#-adaptive-capping">✂️ Adaptive capping</a></h2>
 <p>Adaptive capping (controlled by <code>pruning</code> and <code>bound_multiplier</code>) stops evaluating a configuration
@@ -229,6 +297,20 @@ occasionally discard a configuration that would have been competitive on later i
 The default of 10.0 is conservative for positive cost objectives. Set <code>pruning: false</code> when exact
 uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
 for the objective.</p>
+<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a PAR1 runtime
+objective no instance can be charged more than <code>cutoff_time</code>, so a partial mean can never exceed
+it and capping is <em>mathematically unable to fire</em> unless</p>
+<pre><code class="language-text">bound_multiplier × incumbent_score &lt; cutoff_time
+</code></pre>
+<p>A multiplier just below that ratio is indistinguishable from <code>pruning: false</code>. With an incumbent
+of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
+candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
+with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
+fraction of the ceiling and the multiplier follows.</p>
+<p>Aggressive settings are safer than the “later results could lower the mean” caveat suggests,
+because results arrive in completion order — the fast ones first. The running mean therefore
+climbs as an evaluation proceeds, and once it has passed a bound above <code>1 × incumbent_score</code> it
+rarely comes back down.</p>
 <hr>
 <p><a id="iterative-deepening"></a></p>
 <h2 id="-iterative-deepening"><a class="header" href="#-iterative-deepening">📈 Iterative deepening</a></h2>

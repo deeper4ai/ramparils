@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a772311d.js";
+            window.path_to_searchindex_js = "../searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28bd6c43.js"></script>
@@ -211,7 +211,21 @@ Adaptive capping uses this as the ceiling for individual run runtimes.</p>
 <p><strong>Dominance</strong> (FocusedILS)
 In the current implementation, configuration θ₁ dominates θ₂ when it has been evaluated
 at at least the same fidelity and has a strictly lower aggregate score. Ties do not count
-as improvements.</p>
+as improvements — this is what lets the fidelity grow when the incumbent survives a tie
+instead of being replaced endlessly by equal-scoring challengers.</p>
+<p>The acceptance criterion is the one exception: it resolves ties in favour of the challenger,
+so the ILS home base can cross plateaus and drift away from a basin it cannot improve on
+while the incumbent stays put. ParamILS spells the two variants
+<code>dominates(θ₁, θ₂, equalIsBetter)</code>.</p>
+<hr>
+<p><strong>Home base</strong> (ILS)
+The local optimum the next perturbation starts from — ParamILS’s <code>last_ils_state</code>. Distinct
+from the incumbent: the incumbent is the best configuration found, the home base is where the
+search currently is. It is replaced by the new local optimum whenever that one is at least as
+good, and, like the incumbent, is re-measured whenever the fidelity grows. Replacements are
+logged as <code>ils: new home base:</code> with the parameter diff against the previous one. Only the home
+base is perturbed, so a home base that stops moving turns the ILS into repeated random restarts
+from a fixed ball however the incumbent behaves — which is what the log lets you check.</p>
 <hr>
 <p><strong>Fidelity</strong>
 The number of leading training instances used to score each configuration. FocusedILS starts

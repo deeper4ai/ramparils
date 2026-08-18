@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a772311d.js";
+            window.path_to_searchindex_js = "../searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28bd6c43.js"></script>
@@ -183,8 +183,10 @@
                         <h1 id="-python-api"><a class="header" href="#-python-api">🐍 Python API</a></h1>
 <pre><code class="language-python">import ramparils
 </code></pre>
-<p>The Python extension provides a single function, <code>specialize</code>, that runs FocusedILS from an
-initial strategy and returns the best configuration found within the time budget.  It is a
+<p>The Python extension provides a single function, <code>specialize</code>, that runs ILS from an initial
+strategy and returns the best configuration found within the time budget. The variant is whatever
+<code>scenario["approach"]</code> selects — <code>focused</code> by default, <code>basic</code> to score every candidate on the
+whole instance set.  It is a
 native Rust extension built with PyO3, so there is no subprocess overhead — the ILS loop,
 parallel evaluation, and SQLite cache all run in-process.  All tuning options are passed as
 fields in the <code>scenario</code> dict, matching the YAML keys documented in the <a href="cli.html">CLI reference</a>.</p>
@@ -243,8 +245,14 @@ instance-list file.</p>
 <tbody>
 <tr><td><code>run_obj</code></td><td><code>"runtime"</code></td><td>Numeric value to minimise: <code>"runtime"</code> or <code>"quality"</code>. Convert maximisation objectives to costs in the wrapper.</td></tr>
 <tr><td><code>overall_obj</code></td><td><code>"mean"</code></td><td><code>"mean"</code> or <code>"median"</code>.</td></tr>
-<tr><td><code>approach</code></td><td><code>"focused"</code></td><td><code>"focused"</code>, <code>"basic"</code>, or <code>"random"</code>; currently <code>random</code> follows the same full-fidelity ILS path as <code>basic</code>.</td></tr>
+<tr><td><code>approach</code></td><td><code>"focused"</code></td><td><code>"focused"</code>, <code>"basic"</code>, or <code>"random"</code>; <code>random</code> is ParamILS’s <code>pert_rand</code> random-restart baseline.</td></tr>
 <tr><td><code>perturbation_strength</code></td><td><code>4</code></td><td>Neighbourhood steps per perturbation.</td></tr>
+<tr><td><code>restart_probability</code></td><td><code>0.0</code></td><td>ParamILS’s <code>p_restart</code>: chance of restarting the home base after a round.</td></tr>
+<tr><td><code>restart_failures</code></td><td><code>0</code></td><td>Restart the home base after this many consecutive rejected local optima.</td></tr>
+<tr><td><code>restart_target</code></td><td><code>"incumbent"</code></td><td><code>"incumbent"</code> (perturb the best configuration by <code>restart_strength</code>) or <code>"random"</code>.</td></tr>
+<tr><td><code>restart_strength</code></td><td><code>0</code></td><td>Steps a restart applies to the incumbent; <code>0</code> means <code>2 * perturbation_strength</code>.</td></tr>
+<tr><td><code>acceptance_tolerance</code></td><td><code>0.0</code></td><td>Accept a worse local optimum within this relative margin of the incumbent.</td></tr>
+<tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: random configurations probed before the first descent; <code>0</code> starts from the supplied strategy only.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial instances per configuration in FocusedILS, capped by the instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Instances added at each FocusedILS fidelity increase.</td></tr>
 <tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Adaptive capping multiplier.</td></tr>
@@ -255,8 +263,8 @@ instance-list file.</p>
 <tr><td><code>lambda_t</code></td><td><code>0.5</code></td><td>Iterative deepening timeout factor.</td></tr>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Parallel workers; <code>0</code> uses all available cores.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index / random seed (reserved).</td></tr>
-<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls.</td></tr>
-<tr><td><code>debug</code></td><td><code>False</code></td><td>Print new incumbents and scores to stderr.</td></tr>
+<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases.</td></tr>
+<tr><td><code>debug</code></td><td><code>False</code></td><td>Print new incumbents, scores, and accepted argument changes to stderr.</td></tr>
 <tr><td><code>debug_wrapper</code></td><td><code>False</code></td><td>Print every solver invocation.</td></tr>
 <tr><td><code>debug_solver</code></td><td><code>False</code></td><td>Print every solver result.</td></tr>
 <tr><td><code>debug_log</code></td><td><code>None</code></td><td>Write debug output to this file.</td></tr>

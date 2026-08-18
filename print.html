@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a772311d.js";
+            window.path_to_searchindex_js = "searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28bd6c43.js"></script>
@@ -201,9 +201,16 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 <tr><th></th><th>Ruby ParamILS</th><th>RamParILS</th></tr>
 </thead>
 <tbody>
-<tr><td>Evaluation</td><td>Sequential</td><td>Parallel over all <code>(neighbor, instance)</code> pairs</td></tr>
-<tr><td>Cache</td><td>In-memory, per-run</td><td>Persistent SQLite, shared across runs</td></tr>
-<tr><td>Python API</td><td>subprocess call</td><td>Native extension via PyO3</td></tr>
+<tr><td>Evaluation</td><td>Sequential</td><td><strong>Parallel</strong> over all <code>(neighbour, instance)</code> pairs</td></tr>
+<tr><td>Cache</td><td>In-memory, per-run</td><td><strong>Persistent SQLite</strong>, shared across runs, self-describing</td></tr>
+<tr><td>Cache inspection</td><td>—</td><td><code>ramparils-db solved | status | strategies</code></td></tr>
+<tr><td>Python API</td><td>subprocess call</td><td><strong>Native extension</strong> via PyO3</td></tr>
+<tr><td>Search modes</td><td>BasicILS, FocusedILS</td><td>BasicILS, FocusedILS, <code>random</code> (ParamILS’s <code>pert_rand</code>)</td></tr>
+<tr><td>Escaping a local optimum</td><td>Random restart at fixed probability (<code>p_restart</code>), <code>R</code> random probes</td><td>Both, <strong>plus soft acceptance within a tolerance and stagnation-triggered restarts</strong></td></tr>
+<tr><td>Restart target</td><td>Uniformly random configuration</td><td>Random, <strong>or a bounded perturbation of the incumbent</strong></td></tr>
+<tr><td>Comparing across fidelities</td><td>Score vector per configuration, compared at a common level</td><td><strong>Single score, re-measured</strong> for the incumbent and the home base at every fidelity increase</td></tr>
+<tr><td>Multi-phase schedules</td><td>—</td><td><strong>Iterative deepening</strong>: geometric growth of instances, cutoff and deadline</td></tr>
+<tr><td>Provenance</td><td>—</td><td>Source revision in <code>--version</code> and every log header; full scenario echoed at startup</td></tr>
 <tr><td>Non-deterministic algorithms (multiple seeds)</td><td>Supported</td><td>Not (yet) supported</td></tr>
 </tbody>
 </table>
@@ -212,6 +219,13 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 count, neighbourhood width, current fidelity, solver runtimes, early acceptance, and cache hits.
 The persistent cache compounds this advantage across compatible Grackle tuning runs on overlapping
 problem sets.</p>
+<p align="center">
+  <img src="figures/basic-ils.svg" width="100%" alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+<p>The search in its <code>basic</code> form: θ is the current candidate, θ_base the point each perturbation
+starts from, and θ_inc the incumbent that the run returns. See <a href="#-algorithm-1">Algorithm</a>
+for what each box does and for the FocusedILS fidelity schedule.</p>
 <h2 id="-quick-links"><a class="header" href="#-quick-links">🔗 Quick links</a></h2>
 <ul>
 <li><a href="#-installation">Installation</a></li>
@@ -265,8 +279,22 @@ require Python.</p>
 <pre><code class="language-bash">ramparils --scenariofile path/to/scenario.yaml
 </code></pre>
 <p>All tuning options — instances, cutoff times, algorithm settings, cache location, debug flags —
-live in a single YAML scenario file.  The CLI has no other flags: every knob is a field in the
-YAML, making scenarios self-contained, reproducible, and easy to share.</p>
+live in a single YAML scenario file.  Apart from <code>--version</code>, the CLI has no other flags: every
+knob is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.</p>
+<pre><code class="language-console">$ ramparils --version
+ramparils 0.1.3
+git:   353d6e8
+build: release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+</code></pre>
+<p>The revision is baked in at build time, and it matters more than the version: <code>0.1.3</code> covers every
+commit since that tag, so the version alone does not say which code ran. A <code>-dirty</code> suffix means
+the worktree had uncommitted changes and the revision therefore does not identify the build. Where
+the crate is built without git — an sdist, a source tarball — the revision reads <code>unknown</code> rather
+than failing the build. The same lines open every debug log:</p>
+<pre><code class="language-text">[    0.00s] binary:  ramparils v0.1.3
+[    0.00s] git:     353d6e8
+[    0.00s] build:   release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+</code></pre>
 <hr>
 <h2 id="-scenario-file-reference"><a class="header" href="#-scenario-file-reference">🧭 Scenario file reference</a></h2>
 <pre><code class="language-yaml"># Required: use instance_file or instances
@@ -274,6 +302,10 @@ algo:          "ruby /path/to/solver_wrapper.rb"
 paramfile:     "/path/to/solver.params"
 instance_file: "data/train.txt"
 # instances:   ["data/one.cnf", "data/two.cnf"]
+initial_config:
+  engine: quick
+  threads: 4
+# initial_config_file: "initial-config.yaml"  # alternative to initial_config
 cutoff_time:   5.0
 tuner_timeout: 300.0
 
@@ -282,6 +314,12 @@ run_obj:               runtime   # runtime | quality
 overall_obj:           mean      # mean | median
 approach:              focused   # focused | basic | random
 perturbation_strength: 4
+restart_probability:   0.0       # ParamILS p_restart; 0 = never
+restart_failures: 0        # restart after k rejected local optima; 0 = never
+restart_target:        incumbent # incumbent | random
+restart_strength:      0         # 0 = 2 * perturbation_strength
+acceptance_tolerance:  0.0       # accept within this margin of the incumbent
+random_probes:         0         # ParamILS R; 0 = start from the given config only
 initial_fidelity:      1
 fidelity_step:         1
 bound_multiplier:      10.0
@@ -319,6 +357,25 @@ error_log:             ~         # path or null
 the directory where <code>ramparils</code> is started, not from the scenario file’s
 directory. Use absolute paths or run from a documented working directory when
 the scenario must be portable.</p>
+<h3 id="initial-configuration"><a class="header" href="#initial-configuration">Initial configuration</a></h3>
+<p>Use either <code>initial_config</code> for an inline YAML mapping or
+<code>initial_config_file</code> for a file containing the same mapping:</p>
+<pre><code class="language-yaml">initial_config:
+  engine: quick
+  threads: 4
+  use_preprocessing: true
+</code></pre>
+<pre><code class="language-yaml">initial_config_file: "initial-config.yaml"
+</code></pre>
+<p>The two fields are mutually exclusive. An explicit initial configuration must
+contain every parameter from the parameter file, including conditional
+parameters that are initially inactive. Parameter names and values are
+validated against the parameter space, and forbidden configurations are
+rejected. YAML string, numeric, and boolean scalar values are accepted.</p>
+<p>When neither field is present, RamParILS retains its previous behavior and
+starts from the defaults in square brackets in the parameter file.
+<code>initial_config_file</code> is interpreted from the directory where <code>ramparils</code> is
+started.</p>
 <h3 id="-objective"><a class="header" href="#-objective">🎯 Objective</a></h3>
 <div class="table-wrapper">
 <table>
@@ -338,8 +395,14 @@ the scenario must be portable.</p>
 <tr><th>Field</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>approach</code></td><td><code>focused</code></td><td>Search mode. <code>focused</code> (default) starts at <code>initial_fidelity</code> instances and increases fidelity when the incumbent survives a challenge. <code>basic</code> uses all instances from the start. <code>random</code> currently follows the same full-fidelity ILS path as <code>basic</code>; it is not an independent random-search baseline. See <a href="#-algorithm-1">Algorithm</a>.</td></tr>
+<tr><td><code>approach</code></td><td><code>focused</code></td><td>Search mode. <code>focused</code> (default) starts at <code>initial_fidelity</code> instances and increases fidelity when the incumbent survives a challenge. <code>basic</code> uses all instances from the start. <code>random</code> is ParamILS’s <code>pert_rand</code>: each round starts from a fresh random configuration and the acceptance criterion is skipped, which makes it a random-restart baseline rather than an iterated local search. See <a href="#-algorithm-1">Algorithm</a>.</td></tr>
 <tr><td><code>perturbation_strength</code></td><td><code>4</code></td><td>Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum.</td></tr>
+<tr><td><code>restart_probability</code></td><td><code>0.0</code></td><td>ParamILS’s <code>p_restart</code>: probability of restarting the home base after each round. <code>0</code> disables it. See <a href="#-algorithm-1">Algorithm</a>.</td></tr>
+<tr><td><code>restart_failures</code></td><td><code>0</code></td><td>Restart the home base after this many consecutive rejected local optima. <code>0</code> disables it. Adapts to however many rounds the budget allows, unlike a fixed probability.</td></tr>
+<tr><td><code>restart_target</code></td><td><code>incumbent</code></td><td>Where a restart lands: <code>incumbent</code> perturbs the best configuration found so far by <code>restart_strength</code> steps; <code>random</code> draws a uniformly random configuration, as ParamILS does.</td></tr>
+<tr><td><code>restart_strength</code></td><td><code>0</code></td><td>Perturbation steps a restart applies to the incumbent. <code>0</code> resolves to <code>2 × perturbation_strength</code>; the resolved value is printed in the debug header.</td></tr>
+<tr><td><code>acceptance_tolerance</code></td><td><code>0.0</code></td><td>Accept a local optimum worse than the home base while it stays within this relative margin of the <em>incumbent</em>. <code>0</code> keeps the ParamILS rule of accepting only an at-least-as-good local optimum.</td></tr>
+<tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of <code>0</code> starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of <code>0</code> are treated as <code>1</code>.</td></tr>
 <tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. Lower values prune more aggressively and can change search results.</td></tr>
@@ -376,15 +439,20 @@ See <a href="#iterative-deepening">Iterative deepening</a>.</p>
 </thead>
 <tbody>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Number of parallel worker threads. <code>0</code> uses all available CPU cores. Set to a specific number to limit parallelism on shared machines.</td></tr>
-<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark.</td></tr>
+<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index, reserved for future use as a random seed. Has no effect currently.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Cache entries are keyed only by the active configuration and instance path.
-The algorithm command, cutoff, objective, solver version, wrapper behavior,
-and random seed are not included. Use a separate cache if any of them change;
+<p>Cache entries are keyed by the active configuration and instance path, with the
+execution cutoff stored on each result. A timeout can satisfy only requests
+with an equal or shorter cutoff. A completed result that exceeds a shorter
+requested cutoff is returned as an in-memory synthetic timeout and is never
+written back. The algorithm command, objective, solver version, wrapper
+behavior, and random seed are not included. Use a separate cache if any of them change;
 otherwise stale results may be reused without warning.</p>
+<p>Caches created before cutoff-aware results were introduced are incompatible
+and must be removed or replaced with a new cache file.</p>
 <h3 id="-debug"><a class="header" href="#-debug">🩺 Debug</a></h3>
 <div class="table-wrapper">
 <table>
@@ -392,7 +460,7 @@ otherwise stale results may be reused without warning.</p>
 <tr><th>Field</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>debug</code></td><td><code>false</code></td><td>Print structured debug output to stderr: new incumbents, scores, and timing.</td></tr>
+<tr><td><code>debug</code></td><td><code>false</code></td><td>Print structured debug output to stderr: new incumbents, scores, accepted argument changes, and timing.</td></tr>
 <tr><td><code>debug_wrapper</code></td><td><code>false</code></td><td>Print one line per solver wrapper invocation (instance, parameters). Verbose; useful for tracing evaluation order.</td></tr>
 <tr><td><code>debug_solver</code></td><td><code>false</code></td><td>Print one line per solver result (status, runtime, quality). Verbose; useful for diagnosing wrapper output.</td></tr>
 <tr><td><code>debug_log</code></td><td><code>null</code></td><td>Write debug output to this file in addition to (or instead of) stderr. Independent of <code>debug</code> — file logging can be active without stderr logging.</td></tr>
@@ -403,18 +471,28 @@ otherwise stale results may be reused without warning.</p>
 </div>
 <hr>
 <h2 id="-output"><a class="header" href="#-output">📤 Output</a></h2>
-<p>The best configuration found is printed to stdout as <code>-param1 val1 -param2 val2 …</code>
-(active parameters only, alphabetically sorted):</p>
-<pre><code>-alpha 1.256 -ps 0.1 -rho 0.5 -wp 0.03
+<p>The complete best configuration is printed to stdout as an alphabetically
+ordered YAML mapping:</p>
+<pre><code class="language-yaml">alpha: '1.256'
+ps: '0.1'
+rho: '0.5'
+wp: '0.03'
 </code></pre>
-<p>This format is directly compatible with Grackle’s strategy parsing.
-Inactive conditional parameters are omitted — they are irrelevant given the active parameter values.</p>
+<p>Values are YAML strings so they preserve the parameter-file representation.
+Inactive conditional parameters are included, making the output directly
+usable as a future <code>initial_config</code> or <code>initial_config_file</code>.</p>
+<p>When <code>debug_log</code> is configured, the final YAML mapping is also written there.
+Every improved incumbent is recorded in the log with <code>hash=&lt;hash&gt;</code> followed
+by its complete YAML configuration. The hash identifies the active
+configuration used by the evaluation cache.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="-python-api"><a class="header" href="#-python-api">🐍 Python API</a></h1>
 <pre><code class="language-python">import ramparils
 </code></pre>
-<p>The Python extension provides a single function, <code>specialize</code>, that runs FocusedILS from an
-initial strategy and returns the best configuration found within the time budget.  It is a
+<p>The Python extension provides a single function, <code>specialize</code>, that runs ILS from an initial
+strategy and returns the best configuration found within the time budget. The variant is whatever
+<code>scenario["approach"]</code> selects — <code>focused</code> by default, <code>basic</code> to score every candidate on the
+whole instance set.  It is a
 native Rust extension built with PyO3, so there is no subprocess overhead — the ILS loop,
 parallel evaluation, and SQLite cache all run in-process.  All tuning options are passed as
 fields in the <code>scenario</code> dict, matching the YAML keys documented in the <a href="#-cli">CLI reference</a>.</p>
@@ -473,8 +551,14 @@ instance-list file.</p>
 <tbody>
 <tr><td><code>run_obj</code></td><td><code>"runtime"</code></td><td>Numeric value to minimise: <code>"runtime"</code> or <code>"quality"</code>. Convert maximisation objectives to costs in the wrapper.</td></tr>
 <tr><td><code>overall_obj</code></td><td><code>"mean"</code></td><td><code>"mean"</code> or <code>"median"</code>.</td></tr>
-<tr><td><code>approach</code></td><td><code>"focused"</code></td><td><code>"focused"</code>, <code>"basic"</code>, or <code>"random"</code>; currently <code>random</code> follows the same full-fidelity ILS path as <code>basic</code>.</td></tr>
+<tr><td><code>approach</code></td><td><code>"focused"</code></td><td><code>"focused"</code>, <code>"basic"</code>, or <code>"random"</code>; <code>random</code> is ParamILS’s <code>pert_rand</code> random-restart baseline.</td></tr>
 <tr><td><code>perturbation_strength</code></td><td><code>4</code></td><td>Neighbourhood steps per perturbation.</td></tr>
+<tr><td><code>restart_probability</code></td><td><code>0.0</code></td><td>ParamILS’s <code>p_restart</code>: chance of restarting the home base after a round.</td></tr>
+<tr><td><code>restart_failures</code></td><td><code>0</code></td><td>Restart the home base after this many consecutive rejected local optima.</td></tr>
+<tr><td><code>restart_target</code></td><td><code>"incumbent"</code></td><td><code>"incumbent"</code> (perturb the best configuration by <code>restart_strength</code>) or <code>"random"</code>.</td></tr>
+<tr><td><code>restart_strength</code></td><td><code>0</code></td><td>Steps a restart applies to the incumbent; <code>0</code> means <code>2 * perturbation_strength</code>.</td></tr>
+<tr><td><code>acceptance_tolerance</code></td><td><code>0.0</code></td><td>Accept a worse local optimum within this relative margin of the incumbent.</td></tr>
+<tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: random configurations probed before the first descent; <code>0</code> starts from the supplied strategy only.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial instances per configuration in FocusedILS, capped by the instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Instances added at each FocusedILS fidelity increase.</td></tr>
 <tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Adaptive capping multiplier.</td></tr>
@@ -485,8 +569,8 @@ instance-list file.</p>
 <tr><td><code>lambda_t</code></td><td><code>0.5</code></td><td>Iterative deepening timeout factor.</td></tr>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Parallel workers; <code>0</code> uses all available cores.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index / random seed (reserved).</td></tr>
-<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls.</td></tr>
-<tr><td><code>debug</code></td><td><code>False</code></td><td>Print new incumbents and scores to stderr.</td></tr>
+<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases.</td></tr>
+<tr><td><code>debug</code></td><td><code>False</code></td><td>Print new incumbents, scores, and accepted argument changes to stderr.</td></tr>
 <tr><td><code>debug_wrapper</code></td><td><code>False</code></td><td>Print every solver invocation.</td></tr>
 <tr><td><code>debug_solver</code></td><td><code>False</code></td><td>Print every solver result.</td></tr>
 <tr><td><code>debug_log</code></td><td><code>None</code></td><td>Write debug output to this file.</td></tr>
@@ -556,6 +640,49 @@ For a space with P parameters and average domain size D, each configuration has 
 neighbors. RamParILS submits neighbours to a bounded worker pool and accepts the first fully
 evaluated improvement. The wall-clock cost still depends on neighbourhood width, fidelity,
 worker count, cache hits, and solver runtimes.</p>
+<p>The perturbation draws uniformly from the <em>neighbourhood</em>, not from the parameters, so a
+parameter with a large domain is perturbed more often than a boolean one: a five-valued parameter
+offers four of the neighbours a boolean offers one.</p>
+<p align="center">
+  <img src="figures/basic-ils.svg" width="100%" alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+<p>The figure is <code>approach: basic</code>, where every candidate is scored on the whole
+instance set; FocusedILS wraps the same loop in a growing prefix, described below.</p>
+<p><strong>Three configurations are in play at once, and keeping them apart is most of understanding the
+search.</strong> θ is the round’s candidate. θ_base is the point each perturbation starts from — the ILS
+<em>home base</em>. θ_inc is the incumbent: the best configuration seen, and what the run returns.</p>
+<p>Note where each is written. The local search sets θ and, if the descent improved on it, θ_inc; the
+acceptance criterion sets θ_base. <strong>Only θ_base is perturbed</strong>, so the incumbent improving does not
+by itself move the search: once the home base stops moving, every later round samples the same ball
+around a fixed point. That asymmetry is the reason for the knobs in the next section, and the source
+of the failure they were added to fix.</p>
+<hr>
+<h2 id="-escaping-a-frozen-home-base"><a class="header" href="#-escaping-a-frozen-home-base">🪂 Escaping a frozen home base</a></h2>
+<p>The acceptance criterion only ever replaces the home base with an at-least-as-good local optimum,
+so on its own it cannot move the search uphill: once a strong local optimum is found, every later
+round perturbs the same point and the run degenerates into repeated sampling from a fixed ball.
+Four optional knobs address this. All are off by default, so a run that does not set them behaves
+exactly as before they existed.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>acceptance_tolerance</code></td><td>Accept a <em>worse</em> local optimum as the home base while it stays within this relative margin of the <strong>incumbent</strong>. Measured against the incumbent and not against the home base on purpose: against the home base the margin compounds, and the home base can then drift downhill without limit.</td></tr>
+<tr><td><code>restart_failures</code></td><td>Restart the home base after this many consecutive rejected local optima. Adapts to however many rounds the budget turns out to allow, which matters when a run gets tens of rounds rather than thousands.</td></tr>
+<tr><td><code>restart_probability</code></td><td>ParamILS’s <code>p_restart</code>: restart with this probability after each round. At the classic <code>0.01</code> it is calibrated for thousands of rounds — over 50 rounds it fires half a time.</td></tr>
+<tr><td><code>random_probes</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. Defaults to 0: RamParILS’s primary use is specializing a strategy supplied by the caller, so the supplied configuration is the starting point unless asked otherwise. A run given no configuration at all starts from a single random draw, and these probes extend that.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>restart_target</code> decides where a restart lands: <code>incumbent</code> perturbs the best configuration found
+so far by <code>restart_strength</code> steps (default <code>2 × perturbation_strength</code>), while <code>random</code> draws a
+uniformly random configuration, which is what ParamILS does. Restarts are logged so they can be
+told apart from ordinary acceptance when a run is read back:</p>
+<pre><code>ils: restart: reason=stagnation target=incumbent strength=10 score=0.481578 instances=473 after 10 rejected local optima
+</code></pre>
 <hr>
 <h2 id="-basicils-vs-focusedils"><a class="header" href="#-basicils-vs-focusedils">⚖️ BasicILS vs FocusedILS</a></h2>
 <p>The <code>approach</code> field selects the ILS variant.</p>
@@ -573,9 +700,34 @@ once. Increasing F therefore uses more workers on instances of the same neighbor
 speculative work on neighbors that may become irrelevant after the first improving move.</p>
 <p>Fidelity always uses the first F entries in the supplied instance list. The list is not shuffled,
 so its early prefixes should be reasonably representative of the complete training set.</p>
-<p><strong>Random</strong> (<code>approach: random</code>) currently uses all instances from the start and otherwise follows
-the same ILS path as <code>basic</code>. It should not currently be interpreted as an independent uniform
-random-search baseline.</p>
+<p>A score is only meaningful relative to the prefix it was measured on — different fidelities are
+different objective functions, and comparing across them is meaningless. Two configurations
+outlive a fidelity increase: the incumbent, and the local optimum the next perturbation starts
+from (the ILS home base). <strong>Both are re-measured on the new prefix whenever the fidelity grows</strong>,
+so every comparison the ILS makes is between scores taken on the same instances. Each increase is
+logged as</p>
+<pre><code class="language-text">ils: n_runs increased to 64/1753 incumbent_score=0.456619 home_base_score=0.456619
+</code></pre>
+<p>The home base is usually the incumbent, in which case the second measurement costs nothing.</p>
+<p>Home-base replacements are logged too, one line each, with the parameter diff against the
+previous home base rather than a full configuration block — it can change every round:</p>
+<pre><code class="language-text">ils: new home base: hash=bd4315273a9356dd score=0.025000 instances=4 changes: alpha: 3 -&gt; 2; beta: a -&gt; b
+</code></pre>
+<p>Replacements with no effective change (a differing value on a parameter whose guard is off)
+produce an empty diff and are not logged.</p>
+<p>This matters more than it may appear. Prefix means drift as the prefix grows — typically upward,
+if the early instances are cheaper — while the acceptance criterion is monotone: the home base is
+only ever replaced by something that beats it. A home base left on an old, smaller prefix
+therefore holds an optimistically low bar that the only mechanism able to update it can no longer
+clear, and the perturbation centre freezes for the rest of the run. ParamILS avoids this by
+storing a score per fidelity level for every configuration and always comparing two states at
+their common level (<code>isBetterWithLesserDetail</code> in <code>param_ils_2_3_run.rb</code>); RamParILS keeps one
+score per state and re-measures instead.</p>
+<p><strong>Random</strong> (<code>approach: random</code>) is ParamILS’s <code>pert_rand</code>: it uses all instances from the start,
+but each round begins from a fresh uniformly random configuration and the acceptance criterion is
+skipped entirely, so nothing carries over between rounds except the incumbent. That makes it a
+random-restart baseline to measure an iterated local search against, not a tuning mode to prefer.
+Restarts are inert under it, since every round already restarts.</p>
 <hr>
 <h2 id="-adaptive-capping"><a class="header" href="#-adaptive-capping">✂️ Adaptive capping</a></h2>
 <p>Adaptive capping (controlled by <code>pruning</code> and <code>bound_multiplier</code>) stops evaluating a configuration
@@ -587,6 +739,20 @@ occasionally discard a configuration that would have been competitive on later i
 The default of 10.0 is conservative for positive cost objectives. Set <code>pruning: false</code> when exact
 uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
 for the objective.</p>
+<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a PAR1 runtime
+objective no instance can be charged more than <code>cutoff_time</code>, so a partial mean can never exceed
+it and capping is <em>mathematically unable to fire</em> unless</p>
+<pre><code class="language-text">bound_multiplier × incumbent_score &lt; cutoff_time
+</code></pre>
+<p>A multiplier just below that ratio is indistinguishable from <code>pruning: false</code>. With an incumbent
+of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
+candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
+with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
+fraction of the ceiling and the multiplier follows.</p>
+<p>Aggressive settings are safer than the “later results could lower the mean” caveat suggests,
+because results arrive in completion order — the fast ones first. The running mean therefore
+climbs as an evaluation proceeds, and once it has passed a bound above <code>1 × incumbent_score</code> it
+rarely comes back down.</p>
 <hr>
 <p><a id="iterative-deepening"></a></p>
 <h2 id="-iterative-deepening-1"><a class="header" href="#-iterative-deepening-1">📈 Iterative deepening</a></h2>
@@ -631,6 +797,10 @@ supported; enumerate every allowed value explicitly.</p>
 rho   {0, 0.17, 0.5, 1}                               [0.5]
 </code></pre>
 <p>Values are always strings. Numeric values are parsed by the target algorithm.</p>
+<p><strong>The default must be a member of the domain.</strong> A file whose default is not listed is rejected at
+load time with the offending line, rather than silently starting somewhere unexpected:</p>
+<pre><code class="language-text">Error: line 4: default '0.03' not in domain ["0.0", "0.01", "0.05", "0.1", "0.2"] for param 'wp'
+</code></pre>
 <h2 id="-conditional-parameters"><a class="header" href="#-conditional-parameters">🔀 Conditional parameters</a></h2>
 <p>A conditional parameter is only <em>active</em> (included in the command line) when its parent has a
 specific value:</p>
@@ -642,6 +812,8 @@ noise_param {0.0, 0.1, 0.5} [0.1] | noise_type in {walk}
 </code></pre>
 <p><code>noise_param</code> is only passed to the algorithm when <code>noise_type = walk</code>. Otherwise it is omitted
 from the command line.</p>
+<p>Conditions resolve <strong>transitively</strong>: a parameter whose parent is itself conditional is inactive
+whenever the parent is, so a chain <code>a -&gt; b -&gt; c</code> needs no restatement of <code>a</code> in <code>c</code>’s condition.</p>
 <h2 id="-forbidden-combinations"><a class="header" href="#-forbidden-combinations">⛔ Forbidden combinations</a></h2>
 <p>A forbidden combination prevents specific joint assignments from being evaluated:</p>
 <pre><code>{param1=val1, param2=val2, ...}
@@ -660,11 +832,63 @@ alpha {1.01, 1.189} [1.189]   # inline comment
 alpha {1.01, 1.066, 1.126, 1.189, 1.256, 1.326, 1.4} [1.189]
 rho   {0, 0.17, 0.5, 1}                               [0.5]
 ps    {0.0, 0.01, 0.05, 0.1, 0.2, 0.5}                [0.1]
-wp    {0.0, 0.01, 0.05, 0.1, 0.2}                     [0.03]
+wp    {0.0, 0.01, 0.03, 0.05, 0.1, 0.2}               [0.03]
 
 # Forbidden: degenerate case
 {alpha=1.01, rho=0}
 </code></pre>
+<hr>
+<h2 id="-designing-a-space"><a class="header" href="#-designing-a-space">🧠 Designing a space</a></h2>
+<p>The syntax above is the easy half. What follows is what a space costs to search, and it is the
+part that decides whether a tuning run finds anything.</p>
+<h3 id="a-domain-is-a-neighbourhood-cost-paid-every-descent"><a class="header" href="#a-domain-is-a-neighbourhood-cost-paid-every-descent">A domain is a neighbourhood cost, paid every descent</a></h3>
+<p>The neighbourhood of a configuration is every configuration differing in exactly one parameter, so
+a parameter contributes <code>|domain| - 1</code> neighbours to <strong>every</strong> step of every local search. A
+five-valued parameter costs four; a boolean costs one. Perturbation draws from that neighbourhood
+too, so the five-valued parameter is also perturbed four times as often — which looks like the
+search finding it important when it is only finding it <em>sampled</em>. Do not read “parameters changed
+by improving moves” as an importance ranking.</p>
+<p>Trim a domain to the values that mean different things. Where a response is smooth and unimodal a
+coarse ladder loses nothing; where it is a spike or non-monotone, resolution is load-bearing and
+trimming can hide the optimum.</p>
+<h3 id="declare-conditionals--they-are-free-and-their-absence-is-not"><a class="header" href="#declare-conditionals--they-are-free-and-their-absence-is-not">Declare conditionals — they are free, and their absence is not</a></h3>
+<p>The cache key is a hash of the <strong>active</strong> configuration. Declaring <code>child | parent in {...}</code> is
+therefore not documentation: it collapses every setting of an inactive child into <strong>one</strong> cache
+entry. Leave the condition out and the search evaluates all of them, gets identical scores, and
+reads the result as a plateau — the same symptom a dead parameter produces, and indistinguishable
+from it without looking at the target algorithm’s own statistics.</p>
+<p>The rule that follows: <strong>any option that gates whether another option is read must be declared as
+that option’s parent.</strong> This includes gates that are not obviously conditional from the outside —
+an option that skips constructing a component silently disables every option that component
+consumes.</p>
+<h3 id="conditionals-not-forbidden-clauses-for-combinations-that-merely-mean-something-else"><a class="header" href="#conditionals-not-forbidden-clauses-for-combinations-that-merely-mean-something-else">Conditionals, not forbidden clauses, for combinations that merely mean something else</a></h3>
+<p>A forbidden combination removes a configuration from the space. Use it when the combination is
+genuinely invalid or degenerate — when it duplicates another configuration reachable by a different
+route, for instance. Use a <strong>condition</strong> when the combination is legal and runs, but makes the
+child irrelevant. The two are not interchangeable: forbidding shrinks the space, conditioning
+shrinks the space <em>and</em> the number of evaluations.</p>
+<h3 id="watch-what-is-unreachable-from-the-starting-configuration"><a class="header" href="#watch-what-is-unreachable-from-the-starting-configuration">Watch what is unreachable from the starting configuration</a></h3>
+<p>A parameter behind a guard that is off in the starting configuration cannot move until the search
+first flips that guard — and the guard is flipped <strong>alone</strong>, with its dependents wherever they
+happen to sit. If the guard does not pay at its dependents’ defaults, a first-improvement descent
+rejects it and the whole sub-space stays unreachable at any budget. Nothing in the search can
+recover from that, because while the guard is off the cache has collapsed every setting of the
+dependents to a single entry, so there is no information about them to learn from.</p>
+<p>Practical consequences:</p>
+<ul>
+<li>prefer spaces in which everything is reachable from the starting configuration;</li>
+<li>when a guarded sub-space matters, evaluate it directly rather than hoping the search enters it —
+enumerating a small sub-cube offline is cheap and tells you whether it is bad or merely badly
+initialised;</li>
+<li>treat a parameter that is inactive at the default as far more expensive than its domain size
+suggests.</li>
+</ul>
+<h3 id="verify-that-a-parameter-does-anything-at-all"><a class="header" href="#verify-that-a-parameter-does-anything-at-all">Verify that a parameter does anything at all</a></h3>
+<p>A parameter that parses, reaches the command line, and changes nothing is the most expensive
+mistake available here: it never errors, and the symptom — whole neighbourhoods scoring
+identically — reads as a plateau. Before adding an option to a space, run the target algorithm at
+two extreme values and confirm its own counters move. Structural checks cannot catch this: the
+parameter is active by all of them.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="-solver-wrapper-protocol"><a class="header" href="#-solver-wrapper-protocol">🔌 Solver wrapper protocol</a></h1>
 <p>RamParILS communicates with the target algorithm via a simple subprocess protocol.</p>
@@ -754,7 +978,21 @@ Adaptive capping uses this as the ceiling for individual run runtimes.</p>
 <p><strong>Dominance</strong> (FocusedILS)
 In the current implementation, configuration θ₁ dominates θ₂ when it has been evaluated
 at at least the same fidelity and has a strictly lower aggregate score. Ties do not count
-as improvements.</p>
+as improvements — this is what lets the fidelity grow when the incumbent survives a tie
+instead of being replaced endlessly by equal-scoring challengers.</p>
+<p>The acceptance criterion is the one exception: it resolves ties in favour of the challenger,
+so the ILS home base can cross plateaus and drift away from a basin it cannot improve on
+while the incumbent stays put. ParamILS spells the two variants
+<code>dominates(θ₁, θ₂, equalIsBetter)</code>.</p>
+<hr>
+<p><strong>Home base</strong> (ILS)
+The local optimum the next perturbation starts from — ParamILS’s <code>last_ils_state</code>. Distinct
+from the incumbent: the incumbent is the best configuration found, the home base is where the
+search currently is. It is replaced by the new local optimum whenever that one is at least as
+good, and, like the incumbent, is re-measured whenever the fidelity grows. Replacements are
+logged as <code>ils: new home base:</code> with the parameter diff against the previous one. Only the home
+base is perturbed, so a home base that stops moving turns the ILS into repeated random restarts
+from a fixed ball however the incumbent behaves — which is what the log lets you check.</p>
 <hr>
 <p><strong>Fidelity</strong>
 The number of leading training instances used to score each configuration. FocusedILS starts

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a772311d.js";
+            window.path_to_searchindex_js = "../searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28bd6c43.js"></script>
@@ -184,8 +184,22 @@
 <pre><code class="language-bash">ramparils --scenariofile path/to/scenario.yaml
 </code></pre>
 <p>All tuning options — instances, cutoff times, algorithm settings, cache location, debug flags —
-live in a single YAML scenario file.  The CLI has no other flags: every knob is a field in the
-YAML, making scenarios self-contained, reproducible, and easy to share.</p>
+live in a single YAML scenario file.  Apart from <code>--version</code>, the CLI has no other flags: every
+knob is a field in the YAML, making scenarios self-contained, reproducible, and easy to share.</p>
+<pre><code class="language-console">$ ramparils --version
+ramparils 0.1.3
+git:   353d6e8
+build: release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+</code></pre>
+<p>The revision is baked in at build time, and it matters more than the version: <code>0.1.3</code> covers every
+commit since that tag, so the version alone does not say which code ran. A <code>-dirty</code> suffix means
+the worktree had uncommitted changes and the revision therefore does not identify the build. Where
+the crate is built without git — an sdist, a source tarball — the revision reads <code>unknown</code> rather
+than failing the build. The same lines open every debug log:</p>
+<pre><code class="language-text">[    0.00s] binary:  ramparils v0.1.3
+[    0.00s] git:     353d6e8
+[    0.00s] build:   release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
+</code></pre>
 <hr>
 <h2 id="-scenario-file-reference"><a class="header" href="#-scenario-file-reference">🧭 Scenario file reference</a></h2>
 <pre><code class="language-yaml"># Required: use instance_file or instances
@@ -193,6 +207,10 @@ algo:          "ruby /path/to/solver_wrapper.rb"
 paramfile:     "/path/to/solver.params"
 instance_file: "data/train.txt"
 # instances:   ["data/one.cnf", "data/two.cnf"]
+initial_config:
+  engine: quick
+  threads: 4
+# initial_config_file: "initial-config.yaml"  # alternative to initial_config
 cutoff_time:   5.0
 tuner_timeout: 300.0
 
@@ -201,6 +219,12 @@ run_obj:               runtime   # runtime | quality
 overall_obj:           mean      # mean | median
 approach:              focused   # focused | basic | random
 perturbation_strength: 4
+restart_probability:   0.0       # ParamILS p_restart; 0 = never
+restart_failures: 0        # restart after k rejected local optima; 0 = never
+restart_target:        incumbent # incumbent | random
+restart_strength:      0         # 0 = 2 * perturbation_strength
+acceptance_tolerance:  0.0       # accept within this margin of the incumbent
+random_probes:         0         # ParamILS R; 0 = start from the given config only
 initial_fidelity:      1
 fidelity_step:         1
 bound_multiplier:      10.0
@@ -238,6 +262,25 @@ error_log:             ~         # path or null
 the directory where <code>ramparils</code> is started, not from the scenario file’s
 directory. Use absolute paths or run from a documented working directory when
 the scenario must be portable.</p>
+<h3 id="initial-configuration"><a class="header" href="#initial-configuration">Initial configuration</a></h3>
+<p>Use either <code>initial_config</code> for an inline YAML mapping or
+<code>initial_config_file</code> for a file containing the same mapping:</p>
+<pre><code class="language-yaml">initial_config:
+  engine: quick
+  threads: 4
+  use_preprocessing: true
+</code></pre>
+<pre><code class="language-yaml">initial_config_file: "initial-config.yaml"
+</code></pre>
+<p>The two fields are mutually exclusive. An explicit initial configuration must
+contain every parameter from the parameter file, including conditional
+parameters that are initially inactive. Parameter names and values are
+validated against the parameter space, and forbidden configurations are
+rejected. YAML string, numeric, and boolean scalar values are accepted.</p>
+<p>When neither field is present, RamParILS retains its previous behavior and
+starts from the defaults in square brackets in the parameter file.
+<code>initial_config_file</code> is interpreted from the directory where <code>ramparils</code> is
+started.</p>
 <h3 id="-objective"><a class="header" href="#-objective">🎯 Objective</a></h3>
 <div class="table-wrapper">
 <table>
@@ -257,8 +300,14 @@ the scenario must be portable.</p>
 <tr><th>Field</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>approach</code></td><td><code>focused</code></td><td>Search mode. <code>focused</code> (default) starts at <code>initial_fidelity</code> instances and increases fidelity when the incumbent survives a challenge. <code>basic</code> uses all instances from the start. <code>random</code> currently follows the same full-fidelity ILS path as <code>basic</code>; it is not an independent random-search baseline. See <a href="../reference/algorithm.html">Algorithm</a>.</td></tr>
+<tr><td><code>approach</code></td><td><code>focused</code></td><td>Search mode. <code>focused</code> (default) starts at <code>initial_fidelity</code> instances and increases fidelity when the incumbent survives a challenge. <code>basic</code> uses all instances from the start. <code>random</code> is ParamILS’s <code>pert_rand</code>: each round starts from a fresh random configuration and the acceptance criterion is skipped, which makes it a random-restart baseline rather than an iterated local search. See <a href="../reference/algorithm.html">Algorithm</a>.</td></tr>
 <tr><td><code>perturbation_strength</code></td><td><code>4</code></td><td>Number of random parameter changes applied during perturbation to escape a local optimum. Larger values jump further in the space; smaller values stay closer to the current local optimum.</td></tr>
+<tr><td><code>restart_probability</code></td><td><code>0.0</code></td><td>ParamILS’s <code>p_restart</code>: probability of restarting the home base after each round. <code>0</code> disables it. See <a href="../reference/algorithm.html">Algorithm</a>.</td></tr>
+<tr><td><code>restart_failures</code></td><td><code>0</code></td><td>Restart the home base after this many consecutive rejected local optima. <code>0</code> disables it. Adapts to however many rounds the budget allows, unlike a fixed probability.</td></tr>
+<tr><td><code>restart_target</code></td><td><code>incumbent</code></td><td>Where a restart lands: <code>incumbent</code> perturbs the best configuration found so far by <code>restart_strength</code> steps; <code>random</code> draws a uniformly random configuration, as ParamILS does.</td></tr>
+<tr><td><code>restart_strength</code></td><td><code>0</code></td><td>Perturbation steps a restart applies to the incumbent. <code>0</code> resolves to <code>2 × perturbation_strength</code>; the resolved value is printed in the debug header.</td></tr>
+<tr><td><code>acceptance_tolerance</code></td><td><code>0.0</code></td><td>Accept a local optimum worse than the home base while it stays within this relative margin of the <em>incumbent</em>. <code>0</code> keeps the ParamILS rule of accepting only an at-least-as-good local optimum.</td></tr>
+<tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of <code>0</code> starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of <code>0</code> are treated as <code>1</code>.</td></tr>
 <tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. Lower values prune more aggressively and can change search results.</td></tr>
@@ -295,15 +344,20 @@ See <a href="../reference/algorithm.html#iterative-deepening">Iterative deepenin
 </thead>
 <tbody>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Number of parallel worker threads. <code>0</code> uses all available CPU cores. Set to a specific number to limit parallelism on shared machines.</td></tr>
-<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark.</td></tr>
+<tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index, reserved for future use as a random seed. Has no effect currently.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Cache entries are keyed only by the active configuration and instance path.
-The algorithm command, cutoff, objective, solver version, wrapper behavior,
-and random seed are not included. Use a separate cache if any of them change;
+<p>Cache entries are keyed by the active configuration and instance path, with the
+execution cutoff stored on each result. A timeout can satisfy only requests
+with an equal or shorter cutoff. A completed result that exceeds a shorter
+requested cutoff is returned as an in-memory synthetic timeout and is never
+written back. The algorithm command, objective, solver version, wrapper
+behavior, and random seed are not included. Use a separate cache if any of them change;
 otherwise stale results may be reused without warning.</p>
+<p>Caches created before cutoff-aware results were introduced are incompatible
+and must be removed or replaced with a new cache file.</p>
 <h3 id="-debug"><a class="header" href="#-debug">🩺 Debug</a></h3>
 <div class="table-wrapper">
 <table>
@@ -311,7 +365,7 @@ otherwise stale results may be reused without warning.</p>
 <tr><th>Field</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>debug</code></td><td><code>false</code></td><td>Print structured debug output to stderr: new incumbents, scores, and timing.</td></tr>
+<tr><td><code>debug</code></td><td><code>false</code></td><td>Print structured debug output to stderr: new incumbents, scores, accepted argument changes, and timing.</td></tr>
 <tr><td><code>debug_wrapper</code></td><td><code>false</code></td><td>Print one line per solver wrapper invocation (instance, parameters). Verbose; useful for tracing evaluation order.</td></tr>
 <tr><td><code>debug_solver</code></td><td><code>false</code></td><td>Print one line per solver result (status, runtime, quality). Verbose; useful for diagnosing wrapper output.</td></tr>
 <tr><td><code>debug_log</code></td><td><code>null</code></td><td>Write debug output to this file in addition to (or instead of) stderr. Independent of <code>debug</code> — file logging can be active without stderr logging.</td></tr>
@@ -322,12 +376,20 @@ otherwise stale results may be reused without warning.</p>
 </div>
 <hr>
 <h2 id="-output"><a class="header" href="#-output">📤 Output</a></h2>
-<p>The best configuration found is printed to stdout as <code>-param1 val1 -param2 val2 …</code>
-(active parameters only, alphabetically sorted):</p>
-<pre><code>-alpha 1.256 -ps 0.1 -rho 0.5 -wp 0.03
+<p>The complete best configuration is printed to stdout as an alphabetically
+ordered YAML mapping:</p>
+<pre><code class="language-yaml">alpha: '1.256'
+ps: '0.1'
+rho: '0.5'
+wp: '0.03'
 </code></pre>
-<p>This format is directly compatible with Grackle’s strategy parsing.
-Inactive conditional parameters are omitted — they are irrelevant given the active parameter values.</p>
+<p>Values are YAML strings so they preserve the parameter-file representation.
+Inactive conditional parameters are included, making the output directly
+usable as a future <code>initial_config</code> or <code>initial_config_file</code>.</p>
+<p>When <code>debug_log</code> is configured, the final YAML mapping is also written there.
+Every improved incumbent is recorded in the log with <code>hash=&lt;hash&gt;</code> followed
+by its complete YAML configuration. The hash identifies the active
+configuration used by the evaluation cache.</p>
 
                     </main>
 

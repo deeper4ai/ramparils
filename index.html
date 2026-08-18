@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a772311d.js";
+            window.path_to_searchindex_js = "searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28bd6c43.js"></script>
@@ -203,9 +203,16 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 <tr><th></th><th>Ruby ParamILS</th><th>RamParILS</th></tr>
 </thead>
 <tbody>
-<tr><td>Evaluation</td><td>Sequential</td><td>Parallel over all <code>(neighbor, instance)</code> pairs</td></tr>
-<tr><td>Cache</td><td>In-memory, per-run</td><td>Persistent SQLite, shared across runs</td></tr>
-<tr><td>Python API</td><td>subprocess call</td><td>Native extension via PyO3</td></tr>
+<tr><td>Evaluation</td><td>Sequential</td><td><strong>Parallel</strong> over all <code>(neighbour, instance)</code> pairs</td></tr>
+<tr><td>Cache</td><td>In-memory, per-run</td><td><strong>Persistent SQLite</strong>, shared across runs, self-describing</td></tr>
+<tr><td>Cache inspection</td><td>—</td><td><code>ramparils-db solved | status | strategies</code></td></tr>
+<tr><td>Python API</td><td>subprocess call</td><td><strong>Native extension</strong> via PyO3</td></tr>
+<tr><td>Search modes</td><td>BasicILS, FocusedILS</td><td>BasicILS, FocusedILS, <code>random</code> (ParamILS’s <code>pert_rand</code>)</td></tr>
+<tr><td>Escaping a local optimum</td><td>Random restart at fixed probability (<code>p_restart</code>), <code>R</code> random probes</td><td>Both, <strong>plus soft acceptance within a tolerance and stagnation-triggered restarts</strong></td></tr>
+<tr><td>Restart target</td><td>Uniformly random configuration</td><td>Random, <strong>or a bounded perturbation of the incumbent</strong></td></tr>
+<tr><td>Comparing across fidelities</td><td>Score vector per configuration, compared at a common level</td><td><strong>Single score, re-measured</strong> for the incumbent and the home base at every fidelity increase</td></tr>
+<tr><td>Multi-phase schedules</td><td>—</td><td><strong>Iterative deepening</strong>: geometric growth of instances, cutoff and deadline</td></tr>
+<tr><td>Provenance</td><td>—</td><td>Source revision in <code>--version</code> and every log header; full scenario echoed at startup</td></tr>
 <tr><td>Non-deterministic algorithms (multiple seeds)</td><td>Supported</td><td>Not (yet) supported</td></tr>
 </tbody>
 </table>
@@ -214,6 +221,13 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 count, neighbourhood width, current fidelity, solver runtimes, early acceptance, and cache hits.
 The persistent cache compounds this advantage across compatible Grackle tuning runs on overlapping
 problem sets.</p>
+<p align="center">
+  <img src="figures/basic-ils.svg" width="100%" alt="Basic ILS: initialization, first local search, and the main loop">
+</p>
+
+<p>The search in its <code>basic</code> form: θ is the current candidate, θ_base the point each perturbation
+starts from, and θ_inc the incumbent that the run returns. See <a href="reference/algorithm.html">Algorithm</a>
+for what each box does and for the FocusedILS fidelity schedule.</p>
 <h2 id="-quick-links"><a class="header" href="#-quick-links">🔗 Quick links</a></h2>
 <ul>
 <li><a href="installation.html">Installation</a></li>

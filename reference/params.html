@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a772311d.js";
+            window.path_to_searchindex_js = "../searchindex-7b1882f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-28bd6c43.js"></script>
@@ -194,6 +194,10 @@ supported; enumerate every allowed value explicitly.</p>
 rho   {0, 0.17, 0.5, 1}                               [0.5]
 </code></pre>
 <p>Values are always strings. Numeric values are parsed by the target algorithm.</p>
+<p><strong>The default must be a member of the domain.</strong> A file whose default is not listed is rejected at
+load time with the offending line, rather than silently starting somewhere unexpected:</p>
+<pre><code class="language-text">Error: line 4: default '0.03' not in domain ["0.0", "0.01", "0.05", "0.1", "0.2"] for param 'wp'
+</code></pre>
 <h2 id="-conditional-parameters"><a class="header" href="#-conditional-parameters">🔀 Conditional parameters</a></h2>
 <p>A conditional parameter is only <em>active</em> (included in the command line) when its parent has a
 specific value:</p>
@@ -205,6 +209,8 @@ noise_param {0.0, 0.1, 0.5} [0.1] | noise_type in {walk}
 </code></pre>
 <p><code>noise_param</code> is only passed to the algorithm when <code>noise_type = walk</code>. Otherwise it is omitted
 from the command line.</p>
+<p>Conditions resolve <strong>transitively</strong>: a parameter whose parent is itself conditional is inactive
+whenever the parent is, so a chain <code>a -&gt; b -&gt; c</code> needs no restatement of <code>a</code> in <code>c</code>’s condition.</p>
 <h2 id="-forbidden-combinations"><a class="header" href="#-forbidden-combinations">⛔ Forbidden combinations</a></h2>
 <p>A forbidden combination prevents specific joint assignments from being evaluated:</p>
 <pre><code>{param1=val1, param2=val2, ...}
@@ -223,11 +229,63 @@ alpha {1.01, 1.189} [1.189]   # inline comment
 alpha {1.01, 1.066, 1.126, 1.189, 1.256, 1.326, 1.4} [1.189]
 rho   {0, 0.17, 0.5, 1}                               [0.5]
 ps    {0.0, 0.01, 0.05, 0.1, 0.2, 0.5}                [0.1]
-wp    {0.0, 0.01, 0.05, 0.1, 0.2}                     [0.03]
+wp    {0.0, 0.01, 0.03, 0.05, 0.1, 0.2}               [0.03]
 
 # Forbidden: degenerate case
 {alpha=1.01, rho=0}
 </code></pre>
+<hr>
+<h2 id="-designing-a-space"><a class="header" href="#-designing-a-space">🧠 Designing a space</a></h2>
+<p>The syntax above is the easy half. What follows is what a space costs to search, and it is the
+part that decides whether a tuning run finds anything.</p>
+<h3 id="a-domain-is-a-neighbourhood-cost-paid-every-descent"><a class="header" href="#a-domain-is-a-neighbourhood-cost-paid-every-descent">A domain is a neighbourhood cost, paid every descent</a></h3>
+<p>The neighbourhood of a configuration is every configuration differing in exactly one parameter, so
+a parameter contributes <code>|domain| - 1</code> neighbours to <strong>every</strong> step of every local search. A
+five-valued parameter costs four; a boolean costs one. Perturbation draws from that neighbourhood
+too, so the five-valued parameter is also perturbed four times as often — which looks like the
+search finding it important when it is only finding it <em>sampled</em>. Do not read “parameters changed
+by improving moves” as an importance ranking.</p>
+<p>Trim a domain to the values that mean different things. Where a response is smooth and unimodal a
+coarse ladder loses nothing; where it is a spike or non-monotone, resolution is load-bearing and
+trimming can hide the optimum.</p>
+<h3 id="declare-conditionals--they-are-free-and-their-absence-is-not"><a class="header" href="#declare-conditionals--they-are-free-and-their-absence-is-not">Declare conditionals — they are free, and their absence is not</a></h3>
+<p>The cache key is a hash of the <strong>active</strong> configuration. Declaring <code>child | parent in {...}</code> is
+therefore not documentation: it collapses every setting of an inactive child into <strong>one</strong> cache
+entry. Leave the condition out and the search evaluates all of them, gets identical scores, and
+reads the result as a plateau — the same symptom a dead parameter produces, and indistinguishable
+from it without looking at the target algorithm’s own statistics.</p>
+<p>The rule that follows: <strong>any option that gates whether another option is read must be declared as
+that option’s parent.</strong> This includes gates that are not obviously conditional from the outside —
+an option that skips constructing a component silently disables every option that component
+consumes.</p>
+<h3 id="conditionals-not-forbidden-clauses-for-combinations-that-merely-mean-something-else"><a class="header" href="#conditionals-not-forbidden-clauses-for-combinations-that-merely-mean-something-else">Conditionals, not forbidden clauses, for combinations that merely mean something else</a></h3>
+<p>A forbidden combination removes a configuration from the space. Use it when the combination is
+genuinely invalid or degenerate — when it duplicates another configuration reachable by a different
+route, for instance. Use a <strong>condition</strong> when the combination is legal and runs, but makes the
+child irrelevant. The two are not interchangeable: forbidding shrinks the space, conditioning
+shrinks the space <em>and</em> the number of evaluations.</p>
+<h3 id="watch-what-is-unreachable-from-the-starting-configuration"><a class="header" href="#watch-what-is-unreachable-from-the-starting-configuration">Watch what is unreachable from the starting configuration</a></h3>
+<p>A parameter behind a guard that is off in the starting configuration cannot move until the search
+first flips that guard — and the guard is flipped <strong>alone</strong>, with its dependents wherever they
+happen to sit. If the guard does not pay at its dependents’ defaults, a first-improvement descent
+rejects it and the whole sub-space stays unreachable at any budget. Nothing in the search can
+recover from that, because while the guard is off the cache has collapsed every setting of the
+dependents to a single entry, so there is no information about them to learn from.</p>
+<p>Practical consequences:</p>
+<ul>
+<li>prefer spaces in which everything is reachable from the starting configuration;</li>
+<li>when a guarded sub-space matters, evaluate it directly rather than hoping the search enters it —
+enumerating a small sub-cube offline is cheap and tells you whether it is bad or merely badly
+initialised;</li>
+<li>treat a parameter that is inactive at the default as far more expensive than its domain size
+suggests.</li>
+</ul>
+<h3 id="verify-that-a-parameter-does-anything-at-all"><a class="header" href="#verify-that-a-parameter-does-anything-at-all">Verify that a parameter does anything at all</a></h3>
+<p>A parameter that parses, reaches the command line, and changes nothing is the most expensive
+mistake available here: it never errors, and the symptom — whole neighbourhoods scoring
+identically — reads as a plateau. Before adding an option to a space, run the target algorithm at
+two extreme values and confirm its own counters move. Structural checks cannot catch this: the
+parameter is active by all of them.</p>
 
                     </main>
 

@@ -1,0 +1,168 @@
+% ---------------------------------------------------------------------------
+% Basic ILS (approach: basic) -- the figure used in README.md and
+% docs/reference/algorithm.md.
+%
+% Source of truth for the picture. Regenerate the SVG after editing:
+%
+%     pdflatex basic-ils.tex && pdftocairo -svg basic-ils.pdf basic-ils.svg
+%
+% pdftocairo rather than dvisvgm: dvisvgm's WOFF output silently dropped
+% glyphs and collapsed inter-word spaces ("single-paameter"). pdftocairo
+% converts every glyph to a path, so the result is self-contained -- no font
+% is referenced by name and nothing depends on the viewer's font stack.
+%
+% \pagecolor{white} is load-bearing. mdbook's default theme here is `ayu`
+% (dark), and the arrows and legend text are near-black; on a transparent
+% background they would be invisible. The explicit white page makes the figure
+% read as a light card in either theme.
+%
+% The picture body below is kept in sync with basic-ils.tex in the LPAR 2026
+% paper (primo-papers/lpar2026), where it carries the caption and label. Only
+% the standalone wrapper differs. Its own comments explain why each assignment
+% line sits in the box it does -- the box order encodes the order run() makes
+% the assignments, which no arrow could express.
+% ---------------------------------------------------------------------------
+\documentclass[tikz,border=6pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,backgrounds,calc,fit,positioning}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\pagecolor{white}
+\begin{document}
+\definecolor{ilsblue}{HTML}{255C8A}
+  \definecolor{ilsteal}{HTML}{237A76}
+  \definecolor{ilsviolet}{HTML}{66558C}
+  \definecolor{ilsorange}{HTML}{A85D24}
+  \definecolor{ilsink}{HTML}{263238}
+  \definecolor{ilspaper}{HTML}{F5F7F8}
+  % The group turns hyphenation off for every node in the picture while
+  % leaving the caption below to hyphenate normally.
+  {\hyphenpenalty=10000 \exhyphenpenalty=10000
+  \begin{tikzpicture}[
+    yscale=0.9,
+      font=\sffamily,
+      >={Stealth[length=2.2mm,width=1.5mm]},
+      % An operation: a call made by run().
+      op/.style={
+        rounded corners=2pt, align=center, text=white,
+        inner xsep=5pt, inner ysep=4pt, font=\sffamily\footnotesize,
+        text width=2.80cm, minimum height=1.55cm
+      },
+      % A configuration held by run(): light, to separate state from calls.
+      st/.style={
+        rounded corners=2pt, align=center, draw=ilsink!45, fill=ilspaper,
+        text=ilsink, line width=0.6pt, font=\sffamily\footnotesize,
+        inner xsep=5pt, inner ysep=4pt,
+        text width=2.45cm, minimum height=1.55cm
+      },
+      flow/.style={-{Stealth[length=2.2mm,width=1.5mm]}, draw=ilsink,
+        line width=0.75pt},
+      wire/.style={draw=ilsink, line width=0.75pt},
+      leg/.style={align=left, text=ilsink, font=\sffamily\scriptsize,
+        text width=3.85cm, inner sep=0pt},
+      lbl/.style={font=\sffamily\scriptsize, text=ilsink, fill=white,
+        inner sep=1.5pt, align=center},
+      band/.style={rounded corners=4pt, line width=0.75pt, densely dashed,
+        inner xsep=7pt, inner ysep=9pt},
+      bandlbl/.style={font=\sffamily\scriptsize\bfseries, text=ilsink,
+        fill=white, inner xsep=3pt, anchor=west},
+    ]
+
+    % ── run(): initialization ──────────────────────────────────────────────
+    \node[st] (t0) at (0,0) {
+      $\theta$\\[1pt]
+      \scriptsize\sffamily input config\\[-1pt]
+      \scriptsize\sffamily (or random)
+    };
+    \node[op, fill=ilsteal] (ev0) at (3.55,0) {
+      \textbf{Evaluate}\\[1pt]
+      \scriptsize\sffamily the input config $\theta$\\[-1pt]
+      \scriptsize\sffamily on all instances
+    };
+
+    % ── run(): first BLS ───────────────────────────────────────────────────
+    \node[op, fill=ilsblue] (bls0) at (7.75,0) {
+      \textbf{Basic local search}\\[1pt]
+      \scriptsize\sffamily explores single-parameter
+      neighbors of $\theta$\\[2pt]
+      \scriptsize\sffamily $\theta_{\mathit{base}} \leftarrow$ local optimum
+    };
+    \node[st] (tils) at (11.15,0) {
+      $\theta_{\mathit{base}}$\\[1pt]
+      \scriptsize\sffamily initial local optimum\\[-1pt]
+      \scriptsize\sffamily (perturbation base)\\[2pt]
+      \scriptsize\sffamily $\theta_{\mathit{inc}} \leftarrow \theta_{\mathit{base}}$
+    };
+
+    \draw[flow] (t0.east) -- (ev0.west);
+    \draw[flow] (ev0.east) -- (bls0.west);
+    \draw[flow] (bls0.east) -- (tils.west);
+
+    % ── run(): main ILS loop ───────────────────────────────────────────────
+    \node[op, fill=ilsviolet, minimum height=1.70cm] (pert) at (0.35,-3.75) {
+      \textbf{Perturbation}\\[1pt]
+      \scriptsize\sffamily $s$ single-parameter\\[-1pt]
+      \scriptsize\sffamily random flips from $\theta_{\mathit{base}}$\\[2pt]
+      \scriptsize\sffamily $\theta \leftarrow$ perturbed config
+    };
+    \node[op, fill=ilsteal, minimum height=1.70cm] (evp) at (3.90,-3.75) {
+      \textbf{Evaluate}\\[1pt]
+      \scriptsize\sffamily the perturbed config $\theta$\\[-1pt]
+      \scriptsize\sffamily on all instances
+    };
+    \node[op, fill=ilsblue, minimum height=1.70cm] (blsp) at (7.45,-3.75) {
+      \textbf{Basic local search}\\[1pt]
+      \scriptsize\sffamily explores single-parameter
+      neighbors of $\theta$\\[2pt]
+      \scriptsize\sffamily $\theta \leftarrow$ local optimum\\[-1pt]
+      \scriptsize\sffamily $\theta_{\mathit{inc}} \leftarrow \theta$ if better
+    };
+    \node[op, fill=ilsorange, minimum height=1.70cm] (accp) at (11.00,-3.75) {
+      \textbf{Acceptance criterion}\\[1pt]
+      \scriptsize\sffamily compares $\theta$ with $\theta_{\mathit{base}}$\\[2pt]
+      \scriptsize\sffamily $\theta_{\mathit{base}} \leftarrow \theta$ if better
+    };
+
+    \draw[flow] (pert.east) -- (evp.west);
+    \draw[flow] (evp.east) -- (blsp.west);
+    \draw[flow] (blsp.east) -- (accp.west);
+
+    % The single entry point of a round, fed both by the first BLS and by the
+    % acceptance criterion.  Both feeds carry theta_base, hence the wire label.
+    \coordinate (corr) at (0.35,-2.05);
+    \draw[wire] (tils.south) -- (11.15,-2.30);
+    \draw[wire] ([xshift=1.45cm]accp.north) -- ++(0,0.675);
+    \draw[flow, rounded corners=6pt] (12.45,-2.30)
+      -- node[lbl] {$\theta_{\mathit{base}}$} (0.35,-2.30) -- (pert.north);
+    \fill[ilsink] (11.15,-2.30) circle (1.5pt);
+
+    % ── legend: what the three configurations are ─────────────────────────
+    % Not part of the flow, so no arrow reaches it: the boxes above show where
+    % each variable is assigned, this says what each one means.
+    \node[leg] (lg1) at (0.70,-5.55) {
+      $\theta = {}$current config};
+    \node[leg] (lg2) at (5.40,-5.55) {
+      $\theta_{\mathit{base}} = {}$perturbation start config};
+    \node[leg] (lg3) at (10.10,-5.55) {
+      $\theta_{\mathit{inc}} = {}$incumbent: the best config};
+    \begin{scope}[on background layer]
+      \node[fit=(lg1)(lg2)(lg3), rounded corners=2pt, draw=ilsink!45,
+        fill=ilspaper, line width=0.65pt, inner xsep=6pt, inner ysep=6pt] {};
+    \end{scope}
+
+    \begin{scope}[on background layer]
+      \node[band, fit=(t0)(ev0), draw=ilsink!40, fill=ilsink!3] (binit) {};
+      \node[band, fit=(bls0)(tils), draw=ilsink!40, fill=ilsink!3] (bfirst) {};
+      \node[band, fit=(pert)(evp)(blsp)(accp)(corr),
+        draw=ilsviolet!55, fill=ilsviolet!4] (bloop) {};
+    \end{scope}
+    \node[bandlbl] at ([xshift=6pt]binit.north west)
+      {Basic ILS: initialization};
+    \node[bandlbl] at ([xshift=6pt]bfirst.north west)
+      {Basic ILS: first local search};
+    \node[bandlbl] at ([xshift=6pt]bloop.north west)
+      {Basic ILS: main loop \normalfont--- repeat until the deadline,
+       then return $\theta_{\mathit{inc}}$};
+
+  \end{tikzpicture}}
+\end{document}
