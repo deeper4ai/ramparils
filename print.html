@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5dd060c1.js";
+            window.path_to_searchindex_js = "searchindex-03f54fae.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-28bd6c43.js"></script>
+        <script src="toc-8d39ea3d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,6 +183,33 @@
 automated algorithm configuration via Iterated Local Search.</p>
 <p>Used as the inner tuner in <a href="https://github.com/ai4reason/grackle">Grackle</a>, a strategy portfolio
 invention system for automated reasoning solvers.</p>
+<p><strong>Current release: v0.2.0</strong> (2026-08-19) · <a href="#changelog">changelog</a> ·
+<a href="https://github.com/deeper4ai/ramparils">sources and issues on GitHub</a> ·
+<a href="#-installation">installation</a></p>
+<pre><code class="language-bash">pip install ramparils                                          # Python extension
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.2.0   # CLI
+</code></pre>
+<h2 id="-whats-new-in-020"><a class="header" href="#-whats-new-in-020">📦 What’s new in 0.2.0</a></h2>
+<ul>
+<li><strong>One command-line tool, two sub-commands.</strong> <code>ramparils run scenario.yaml</code>
+tunes; <code>ramparils db cache.dbcache</code> exports what a result cache holds. This
+replaces <code>--scenariofile</code> and the separate <code>ramparils-db</code> binary, so <strong>0.2.0
+is not CLI-compatible with 0.1.x</strong> — scenario files, parameter files, caches
+and the Python API are unchanged, only the invocation moves.
+See <a href="#-cli">CLI</a>.</li>
+<li><strong>A search that can climb out of a local optimum.</strong> The acceptance criterion
+alone could only ever move downhill, so a strong local optimum ended the
+useful part of a run. Soft acceptance within a tolerance, stagnation-triggered
+restarts, a choice of restart target, and ParamILS’s random probes now
+address it — all off by default.
+See <a href="#escaping">Algorithm</a>.</li>
+<li><strong>Provenance.</strong> <code>ramparils --version</code> and the header of every debug log carry
+the git revision the binary was built from, with a <code>-dirty</code> marker when the
+worktree was not clean. A version number alone never said which code ran.</li>
+<li><strong><code>ramparils db confs</code></strong> recovers the configuration behind each strategy hash
+in a cache, so a <code>.dbcache</code> is no longer a pile of opaque hashes.</li>
+</ul>
+<p>Full detail, including the earlier releases, is in the <a href="#changelog">changelog</a>.</p>
 <h2 id="-what-it-does"><a class="header" href="#-what-it-does">💡 What it does</a></h2>
 <p>Given a target algorithm with configurable parameters, RamParILS searches for the parameter
 setting that minimises runtime or a numeric solution cost on a set of training instances.
@@ -234,6 +261,8 @@ for what each box does and for the FocusedILS fidelity schedule.</p>
 <li><a href="#-algorithm-1">Algorithm</a></li>
 <li><a href="#-parameter-file-format">Parameter file format</a></li>
 <li><a href="#-solver-wrapper-protocol">Solver wrapper protocol</a></li>
+<li><a href="#changelog">Changelog</a></li>
+<li><a href="https://github.com/deeper4ai/ramparils">GitHub repository</a></li>
 </ul>
 <h2 id="-acknowledgements"><a class="header" href="#-acknowledgements">🤝 Acknowledgements</a></h2>
 <p>This project is part of <a href="https://deeper4ai.github.io/">DEEPER</a> and supported by the <a href="https://www.renaissancephilanthropy.org/deeper-exploratory-engine-for-precise-expert-reasoning">DEEPER grant</a> from Renaissance Philanthropy.</p>
@@ -273,6 +302,232 @@ ramparils db --help
 </code></pre>
 <p>The Python package requires Python 3.9 or newer. The command-line tool does not
 require Python.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="changelog"><a class="header" href="#changelog">Changelog</a></h1>
+<p>All notable changes to RamParILS are recorded here. The format follows
+<a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>, and the project uses
+<a href="https://semver.org/spec/v2.0.0.html">semantic versioning</a>.</p>
+<p>Dates are commit dates. Entries were reconstructed from the git history, so
+they describe what changed rather than what was announced at the time.</p>
+<h2 id="unreleased"><a class="header" href="#unreleased"><a href="https://github.com/deeper4ai/ramparils/compare/v0.2.0...HEAD">Unreleased</a></a></h2>
+<h3 id="added"><a class="header" href="#added">Added</a></h3>
+<ul>
+<li>The changelog is published with the documentation, at
+<code>deeper4ai.github.io/ramparils</code>. <code>docs/changelog.md</code> is a one-line mdBook
+include of this file, so there is still one source of truth.</li>
+<li>The landing page carries the current release, an install one-liner pinned to
+the tag, a “What’s new” section and a link to the GitHub repository.</li>
+</ul>
+<h2 id="020--2026-08-19"><a class="header" href="#020--2026-08-19"><a href="https://github.com/deeper4ai/ramparils/compare/v0.1.3...v0.2.0">0.2.0</a> — 2026-08-19</a></h2>
+<p>The escape mechanism, the provenance stamping, a unified CLI and a reworked
+set of documents.</p>
+<p><strong>Upgrading</strong>: the CLI is not compatible with 0.1.x. <code>ramparils run &lt;scenario.yaml&gt;</code> replaces <code>ramparils --scenariofile &lt;scenario.yaml&gt;</code>, and the
+<code>ramparils-db</code> binary is now <code>ramparils db</code>. Scenario files, parameter files,
+caches and the Python API are unchanged, so only the invocation moves.</p>
+<h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>
+<ul>
+<li>
+<p><strong>Escape mechanism for a frozen ILS home base.</strong> The acceptance criterion
+only ever replaced the home base with an at-least-as-good local optimum, so
+nothing in the loop could move the search uphill: once a strong local optimum
+was found, every later round perturbed the same point. Five new scenario
+fields address it, all defaulting to previous behaviour:</p>
+<ul>
+<li><code>acceptance_tolerance</code> — accept a <em>worse</em> local optimum as the home base
+while it stays within this relative margin of the <strong>incumbent</strong> (measured
+against the incumbent, not the home base, so the margin cannot compound);</li>
+<li><code>restart_failures</code> — restart after this many consecutive rejected local
+optima, which adapts to however many rounds a budget turns out to allow;</li>
+<li><code>restart_probability</code> — ParamILS’s <code>p_restart</code>;</li>
+<li><code>restart_target</code> (<code>incumbent</code> | <code>random</code>) and <code>restart_strength</code> — where a
+restart lands and how far it jumps. <code>0</code> resolves to
+<code>2 × perturbation_strength</code>, and the resolved value is printed in the
+debug header;</li>
+<li><code>random_probes</code> — ParamILS’s <code>R</code>, previously unreachable because
+<code>resolve_initial_config</code> always returned a configuration. Defaults to <code>0</code>:
+specializing a caller-supplied strategy should start from that strategy.</li>
+</ul>
+<p>Restarts and home-base replacements are logged distinctly
+(<code>ils: restart:</code>, <code>ils: new home base:</code> with a parameter diff), so a run
+dragged along by its escape mechanism can be told from a healthy one.</p>
+</li>
+<li>
+<p><strong>Source revision in <code>--version</code> and in every debug-log header</strong>, stamped at
+build time by <code>build.rs</code>. A <code>-dirty</code> suffix marks an unclean worktree, and a
+build without git reads <code>unknown</code> rather than failing. The version alone
+never identified the code, since a tag covers every commit after it.</p>
+</li>
+<li>
+<p><strong><code>docs/figures/basic-ils.svg</code></strong>, a diagram of BasicILS shown in the README,
+the documentation index and the algorithm reference, with its regenerable
+TikZ source beside it.</p>
+</li>
+<li>
+<p><strong>A “Designing a space” section</strong> in the parameter-file reference: what a
+domain costs in every neighbourhood, why declaring conditionals is free and
+their absence is not, conditionals versus forbidden combinations, and why a
+guard is only explorable if it pays at its dependents’ default values.</p>
+</li>
+<li>
+<p><strong><code>rust-version = "1.85"</code></strong> in <code>Cargo.toml</code>, matching the MSRV the
+documentation already claimed.</p>
+</li>
+<li>
+<p><strong><code>rustfmt.toml</code></strong> (<code>max_width = 120</code>), and the whole tree reformatted to
+match. The code had been hand-formatted since the first commit, so
+<code>cargo fmt --check</code> — listed as a standard command in <code>AGENTS.md</code> and the
+README — had never passed. It passes now, and can be enforced in CI. 120
+rather than rustfmt’s default 100 because the dominant pattern here is a
+<code>debug_line(d, &amp;format!(…))</code> call written to read like the log line it
+produces; the file records the measurements behind the choice.</p>
+</li>
+<li>
+<p><strong><code>CHANGELOG.md</code></strong>, this file.</p>
+</li>
+<li>
+<p><strong><code>examples/primo</code></strong> gained the flattening and SOI-minimization options
+(<code>boolean_flatten_threshold</code>, <code>boolean_flatten_post_threshold</code>,
+<code>lra_soi_minimize</code>, <code>lra_soi_minimize_order</code>) in its wrapper, and a revised
+24-parameter space, <code>params-primo-qflra.txt</code>, carrying the measurement behind
+each choice. Its scenario now runs BasicILS with settings derived from a
+nine-run tuning campaign, and documents what to adjust first.</p>
+</li>
+</ul>
+<h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
+<ul>
+<li>
+<p><strong>BREAKING: one binary, two sub-commands.</strong> <code>ramparils run &lt;scenario.yaml&gt;</code>
+replaces <code>ramparils --scenariofile &lt;scenario.yaml&gt;</code>, and the separate
+<code>ramparils-db</code> binary is gone — its sub-commands are now <code>ramparils db</code>.
+There is no compatibility shim: the old forms are errors.</p>
+<p><code>db</code> also changes shape. All three sub-commands are exports now, writing one
+file per strategy hash named <code>ram-&lt;hash&gt;</code> under <code>--out-dir</code>, which defaults
+to <code>solverpy_db</code> rather than the current directory, in a layout that mirrors
+solverpy’s database so an export can be dropped into an existing
+<code>solverpy_db/</code>. Each prints a one-line summary on stdout and uses stderr for
+errors only.</p>
+<ul>
+<li><code>solved</code> and <code>status</code> now record the <strong>full instance path</strong> the cache
+stored, not the basename, matching solverpy’s files.</li>
+<li><code>strategies</code> is renamed <strong><code>confs</code></strong> and writes files rather than a table on
+stdout: one per hash, holding the configuration as YAML (<code>--json</code> for the
+stored JSON). It is deliberately not solverpy’s <code>strats/</code> — that holds a
+solver command line, this holds a parameter assignment, which only means
+anything against the parameter space it was tuned in. Note it records the
+<em>active</em> configuration, so it is a record of what ran rather than a
+complete one, and <code>initial_config_file</code> will reject it unless every
+parameter was active.</li>
+<li><code>solved</code>’s success-status set is now documented in <code>--help</code>.</li>
+<li>given a cache and no sub-command, <code>db</code> runs all three:
+<code>ramparils db results.dbcache</code> is <code>solved</code>, <code>status</code> and <code>confs</code> in one go.</li>
+</ul>
+</li>
+<li>
+<p><strong>A closed stdout no longer panics.</strong> Rust ignores <code>SIGPIPE</code> at startup, so
+<code>println!</code> panicked with a backtrace when the reader went away — piping any
+of this into <code>head</code> did it, including the old <code>ramparils-db strategies</code>,
+whose table output existed to be piped. <code>main</code> now restores the default
+disposition, so the process exits quietly with 141 as any Unix tool does.</p>
+</li>
+<li>
+<p><strong><code>approach: random</code> is now ParamILS’s <code>pert_rand</code></strong> — a fresh random
+configuration each round with the acceptance criterion skipped, i.e. a
+random-restart baseline. It was previously a silent alias for <code>basic</code>, so any
+earlier run that set it was really running BasicILS.</p>
+</li>
+<li>
+<p>The adaptive-capping documentation now states the ceiling rule: under a PAR1
+runtime objective capping cannot fire unless
+<code>bound_multiplier × incumbent_score &lt; cutoff_time</code>, so a multiplier just
+below that ratio is indistinguishable from <code>pruning: false</code>.</p>
+</li>
+<li>
+<p><code>examples/primo/params-primo.txt</code> was renamed to <code>params-primo-qflra.txt</code>.</p>
+</li>
+</ul>
+<h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
+<ul>
+<li><code>examples/eprover/run.sh</code> had been broken since 0.1.2: it passed <code>--debug</code>,
+<code>--debug-log</code> and <code>--cachedb</code>, which became scenario fields in that release,
+so the script could not have run. Those three settings moved into its
+<code>scenario.yaml</code>, where they belong.</li>
+<li>The SAPS example in the parameter-file reference did not parse: <code>wp</code>’s
+default <code>0.03</code> was absent from its domain, so anyone copying it hit
+<code>default '0.03' not in domain</code>.</li>
+<li>The Python API reference claimed <code>specialize</code> runs FocusedILS; it runs
+whichever variant <code>scenario["approach"]</code> selects.</li>
+</ul>
+<h2 id="013--2026-08-06"><a class="header" href="#013--2026-08-06"><a href="https://github.com/deeper4ai/ramparils/compare/v0.1.2...v0.1.3">0.1.3</a> — 2026-08-06</a></h2>
+<h3 id="added-2"><a class="header" href="#added-2">Added</a></h3>
+<ul>
+<li><strong>The cache records what each strategy hash means</strong> (<code>strategies</code> table,
+written the first time a configuration is evaluated, and added automatically
+when an older cache is opened). Without it a <code>.dbcache</code> is a pile of opaque
+hashes whose recovery depends on the space still being small enough to
+enumerate and on <code>DefaultHasher</code> being reproducible across compiler versions —
+which it is explicitly not. Exposed as <code>ramparils-db strategies</code>.</li>
+<li><strong>Cutoff-aware result caching.</strong> Each result stores the cutoff it was
+measured under: a timeout satisfies only requests with an equal or shorter
+cutoff, and a completed run exceeding a shorter requested cutoff is returned
+as an in-memory synthetic timeout and never written back. Caches predating
+this are incompatible and must be replaced.</li>
+<li><strong>Scenario initial configurations</strong>, inline via <code>initial_config</code> or in a file
+via <code>initial_config_file</code>, validated against the parameter space.</li>
+<li><code>examples/primo</code>, and <code>guarded_real_equality_lowering</code> in its space.</li>
+<li>Strategy extraction from tuning logs for the <code>llm2smt</code> example.</li>
+</ul>
+<h3 id="fixed-1"><a class="header" href="#fixed-1">Fixed</a></h3>
+<ul>
+<li><strong>FocusedILS compared scores taken at different fidelities.</strong> The incumbent
+was re-measured when the fidelity grew but the ILS home base was not, so the
+acceptance criterion compared a current score against a stale one taken on a
+shorter prefix. Because prefix means drift as the prefix grows, the stale bar
+was biased low and the only mechanism that could update it was the comparison
+it blocked — the home base froze for the rest of the run. Both retained
+states are now re-measured at every increase, and each increase is logged
+with both scores.</li>
+<li>An incomplete fidelity increase at the deadline no longer discards the
+incumbent’s score.</li>
+<li>Canceled solver workers are terminated rather than left running; solver
+process trees are terminated on interrupt; queued solver work is bounded.</li>
+</ul>
+<h2 id="012--2026-06-10"><a class="header" href="#012--2026-06-10"><a href="https://github.com/deeper4ai/ramparils/compare/v0.1.0...v0.1.2">0.1.2</a> — 2026-06-10</a></h2>
+<h3 id="added-3"><a class="header" href="#added-3">Added</a></h3>
+<ul>
+<li><strong>All tuning knobs unified into the scenario file.</strong> The CLI keeps only
+<code>--scenariofile</code> (and <code>--version</code>), which makes a run reproducible from one
+file.</li>
+<li>Configurable FocusedILS evaluation fidelity (<code>initial_fidelity</code>,
+<code>fidelity_step</code>).</li>
+<li>Iterative deepening (<code>iterative_deepening</code>, <code>lambda_n</code>, <code>lambda_c</code>,
+<code>lambda_t</code>): multiple ILS phases on an exponential schedule of instances,
+cutoff and cumulative deadline.</li>
+<li><code>ramparils-db</code> with <code>solved</code> and <code>status</code> sub-commands.</li>
+<li>Structured debug logging: <code>debug</code>, <code>debug_log</code>, <code>debug_wrapper</code>,
+<code>debug_solver</code>, and <code>error_log</code> for crash reporting.</li>
+<li>The <code>llm2smt</code> and <code>eprover</code> examples, and eprover integration tests.</li>
+<li>Documentation moved to mdBook, with a scenario reference, an algorithm
+overview and a glossary.</li>
+</ul>
+<h3 id="changed-1"><a class="header" href="#changed-1">Changed</a></h3>
+<ul>
+<li><code>cache_db</code> defaults to <code>:memory:</code>, so a run no longer leaves a stray database
+behind.</li>
+<li>Solver status is stored in the cache.</li>
+</ul>
+<h3 id="fixed-2"><a class="header" href="#fixed-2">Fixed</a></h3>
+<ul>
+<li>Improvement detection uses a strict <code>&lt;</code>, so an equal-scoring challenger no
+longer replaces the incumbent endlessly.</li>
+<li>Failed and crashed runs are charged the penalty quality (<code>10_000_000</code>) and
+are <strong>not</strong> written to the persistent cache.</li>
+<li>The parameter parser accepts standalone conditions.</li>
+</ul>
+<h2 id="010--2026-04-10"><a class="header" href="#010--2026-04-10"><a href="https://github.com/deeper4ai/ramparils/releases/tag/v0.1.0">0.1.0</a> — 2026-04-10</a></h2>
+<p>First public release: a parallel Rust implementation of ParamILS with
+BasicILS and FocusedILS, parallel evaluation over <code>(neighbour, instance)</code>
+pairs, an SQLite result cache, a PyO3 extension exposing <code>specialize</code>, and the
+ParamILS-compatible parameter-file syntax.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="-cli"><a class="header" href="#-cli">⌨️ CLI</a></h1>
 <p>One binary with two sub-commands: <code>run</code> tunes, <code>db</code> exports a cache.</p>
@@ -695,6 +950,7 @@ by itself move the search: once the home base stops moving, every later round sa
 around a fixed point. That asymmetry is the reason for the knobs in the next section, and the source
 of the failure they were added to fix.</p>
 <hr>
+<p><a id="escaping"></a></p>
 <h2 id="-escaping-a-frozen-home-base"><a class="header" href="#-escaping-a-frozen-home-base">🪂 Escaping a frozen home base</a></h2>
 <p>The acceptance criterion only ever replaces the home base with an at-least-as-good local optimum,
 so on its own it cannot move the search uphill: once a strong local optimum is found, every later

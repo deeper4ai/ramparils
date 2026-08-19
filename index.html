@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5dd060c1.js";
+            window.path_to_searchindex_js = "searchindex-03f54fae.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-28bd6c43.js"></script>
+        <script src="toc-8d39ea3d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -185,6 +185,33 @@
 automated algorithm configuration via Iterated Local Search.</p>
 <p>Used as the inner tuner in <a href="https://github.com/ai4reason/grackle">Grackle</a>, a strategy portfolio
 invention system for automated reasoning solvers.</p>
+<p><strong>Current release: v0.2.0</strong> (2026-08-19) · <a href="changelog.html">changelog</a> ·
+<a href="https://github.com/deeper4ai/ramparils">sources and issues on GitHub</a> ·
+<a href="installation.html">installation</a></p>
+<pre><code class="language-bash">pip install ramparils                                          # Python extension
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.2.0   # CLI
+</code></pre>
+<h2 id="-whats-new-in-020"><a class="header" href="#-whats-new-in-020">📦 What’s new in 0.2.0</a></h2>
+<ul>
+<li><strong>One command-line tool, two sub-commands.</strong> <code>ramparils run scenario.yaml</code>
+tunes; <code>ramparils db cache.dbcache</code> exports what a result cache holds. This
+replaces <code>--scenariofile</code> and the separate <code>ramparils-db</code> binary, so <strong>0.2.0
+is not CLI-compatible with 0.1.x</strong> — scenario files, parameter files, caches
+and the Python API are unchanged, only the invocation moves.
+See <a href="usage/cli.html">CLI</a>.</li>
+<li><strong>A search that can climb out of a local optimum.</strong> The acceptance criterion
+alone could only ever move downhill, so a strong local optimum ended the
+useful part of a run. Soft acceptance within a tolerance, stagnation-triggered
+restarts, a choice of restart target, and ParamILS’s random probes now
+address it — all off by default.
+See <a href="reference/algorithm.html#escaping">Algorithm</a>.</li>
+<li><strong>Provenance.</strong> <code>ramparils --version</code> and the header of every debug log carry
+the git revision the binary was built from, with a <code>-dirty</code> marker when the
+worktree was not clean. A version number alone never said which code ran.</li>
+<li><strong><code>ramparils db confs</code></strong> recovers the configuration behind each strategy hash
+in a cache, so a <code>.dbcache</code> is no longer a pile of opaque hashes.</li>
+</ul>
+<p>Full detail, including the earlier releases, is in the <a href="changelog.html">changelog</a>.</p>
 <h2 id="-what-it-does"><a class="header" href="#-what-it-does">💡 What it does</a></h2>
 <p>Given a target algorithm with configurable parameters, RamParILS searches for the parameter
 setting that minimises runtime or a numeric solution cost on a set of training instances.
@@ -236,6 +263,8 @@ for what each box does and for the FocusedILS fidelity schedule.</p>
 <li><a href="reference/algorithm.html">Algorithm</a></li>
 <li><a href="reference/params.html">Parameter file format</a></li>
 <li><a href="reference/protocol.html">Solver wrapper protocol</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="https://github.com/deeper4ai/ramparils">GitHub repository</a></li>
 </ul>
 <h2 id="-acknowledgements"><a class="header" href="#-acknowledgements">🤝 Acknowledgements</a></h2>
 <p>This project is part of <a href="https://deeper4ai.github.io/">DEEPER</a> and supported by the <a href="https://www.renaissancephilanthropy.org/deeper-exploratory-engine-for-precise-expert-reasoning">DEEPER grant</a> from Renaissance Philanthropy.</p>
