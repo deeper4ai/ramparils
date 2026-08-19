@@ -32,8 +32,16 @@ include a random seed.
 - `src/main.rs`: the CLI — `run` and `db` sub-commands, and all of the clap
   structure; tuning options come from the scenario.
 - `src/db.rs`: read-only export of a `.dbcache` (`solved`, `status`, `confs`).
+- `src/lib.rs`: crate root. Signal handling, the elapsed-time clock, debug and
+  crash logging, and the `GIT_REVISION` / `BUILD_INFO` constants.
 - `src/python.rs`: optional PyO3 bindings.
+- `build.rs`: stamps the git revision and build profile into those constants,
+  with `rerun-if-changed` on `.git/HEAD` and `.git/index`. A binary that
+  reports the wrong revision is worse than one that reports none, so treat
+  this as behaviour, not build glue.
 - `tests/`: integration tests; module-level unit tests live beside the code.
+- `docs/figures/`: each figure keeps its source beside it and the command to
+  regenerate it in that source's header.
 
 Keep shared behavior in the library modules. The CLI and Python interface
 should remain thin adapters over the same `Scenario` and ILS implementation.
@@ -46,11 +54,20 @@ cargo fmt --check
 cargo clippy --all-targets --all-features
 cargo build --release
 maturin develop
-./docs-build.sh
+./docs-build.sh          # ./docs-serve.sh to preview, ./docs-deploy.sh to publish
 ```
 
 The E prover integration test may require external executables and can be
 slower than unit tests. State explicitly when it was not run.
+
+The tree is rustfmt-clean and `cargo fmt --check` passes; `rustfmt.toml` sets
+`max_width = 120` and explains why. It was hand-formatted until v0.2.0, so any
+commit before that will show a large diff against rustfmt — that is history,
+not a regression.
+
+`pip-build.sh` and `pip-upload.sh` build and publish the Python wheel;
+`devel-reinstall.sh` reinstalls it locally. Publishing is a deliberate act —
+run them only when asked.
 
 ## Commits
 
@@ -67,7 +84,8 @@ the work. Do not falsely attribute work to another assistant.
 
 ## Compatibility
 
-- Rust edition: 2024; minimum documented Rust version: 1.85.
+- Rust edition: 2024; MSRV 1.85, declared as `rust-version` in `Cargo.toml`
+  so cargo enforces it rather than the docs merely claiming it.
 - Python: 3.9+ through the `python` Cargo feature.
 - Keep `Cargo.toml` and `pyproject.toml` versions synchronized.
 - Cutting a release touches five places, and the last two are the ones that
@@ -93,5 +111,7 @@ the work. Do not falsely attribute work to another assistant.
   update integration tests when behavior crosses module boundaries.
 - Run formatting and the narrowest relevant tests after edits, then broaden
   verification according to the change's risk.
-- Update README and `docs/` when changing public CLI, Python, scenario,
-  parameter, cache, or wrapper behavior.
+- Update README, `docs/` and `CHANGELOG.md` when changing public CLI, Python,
+  scenario, parameter, cache, or wrapper behavior. Changelog entries go under
+  `## [Unreleased]`; the published site includes that file, so an entry is
+  visible before it is released.
