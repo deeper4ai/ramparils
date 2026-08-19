@@ -70,6 +70,12 @@ the work. Do not falsely attribute work to another assistant.
 - Rust edition: 2024; minimum documented Rust version: 1.85.
 - Python: 3.9+ through the `python` Cargo feature.
 - Keep `Cargo.toml` and `pyproject.toml` versions synchronized.
+- Cutting a release touches five places, and the last two are the ones that
+  rot: `Cargo.toml`, `pyproject.toml`, the `CHANGELOG.md` heading and its link
+  block, the `--version` examples in `docs/usage/cli.md`, and the **current
+  release line, install one-liner and "What's new" section in `docs/index.md`**,
+  which is the published landing page. Tags are annotated, `RamParILS vX.Y.Z`,
+  on the `chore: release` commit.
 - Preserve the documented parameter-file syntax and solver wrapper protocol.
 - Scenario fields are the single source of truth for tuning options.
 - SQLite schema changes must include a migration path for existing caches.

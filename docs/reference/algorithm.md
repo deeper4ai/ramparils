@@ -46,6 +46,8 @@ of the failure they were added to fix.
 
 ---
 
+<a id="escaping"></a>
+
 ## 🪂 Escaping a frozen home base
 
 The acceptance criterion only ever replaces the home base with an at-least-as-good local optimum,

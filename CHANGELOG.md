@@ -9,7 +9,13 @@ they describe what changed rather than what was announced at the time.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- The changelog is published with the documentation, at
+  `deeper4ai.github.io/ramparils`. `docs/changelog.md` is a one-line mdBook
+  include of this file, so there is still one source of truth.
+- The landing page carries the current release, an install one-liner pinned to
+  the tag, a "What's new" section and a link to the GitHub repository.
 
 ## [0.2.0] — 2026-08-19
 

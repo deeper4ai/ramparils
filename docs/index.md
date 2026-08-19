@@ -6,6 +6,37 @@ automated algorithm configuration via Iterated Local Search.
 Used as the inner tuner in [Grackle](https://github.com/ai4reason/grackle), a strategy portfolio
 invention system for automated reasoning solvers.
 
+**Current release: v0.2.0** (2026-08-19) · [changelog](changelog.md) ·
+[sources and issues on GitHub](https://github.com/deeper4ai/ramparils) ·
+[installation](installation.md)
+
+```bash
+pip install ramparils                                          # Python extension
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.2.0   # CLI
+```
+
+## 📦 What's new in 0.2.0
+
+- **One command-line tool, two sub-commands.** `ramparils run scenario.yaml`
+  tunes; `ramparils db cache.dbcache` exports what a result cache holds. This
+  replaces `--scenariofile` and the separate `ramparils-db` binary, so **0.2.0
+  is not CLI-compatible with 0.1.x** — scenario files, parameter files, caches
+  and the Python API are unchanged, only the invocation moves.
+  See [CLI](usage/cli.md).
+- **A search that can climb out of a local optimum.** The acceptance criterion
+  alone could only ever move downhill, so a strong local optimum ended the
+  useful part of a run. Soft acceptance within a tolerance, stagnation-triggered
+  restarts, a choice of restart target, and ParamILS's random probes now
+  address it — all off by default.
+  See [Algorithm](reference/algorithm.md#escaping).
+- **Provenance.** `ramparils --version` and the header of every debug log carry
+  the git revision the binary was built from, with a `-dirty` marker when the
+  worktree was not clean. A version number alone never said which code ran.
+- **`ramparils db confs`** recovers the configuration behind each strategy hash
+  in a cache, so a `.dbcache` is no longer a pile of opaque hashes.
+
+Full detail, including the earlier releases, is in the [changelog](changelog.md).
+
 ## 💡 What it does
 
 Given a target algorithm with configurable parameters, RamParILS searches for the parameter
@@ -58,6 +89,8 @@ for what each box does and for the FocusedILS fidelity schedule.
 - [Algorithm](reference/algorithm.md)
 - [Parameter file format](reference/params.md)
 - [Solver wrapper protocol](reference/protocol.md)
+- [Changelog](changelog.md)
+- [GitHub repository](https://github.com/deeper4ai/ramparils)
 
 ## 🤝 Acknowledgements
 

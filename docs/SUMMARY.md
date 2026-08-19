@@ -3,6 +3,7 @@
 [Introduction](index.md)
 
 - [Installation](installation.md)
+- [Changelog](changelog.md)
 - [Usage]()
   - [CLI](usage/cli.md)
   - [Python API](usage/python.md)
