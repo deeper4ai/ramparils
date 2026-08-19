@@ -9,8 +9,17 @@ they describe what changed rather than what was announced at the time.
 
 ## [Unreleased]
 
-Everything since `v0.1.3` (2026-08-06). This is the release the escape
-mechanism, the provenance stamping and the reworked documentation land in.
+Nothing yet.
+
+## [0.2.0] — 2026-08-19
+
+The escape mechanism, the provenance stamping, a unified CLI and a reworked
+set of documents.
+
+**Upgrading**: the CLI is not compatible with 0.1.x. `ramparils run
+<scenario.yaml>` replaces `ramparils --scenariofile <scenario.yaml>`, and the
+`ramparils-db` binary is now `ramparils db`. Scenario files, parameter files,
+caches and the Python API are unchanged, so only the invocation moves.
 
 ### Added
 
@@ -193,7 +202,8 @@ BasicILS and FocusedILS, parallel evaluation over `(neighbour, instance)`
 pairs, an SQLite result cache, a PyO3 extension exposing `specialize`, and the
 ParamILS-compatible parameter-file syntax.
 
-[Unreleased]: https://github.com/deeper4ai/ramparils/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/deeper4ai/ramparils/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/deeper4ai/ramparils/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/deeper4ai/ramparils/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/deeper4ai/ramparils/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/deeper4ai/ramparils/releases/tag/v0.1.0
