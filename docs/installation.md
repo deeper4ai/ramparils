@@ -6,9 +6,9 @@
 pip install ramparils
 ```
 
-## 🦀 CLI binaries
+## 🦀 Command-line tool
 
-Clone the repository and install both command-line tools:
+Clone the repository and install the command-line tool:
 
 ```bash
 git clone https://github.com/deeper4ai/ramparils.git
@@ -55,5 +55,5 @@ ramparils --help
 ramparils db --help
 ```
 
-The Python package requires Python 3.9 or newer. The command-line tools do not
+The Python package requires Python 3.9 or newer. The command-line tool does not
 require Python.

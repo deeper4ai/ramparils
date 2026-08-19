@@ -12,8 +12,8 @@
 
 RamParILS is a parallel Rust implementation of ParamILS. It is exposed as:
 
-- the `ramparils` CLI;
-- `ramparils db`, its cache-export sub-commands;
+- the `ramparils` CLI: `ramparils run <scenario.yaml>` to tune, and
+  `ramparils db <cache>` to export a result cache;
 - a Python extension built with PyO3 and maturin.
 
 The primary use case is strategy specialization inside Grackle. Target
@@ -29,9 +29,10 @@ include a random seed.
 - `src/eval.rs`: parallel solver execution and result parsing.
 - `src/ils.rs`: BasicILS, FocusedILS, perturbation, local search, capping, and
   iterative deepening.
-- `src/main.rs`: main CLI; tuning options come from the scenario.
+- `src/main.rs`: the CLI — `run` and `db` sub-commands, and all of the clap
+  structure; tuning options come from the scenario.
+- `src/db.rs`: read-only export of a `.dbcache` (`solved`, `status`, `confs`).
 - `src/python.rs`: optional PyO3 bindings.
-- `src/bin/ramparils_db.rs`: cache inspection and export commands.
 - `tests/`: integration tests; module-level unit tests live beside the code.
 
 Keep shared behavior in the library modules. The CLI and Python interface

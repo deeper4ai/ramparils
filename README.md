@@ -86,7 +86,7 @@ above exist to prevent.
 
 ## ⚙️ Installation
 
-### 🦀 Command-line tools
+### 🦀 Command-line tool
 
 Build the `ramparils` binary with Cargo:
 
@@ -96,7 +96,7 @@ cd ramparils
 cargo build --release
 ```
 
-The executables are written to:
+The executable is written to:
 
 ```text
 target/release/ramparils
