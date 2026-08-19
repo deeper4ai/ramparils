@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7b1882f0.js";
+            window.path_to_searchindex_js = "searchindex-5dd060c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28bd6c43.js"></script>
@@ -205,7 +205,7 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 <tbody>
 <tr><td>Evaluation</td><td>Sequential</td><td><strong>Parallel</strong> over all <code>(neighbour, instance)</code> pairs</td></tr>
 <tr><td>Cache</td><td>In-memory, per-run</td><td><strong>Persistent SQLite</strong>, shared across runs, self-describing</td></tr>
-<tr><td>Cache inspection</td><td>—</td><td><code>ramparils-db solved | status | strategies</code></td></tr>
+<tr><td>Cache inspection</td><td>—</td><td><code>ramparils db solved | status | confs</code></td></tr>
 <tr><td>Python API</td><td>subprocess call</td><td><strong>Native extension</strong> via PyO3</td></tr>
 <tr><td>Search modes</td><td>BasicILS, FocusedILS</td><td>BasicILS, FocusedILS, <code>random</code> (ParamILS’s <code>pert_rand</code>)</td></tr>
 <tr><td>Escaping a local optimum</td><td>Random restart at fixed probability (<code>p_restart</code>), <code>R</code> random probes</td><td>Both, <strong>plus soft acceptance within a tolerance and stagnation-triggered restarts</strong></td></tr>

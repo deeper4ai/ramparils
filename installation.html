@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7b1882f0.js";
+            window.path_to_searchindex_js = "searchindex-5dd060c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-28bd6c43.js"></script>
@@ -184,18 +184,17 @@
 <h2 id="-python-extension-pip"><a class="header" href="#-python-extension-pip">📦 Python extension (pip)</a></h2>
 <pre><code class="language-bash">pip install ramparils
 </code></pre>
-<h2 id="-cli-binaries"><a class="header" href="#-cli-binaries">🦀 CLI binaries</a></h2>
-<p>Clone the repository and install both command-line tools:</p>
+<h2 id="-command-line-tool"><a class="header" href="#-command-line-tool">🦀 Command-line tool</a></h2>
+<p>Clone the repository and install the command-line tool:</p>
 <pre><code class="language-bash">git clone https://github.com/deeper4ai/ramparils.git
 cd ramparils
 cargo install --path . --locked
 </code></pre>
-<p>This installs <code>ramparils</code> and <code>ramparils-db</code> into Cargo’s binary directory,
+<p>This installs the <code>ramparils</code> binary into Cargo’s binary directory,
 normally <code>~/.cargo/bin</code>. Make sure that directory is on <code>PATH</code>.</p>
 <p>For a repository-local build instead:</p>
 <pre><code class="language-bash">cargo build --release --locked
 ./target/release/ramparils --help
-./target/release/ramparils-db --help
 </code></pre>
 <p>Both methods require <a href="https://rustup.rs">Rust 1.85+</a>.</p>
 <h2 id="-python-extension-from-source"><a class="header" href="#-python-extension-from-source">🛠️ Python extension (from source)</a></h2>
@@ -212,9 +211,9 @@ Using a virtual environment is recommended.</p>
 </code></pre>
 <p>Verify a Cargo installation:</p>
 <pre><code class="language-bash">ramparils --help
-ramparils-db --help
+ramparils db --help
 </code></pre>
-<p>The Python package requires Python 3.9 or newer. The command-line tools do not
+<p>The Python package requires Python 3.9 or newer. The command-line tool does not
 require Python.</p>
 
                     </main>
