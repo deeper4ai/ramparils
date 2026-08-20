@@ -69,7 +69,7 @@ fn log_incumbent(enabled: bool, incumbent: &Config, score: f64, n_runs: usize, s
 /// home base can change every round, and the diff is enough to replay the
 /// trajectory. Replacements with no *effective* change (a differing value on a
 /// parameter whose guard is off) produce an empty diff and are not logged.
-fn log_home_base(enabled: bool, previous: &Config, home_base: &Config, score: f64, n_runs: usize, space: &ParamSpace) {
+fn log_home_base(enabled: bool, previous: &Config, home_base: &Config, score: &ConfigEvaluation, n_runs: usize, space: &ParamSpace) {
     if !enabled {
         return;
     }
@@ -81,10 +81,40 @@ fn log_home_base(enabled: bool, previous: &Config, home_base: &Config, score: f6
     crate::debug_line(
         true,
         &format!(
-            "[{:8.2}s] ils: new home base: hash={hash:016x} score={score:.6} instances={n_runs} changes: {changes}",
-            crate::t()
+            "[{:8.2}s] ils: new home base: hash={hash:016x} score={} instances={n_runs} changes: {changes}",
+            crate::t(),
+            score.display(n_runs)
         ),
     );
+}
+
+/// Per-run counters behind the end-of-run `ils: summary` line.
+///
+/// Globals rather than a `&mut Stats` threaded through six signatures: they are
+/// bumped on the hot path from three different functions, and one process runs
+/// one tuning run. [`run`] resets them on entry.
+mod counters {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    pub static EVALS: AtomicUsize = AtomicUsize::new(0);
+    pub static CAPPED: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn reset() {
+        EVALS.store(0, Relaxed);
+        CAPPED.store(0, Relaxed);
+    }
+    /// One configuration evaluated to a verdict — completed or capped. A
+    /// neighbour cancelled mid-flight because another one improved first
+    /// reached no verdict and is deliberately not counted.
+    pub fn eval(capped: bool) {
+        EVALS.fetch_add(1, Relaxed);
+        if capped {
+            CAPPED.fetch_add(1, Relaxed);
+        }
+    }
+    pub fn get() -> (usize, usize) {
+        (EVALS.load(Relaxed), CAPPED.load(Relaxed))
+    }
 }
 
 fn format_argument_changes(current: &Config, next: &Config, space: &ParamSpace) -> String {
@@ -208,6 +238,7 @@ pub fn run(
     cutoff_time: f64,
     cache: &mut Cache,
 ) -> Result<(Config, f64)> {
+    counters::reset();
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
     let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug);
     let mut rng = rand::thread_rng();
@@ -250,7 +281,9 @@ pub fn run(
         None => random_config(space, &mut rng),
     };
 
-    let mut current_score = evaluate_config(
+    // `None` for the bound: nothing is known yet to prune against, so this one
+    // is always complete.
+    let mut current_eval = evaluate_config_outcome(
         &current,
         &instances[..n_runs],
         &scheduler,
@@ -280,32 +313,35 @@ pub fn run(
             cache,
             options,
             space,
-            Some(current_score),
+            Some(current_eval.score),
             deadline,
         )?;
-        if dominates(probe_score, n_runs, current_score, n_runs, options) {
+        // A capped probe scores above the bound and so above `current`, and
+        // cannot dominate: anything that gets through here ran to completion.
+        if dominates(probe_score, n_runs, current_eval.score, n_runs, options) {
             crate::debug_line(
                 options.debug.main,
                 &format!(
-                    "[{:8.2}s] ils: random probe improves: score={probe_score:.6} (was {current_score:.6}) instances={n_runs}",
-                    crate::t()
+                    "[{:8.2}s] ils: random probe improves: score={probe_score:.6} (was {}) instances={n_runs}",
+                    crate::t(),
+                    current_eval.display(n_runs)
                 ),
             );
             current = probe;
-            current_score = probe_score;
+            current_eval = ConfigEvaluation::complete(probe_score, n_runs);
         }
     }
 
     let mut incumbent = current.clone();
-    let mut incumbent_score = current_score;
+    let mut incumbent_score = current_eval.score;
     // Kept for the home-base diff below: `incumbent` may be replaced by the
     // first descent, and `current` is moved into it.
     let initial_config = current.clone();
 
     // --- First BLS ---
-    let (lm, lm_score) = basic_local_search(
+    let (lm, lm_eval, first_steps) = basic_local_search(
         current,
-        current_score,
+        current_eval,
         instances,
         n_runs,
         &scheduler,
@@ -316,23 +352,33 @@ pub fn run(
         &mut rng,
         deadline,
     )?;
-    if dominates(lm_score, n_runs, incumbent_score, n_runs, options) {
+    // Counts `ils: new incumbent` lines — replacements of the starting one.
+    let mut n_incumbents = 0usize;
+    if dominates(lm_eval.score, n_runs, incumbent_score, n_runs, options) {
         incumbent = lm.clone();
-        incumbent_score = lm_score;
+        incumbent_score = lm_eval.score;
+        n_incumbents += 1;
         log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
     }
     let mut last_lm = lm;
-    let mut last_lm_score = lm_score;
-    // Fidelity at which `last_lm_score` was measured; kept equal to `n_runs`.
+    let mut last_lm_eval = lm_eval;
+    // Fidelity at which `last_lm_eval` was measured; kept equal to `n_runs`.
     let mut last_lm_runs = n_runs;
     log_home_base(
         options.debug.main,
         &initial_config,
         &last_lm,
-        last_lm_score,
+        &last_lm_eval,
         n_runs,
         space,
     );
+
+    // Round accounting for the end-of-run summary.  The first descent above
+    // counts as a round: it is a descent, and it can never be gated, which is
+    // itself worth seeing in the ratio.
+    let mut n_rounds = 1usize;
+    let mut n_searched = usize::from(first_steps > 0);
+    let mut n_gated = 0usize;
 
     // Consecutive rounds whose local optimum failed the acceptance criterion,
     // which is what `restart_failures` counts.
@@ -362,7 +408,7 @@ pub fn run(
             perturbation(last_lm.clone(), options.perturbation_strength, space, &mut rng)
         };
         current = perturbed;
-        current_score = evaluate_config(
+        current_eval = evaluate_config_outcome(
             &current,
             &instances[..n_runs],
             &scheduler,
@@ -372,6 +418,10 @@ pub fn run(
             Some(incumbent_score),
             deadline,
         )?;
+        // A capped start is what gates a round: every neighbour that does not
+        // finish the whole set under the bound is invisible from here, so the
+        // descent may never get going at all.
+        let gated_start = !current_eval.complete;
 
         if Instant::now() >= deadline || crate::interrupted() {
             break;
@@ -388,9 +438,9 @@ pub fn run(
                 ),
             );
         }
-        let (new_lm, new_lm_score) = basic_local_search(
+        let (new_lm, new_lm_eval, steps) = basic_local_search(
             current,
-            current_score,
+            current_eval,
             instances,
             n_runs,
             &scheduler,
@@ -401,15 +451,22 @@ pub fn run(
             &mut rng,
             deadline,
         )?;
+        n_rounds += 1;
+        if steps > 0 {
+            n_searched += 1;
+        } else if gated_start {
+            n_gated += 1;
+        }
 
-        // Update incumbent.  `new_lm_score`, `incumbent_score` and
-        // `last_lm_score` are all measured on `instances[..n_runs]` here — the
+        // Update incumbent.  `new_lm_eval`, `incumbent_score` and
+        // `last_lm_eval` are all measured on `instances[..n_runs]` here — the
         // fidelity block at the end of the loop re-measures the two retained
         // states together, so the comparisons below never cross fidelities.
-        let incumbent_survived = !dominates(new_lm_score, n_runs, incumbent_score, n_runs, options);
+        let incumbent_survived = !dominates(new_lm_eval.score, n_runs, incumbent_score, n_runs, options);
         if !incumbent_survived {
             incumbent = new_lm.clone();
-            incumbent_score = new_lm_score;
+            incumbent_score = new_lm_eval.score;
+            n_incumbents += 1;
             log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
         }
 
@@ -420,13 +477,13 @@ pub fn run(
         if options.approach == Approach::Random {
             let previous_home_base = last_lm.clone();
             last_lm = new_lm;
-            last_lm_score = new_lm_score;
+            last_lm_eval = new_lm_eval;
             last_lm_runs = n_runs;
             log_home_base(
                 options.debug.main,
                 &previous_home_base,
                 &last_lm,
-                last_lm_score,
+                &last_lm_eval,
                 n_runs,
                 space,
             );
@@ -436,22 +493,23 @@ pub fn run(
         let previous_home_base = last_lm.clone();
         let (accepted, accepted_score, took_new) = acceptance_criterion(
             new_lm,
-            new_lm_score,
+            new_lm_eval.score,
             n_runs,
             last_lm.clone(),
-            last_lm_score,
+            last_lm_eval.score,
             last_lm_runs,
             incumbent_score,
             options,
         );
         last_lm = accepted;
-        last_lm_score = accepted_score;
+        last_lm_eval = if took_new { new_lm_eval } else { last_lm_eval };
+        debug_assert_eq!(last_lm_eval.score, accepted_score);
         last_lm_runs = n_runs;
         log_home_base(
             options.debug.main,
             &previous_home_base,
             &last_lm,
-            last_lm_score,
+            &last_lm_eval,
             n_runs,
             space,
         );
@@ -484,7 +542,7 @@ pub fn run(
             // full evaluation of one.  A pruned evaluation yields a score above
             // the cap, which is exactly the "bad home base" the next round is
             // meant to escape from anyway.
-            let restarted_score = evaluate_config(
+            let restarted_eval = evaluate_config_outcome(
                 &restarted,
                 &instances[..n_runs],
                 &scheduler,
@@ -497,7 +555,7 @@ pub fn run(
             crate::debug_line(
                 options.debug.main,
                 &format!(
-                    "[{:8.2}s] ils: restart: reason={} target={} strength={} score={restarted_score:.6} instances={n_runs} after {rejections} rejected local optima",
+                    "[{:8.2}s] ils: restart: reason={} target={} strength={} score={} instances={n_runs} after {rejections} rejected local optima",
                     crate::t(),
                     reason.as_str(),
                     match options.restart_target {
@@ -508,18 +566,19 @@ pub fn run(
                         RestartTarget::Incumbent => options.restart_strength,
                         RestartTarget::Random => 0,
                     },
+                    restarted_eval.display(n_runs),
                 ),
             );
             let before_restart = last_lm.clone();
             last_lm = restarted;
-            last_lm_score = restarted_score;
+            last_lm_eval = restarted_eval;
             last_lm_runs = n_runs;
             rejections = 0;
             log_home_base(
                 options.debug.main,
                 &before_restart,
                 &last_lm,
-                last_lm_score,
+                &last_lm_eval,
                 n_runs,
                 space,
             );
@@ -591,18 +650,30 @@ pub fn run(
 
                 n_runs = next;
                 incumbent_score = next_evaluation.score;
-                last_lm_score = home_base_score;
+                // Both re-measurements above are guarded on `complete`, so the
+                // home base's new score is a full one at the new fidelity.
+                last_lm_eval = ConfigEvaluation::complete(home_base_score, next);
                 last_lm_runs = next;
                 crate::debug_line(
                     options.debug.main,
                     &format!(
-                        "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6} home_base_score={last_lm_score:.6}",
+                        "[{:8.2}s] ils: n_runs increased to {n_runs}/{n_total} incumbent_score={incumbent_score:.6} home_base_score={home_base_score:.6}",
                         crate::t()
                     ),
                 );
             }
         }
     }
+
+    let (evals, capped) = counters::get();
+    crate::debug_line(
+        options.debug.main,
+        &format!(
+            "[{:8.2}s] ils: summary rounds={n_rounds} searched={n_searched} gated={n_gated} \
+             incumbents={n_incumbents} evals={evals} capped={capped}",
+            crate::t()
+        ),
+    );
 
     Ok((incumbent, incumbent_score))
 }
@@ -773,9 +844,34 @@ fn evaluate_config(
     .score)
 }
 
+/// A score, and whether it is one.
+///
+/// `score` is a mean over `n_done` instances. When `complete` is false, adaptive
+/// capping stopped the evaluation early and those `n_done` are the ones that
+/// happened to finish first — the fastest — so the mean **understates** the true
+/// mean and the real score is worse. A capped score is therefore a lower bound,
+/// not a measurement, and [`display`](ConfigEvaluation::display) renders it as
+/// `>2.698475 (312/473)` so a log can never be read as if it were the latter.
+#[derive(Clone, Copy)]
 struct ConfigEvaluation {
     score: f64,
     complete: bool,
+    n_done: usize,
+}
+
+impl ConfigEvaluation {
+    fn complete(score: f64, n_done: usize) -> Self {
+        Self { score, complete: true, n_done }
+    }
+
+    /// `2.698475` when complete, `>2.698475 (312/473)` when capped.
+    fn display(&self, n_instances: usize) -> String {
+        if self.complete {
+            format!("{:.6}", self.score)
+        } else {
+            format!(">{:.6} ({}/{})", self.score, self.n_done, n_instances)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -790,10 +886,7 @@ fn evaluate_config_outcome(
     deadline: Instant,
 ) -> Result<ConfigEvaluation> {
     if instances.is_empty() {
-        return Ok(ConfigEvaluation {
-            score: 0.0,
-            complete: true,
-        });
+        return Ok(ConfigEvaluation::complete(0.0, 0));
     }
 
     let eval_config = active_config(config, space);
@@ -826,9 +919,12 @@ fn evaluate_config_outcome(
 /// fully-evaluated neighbour that dominates the current config (in
 /// evaluation-completion order).  Resets the scheduler when a better
 /// neighbour is found (so we don't wait for the rest).
+/// Returns the local optimum, its evaluation, and how many moves were accepted
+/// getting there.  A step count of zero on a capped start is a *gated* round:
+/// the descent never moved because nothing in the neighbourhood could be seen.
 fn basic_local_search(
     start: Config,
-    start_score: f64,
+    start_eval: ConfigEvaluation,
     instances: &[(i64, String)],
     n_runs: usize,
     scheduler: &Scheduler,
@@ -838,11 +934,14 @@ fn basic_local_search(
     incumbent_score: f64,
     rng: &mut impl Rng,
     deadline: Instant,
-) -> Result<(Config, f64)> {
+) -> Result<(Config, ConfigEvaluation, usize)> {
     let eval_instances = &instances[..n_runs];
     let n_instances = n_runs;
     let mut current = start;
-    let mut current_score = start_score;
+    // Only ever replaced by a neighbour that ran to completion, so after the
+    // first accepted step this is a real score even if `start_eval` was capped.
+    let mut current_eval = start_eval;
+    let mut steps = 0usize;
     let mut changed = true;
 
     while changed && Instant::now() < deadline && !crate::interrupted() {
@@ -948,6 +1047,7 @@ fn basic_local_search(
                     );
                     done[nid] = true;
                     n_done += 1;
+                    counters::eval(true);
                     continue;
                 }
             }
@@ -955,9 +1055,10 @@ fn basic_local_search(
             if runtimes[nid].len() == n_instances {
                 done[nid] = true;
                 n_done += 1;
+                counters::eval(false);
                 let score = compute_score(&runtimes[nid], &qualities[nid], options);
 
-                if dominates(score, n_instances, current_score, n_instances, options) {
+                if dominates(score, n_instances, current_eval.score, n_instances, options) {
                     // Accept — stop evaluating the rest
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
@@ -968,8 +1069,9 @@ fn basic_local_search(
                     crate::debug_line(
                         options.debug.main,
                         &format!(
-                            "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {current_score:.6})",
-                            crate::t()
+                            "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {})",
+                            crate::t(),
+                            current_eval.display(n_instances)
                         ),
                     );
                     crate::debug_line(
@@ -981,7 +1083,8 @@ fn basic_local_search(
                         ),
                     );
                     current = neighbors[nid].clone();
-                    current_score = score;
+                    current_eval = ConfigEvaluation::complete(score, n_instances);
+                    steps += 1;
                     changed = true;
                     break 'collect;
                 }
@@ -997,12 +1100,16 @@ fn basic_local_search(
             }
             crate::debug_line(
                 options.debug.main,
-                &format!("[{:8.2}s] ils: bls local optimum score={current_score:.6}", crate::t()),
+                &format!(
+                    "[{:8.2}s] ils: bls local optimum score={}",
+                    crate::t(),
+                    current_eval.display(n_instances)
+                ),
             );
         }
     }
 
-    Ok((current, current_score))
+    Ok((current, current_eval, steps))
 }
 
 /// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
@@ -1084,7 +1191,8 @@ fn collect_one(
     } else {
         compute_score(&runtimes, &qualities, options)
     };
-    Ok(ConfigEvaluation { score, complete })
+    counters::eval(!complete);
+    Ok(ConfigEvaluation { score, complete, n_done: runtimes.len() })
 }
 
 /// Compute a scalar score from per-instance results.
