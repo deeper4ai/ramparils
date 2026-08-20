@@ -334,3 +334,324 @@ that the subset preserves. The 473 are **not** a uniform miniature of the
 benchmark — they carry 8 of 488 `meti-tarski` and 103 of 144 `sc` — so the same
 substitution should not be assumed for a question whose answer lives in a family
 the subset under-samples.
+
+---
+
+# Proposed — random configuration sampling (2026-08-20)
+
+Items raised while checking whether `approach: random` is usable as a
+random-restart baseline for the `expericon/ramparils-primo-cont` work. It is
+implemented and it works — a 45 s smoke run over 21 instances
+(`work26/ramparils/primo/scenario-random.yml`, 2026-08-20) logged 17
+`ils: random restart` lines, 18 `ils: new home base` lines and 0 `ils: restart:`
+lines, which is exactly the intended shape. The first four items are about
+`random_config` (`src/ils.rs:1261`), whose sampler is uniform over the **full
+cross-product** and rejection-tests the **unprojected** draw; the last is about
+what the run header claims.
+
+The function today, in full:
+
+```rust
+fn random_config(space: &ParamSpace, rng: &mut impl Rng) -> Config {
+    loop {
+        let cfg: Config = space
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.domain[rng.gen_range(0..p.domain.len())].clone()))
+            .collect();
+        if !space.is_forbidden(&cfg) {
+            return cfg;
+        }
+    }
+}
+```
+
+Line references below are against **`ea6bed1`** (v0.2.0 plus the docs sweep);
+the pre-v0.2.0 rustfmt pass moved every number in this file's neighbourhood
+without changing behaviour, so re-resolve by symbol if they drift again.
+
+Four call sites, so anything below affects more than `approach: random`: the
+initial configuration when the scenario supplies none (`ils.rs:250`),
+`random_probes` (`275`), the per-round draw under `Approach::Random` (`352`),
+and `restart_target: random` (`480`).
+
+**What is already correct, and must stay correct.** Conditionals *are* honoured
+everywhere downstream: `evaluate_config` projects through
+`active_config(config, space)` before `hash_config` and before dispatch
+(`ils.rs:799-800`), so inactive values never reach the wrapper and never enter
+the cache key; `neighbourhood` iterates active params only (`ils.rs:617`), so
+BLS and `perturbation` cannot move an inactive parameter. None of the items
+below should change any of that — the shadow values in the returned `Config`
+are what let a draw be projected consistently later.
+
+## ⬜ Bound the rejection loop and fall back to constructive sampling
+
+The `loop` has no attempt limit. Rejection sampling costs O(1/p) draws where p
+is the legal fraction of the space, so a space where forbidden clauses exclude
+almost everything **spins forever with no output and no error** — the process
+looks like it is working.
+
+This is not hypothetical: the user hit exactly this failure with the original
+Ruby ParamILS on a large space with a large forbidden set. RamParILS inherits
+the shape. It has not been observed here, and it cannot be in the primo spaces
+— `params-primo-v{1,2,3,4}.txt` and both v3 companions contain **zero**
+forbidden clauses, because that record deliberately encodes dependencies as
+conditionals instead. Any user with a genuinely constrained space is exposed.
+
+Fix in two parts:
+
+- **Cap the attempts** (a few thousand), then fail with a diagnostic naming the
+  measured rejection rate and pointing at the forbidden clauses, rather than
+  hanging. An error the user can read beats a silent hang in every case.
+- **Fall back to a constructive draw** before erroring: assign parameters in
+  dependency order, sampling each from the values that keep every
+  fully-assigned clause satisfiable, and backtrack on a dead end. That turns
+  "p is tiny" from fatal into merely slower, and it is the standard fix.
+
+Note `perturbation` and `neighbourhood` do not share the defect — they
+enumerate candidates and filter, so an over-constrained point yields an empty
+neighbourhood and `perturbation` simply breaks out (`ils.rs:644`).
+
+## ⬜ Test forbidden clauses against the active projection
+
+`random_config` calls `space.is_forbidden(&cfg)` on the **full** draw
+(`ils.rs:1268`), so a
+clause mentioning a parameter that is *inactive* in that draw can reject a
+configuration whose active projection is perfectly legal. Since only the active
+projection is ever evaluated, hashed or sent to the solver, that rejection is
+spurious.
+
+Two effects, and it is worth separating them because the first is certain and
+the second is a hypothesis:
+
+- **Certain**: it biases the sampled distribution, on top of the
+  non-uniformity in the next item.
+- **Hypothesis**: it is an *amplifier* of the hang above. Under
+  `is_forbidden(active_config(&cfg, space))` a clause naming an inactive
+  parameter cannot match at all — `config.get(param)` returns `None`, so
+  `params.rs:259`'s `config.get(param) != Some(val)` skips the clause — and the
+  projected test
+  rejects a strict subset of what the current one rejects, and the legal
+  fraction p can only go up. How much depends on whether a given space's
+  clauses mention conditional parameters, so this narrows the failure without
+  removing it. Do the previous item regardless.
+
+`neighbourhood` (`ils.rs:628`) tests the full config too, and should be changed
+with it or deliberately left alone; decide once and document which.
+
+## ⬜ Decide, and document, what `random` is uniform over
+
+Drawing every parameter independently and projecting afterwards means an active
+configuration is sampled with probability proportional to the size of the
+sub-tree its guard switches off. In `expericon`'s
+`params-primo-v3-prop.txt`, where `lra_bidirectional_row_propagation` guards two
+4-valued children:
+
+| active configuration | P(drawn) | uniform would be |
+|---|---:|---:|
+| guard `false`, children inactive | **1/2** | 1/17 |
+| each of the 16 guard-`true` cells | 1/32 | 1/17 |
+
+**8.5x over-representation of the guarded-off corner**, which is usually where
+the defaults sit — so a random-restart baseline flatters itself on any space
+whose defaults are good. `params-primo-v3.txt`, with one conditional, gives a
+mild 1.5x; the effect scales with the number and fan-out of guards.
+
+This is faithful to ParamILS, whose `init_random()` also draws each parameter
+independently, so it is not a deviation from the reference — which is an
+argument for documenting it rather than silently changing it. Either:
+
+- keep the current behaviour and **say so** in `docs/reference/algorithm.md`
+  beside the `approach: random` paragraph, so a reported baseline can be read
+  correctly; or
+- add an opt-in uniform-over-active-configurations sampler (draw the guards
+  first, then only the parameters they activate, weighting so each distinct
+  active configuration is equiprobable) and let the scenario choose.
+
+Whichever is chosen, the sampler's distribution belongs in the docs: a
+random-restart arm is a *measurement instrument*, and an instrument with an
+undocumented 8.5x bias produces numbers nobody can interpret.
+
+## ⬜ Test coverage for all of the above
+
+`random_config` has one test, `random_config_not_forbidden` (`ils.rs:1668`),
+over `forbidden_space()` (`1292`) — two parameters, no conditionals.
+`conditional_space()` (`1303`) exists but is used only by `ils.rs:1365` and
+`1379`, and **no test constructs `Approach::Random` at all**. Worth adding:
+
+- a space where forbidden clauses exclude nearly everything, asserting that
+  `random_config` **terminates** (with an error or a constructive draw) rather
+  than hanging — this is the regression test for the first item, and it needs a
+  timeout guard so a failure fails rather than hangs CI;
+- a conditional space with a clause naming an inactive parameter, asserting the
+  draw is accepted;
+- a distribution test over a small guarded space, asserting whichever
+  uniformity the third item settles on;
+- one end-to-end `Approach::Random` run asserting the acceptance criterion is
+  skipped and each round starts from a fresh draw.
+
+## ⬜ Mark or suppress options the active approach ignores
+
+The run header (`src/main.rs:201-226`) prints `fidelity:`, `perturb:` and
+`restart:` unconditionally, so a `random` run reports settings that provably do
+nothing. From the smoke run above, whose scenario sets none of them:
+
+```
+[    0.02s] approach:   random
+[    0.02s] fidelity:   initial=1 step=1
+[    0.02s] perturb:    strength=4 restart_strength=8
+[    0.02s] restart:    p=0 failures=0 target=incumbent tolerance=0 probes=0
+```
+
+What is actually inert, by approach:
+
+| option | `focused` | `basic` | `random` |
+|---|---|---|---|
+| `initial_fidelity`, `fidelity_step` | live | **inert** | **inert** |
+| `perturbation_strength` | live | live | **inert** |
+| `restart_*`, `acceptance_tolerance` | live | live | **inert** |
+| `random_probes` | live | live | live |
+
+`n_runs` is `n_total` for anything but `Focused`, so the fidelity pair is dead
+under `basic` too — this is not only a `random` problem. Under `random` the
+perturbation call is replaced outright by `random_config` (`ils.rs:347-352`),
+and the `continue` in the `Approach::Random` branch (`ils.rs:420-433`) skips
+both the acceptance criterion and the entire restart block that follows it.
+
+Preferred fix: **mark rather than omit**, reusing the `<inactive>` convention
+the config diffs already use for guarded-off parameters, so the header stays a
+complete record of what was configured while saying what will be read:
+
+```
+[    0.02s] fidelity:   <inactive under approach=random>
+[    0.02s] perturb:    <inactive under approach=random>
+```
+
+A stronger variant is worth considering separately: **warn when the scenario
+explicitly sets an option the approach ignores.** Silently accepting a
+set-but-ignored option is the same failure class as the wrapper silently
+dropping a parameter, which the wrapper-contract item above argues should be an
+error rather than a warning — a user who writes `perturbation_strength: 8` under
+`approach: random` has a mental model that is wrong, and nothing currently tells
+them.
+
+Implementation note: that variant needs more than reading the `Scenario`.
+Every one of these fields carries `#[serde(default = …)]` (`scenario.rs:148-209`),
+so after deserialization an explicitly-set value is indistinguishable from a
+defaulted one. The cheap route is to inspect the raw YAML mapping's keys before
+deserializing; the thorough one is `Option<T>` fields resolved after the
+approach is known.
+
+---
+
+# Proposed — fail fast when the run cannot possibly work (2026-08-20)
+
+A 24 h tuning run was launched on dai-07 **with no primo binary on PATH and no
+instance files in place**. It ran. It reported nothing wrong, and
+`ramparils-errors-random.log` stayed **empty**. That is the whole bug: the
+budget was spent producing a number, and only a human noticing the missing
+files caught it.
+
+## ⬜ Preflight the scenario before spending the budget
+
+Nothing checks that the run *can* work before it starts:
+
+- `load_instances` (`scenario.rs:441`) reads the instance **list** and errors if
+  that file is missing — but it never checks that any path *inside* it exists.
+  A list of 473 nonexistent `.smt2` files loads cleanly as 473 instances.
+- `algo` is never probed. It is handed to `sh -c` at evaluation time
+  (`eval.rs:403`), so a missing binary is discovered once per task, forever,
+  instead of once at startup.
+
+Add a startup preflight, before the first evaluation, that refuses to start
+when: the `algo` command is not runnable; any instance path does not exist or
+is unreadable; or a single smoke evaluation on one instance does not return a
+parseable `#%# RamParIls #%#` line. Report the first few offending paths rather
+than just a count. This is the cheapest item in this file and it would have
+turned 24 wasted hours into a one-line error.
+
+## ⬜ Abort when every evaluation returns the cutoff
+
+Why the error log stayed empty, and why the run looked healthy — there are two
+paths and both end quietly:
+
+- **Missing result line.** `parse_solver_output` (`eval.rs:488-506`) returns
+  `(cutoff_time, 0.0, "UNKNOWN")` when no `#%# RamParIls #%#` line is present,
+  which `run_evaluation` does log via `log_crash` (`eval.rs:369-372`). An empty
+  error log therefore means this path was *not* taken.
+- **So the wrapper answered "normally".** `primo_wrapper.py` evidently turns a
+  missing binary into a well-formed no-result line, which ramparils faithfully
+  records as a legitimate timeout at the cutoff. Nothing is crashing, so
+  nothing is logged.
+
+Either way the search sees **every configuration scoring exactly
+`cutoff_time`** — a perfectly flat objective — and an ILS on a flat objective
+does not fail, it just wanders. This is the same symptom the inert-parameter
+section above is about ("whole neighbourhoods scoring identically reads as a
+plateau"), now reached from a missing *binary* rather than a dead parameter,
+which is worth noting because it means the symptom does not identify the cause.
+
+Add a guard: if the first N evaluations (N ~ one neighbourhood) all return
+`cutoff_time`, or all carry the same status, abort with a diagnostic naming the
+resolved `algo` command and one example instance path. A run in which nothing
+is ever solved is never what the user meant, and detecting it costs one counter.
+
+Note this also argues the wrapper contract should be tightened at the same
+point: a wrapper that cannot find its solver should say so, not report a
+timeout. That is the `--version` / `--list-parameters` family above; this item
+is the defence for when the wrapper does not cooperate.
+
+## ⬜ Do not silently reuse a broken run's cache
+
+The same incident has a second half, and the preflight above does not cover it.
+After the bad run was noticed and the scenario fixed, the **next** run served
+its garbage straight back out of `primo-select-10s-random.dbcache`:
+
+```
+[    0.06s] eval: submitted tasks=473    hits=473    misses=0
+[    0.11s] eval: submitted tasks=15136  hits=15136  misses=0
+[    0.21s] ils: bls local optimum score=10.000000
+```
+
+Every task a cache hit, round zero complete in 0.15 s, and the score exactly the
+10 s cutoff. 15,136 / 473 = **32 configurations — the starting configuration and
+its entire neighbourhood — cached as "times out on all 473 instances".**
+
+Three things make this worse than it first looks:
+
+- **A cache hit is invisible in the score.** The run reports a normal-looking
+  number. Only `hits=N misses=0` in a debug line nobody has to read gives it
+  away, and only if the reader knows that a whole neighbourhood cannot legally
+  be free on a cold start.
+- **The poisoned region is the worst one.** It is the neighbourhood of the
+  starting configuration, i.e. the single-flip moves the first descent will
+  make. Whatever the good options are, they were all just recorded as
+  cutoff-level failures.
+- **The incumbent self-heals and the cache does not.** Any real local optimum
+  beats a cutoff score, so the run looks like it recovers -- while every
+  revisit of those 32 configurations keeps returning the fabricated value for
+  the rest of the budget.
+
+Recovery required deleting the whole cache, which also threw away every honest
+result in it. Three proposals, cheapest first:
+
+- **Report cache composition at startup.** Print entry count and the fraction of
+  entries whose runtime is at the cutoff, in the header beside `cache: opened`.
+  A cache that is 100% timeouts is then visible before the run commits to it.
+  This alone would have caught it.
+- **Refuse to serve, or at least warn on, a fully-cached cold start.** The first
+  evaluation of a run finding *every* task cached is normal on a resumed run and
+  suspicious on a fresh one; combined with "and all of them are at the cutoff"
+  it is diagnostic.
+- **Give entries enough provenance to be invalidated selectively.** The cache
+  key is `hash_config(active_config)` and records nothing about *what produced*
+  the result -- which binary, which wrapper, whether the wrapper could even find
+  its solver. With that recorded, a bad run's entries could be dropped by
+  provenance instead of by deleting the file. This is the cache-side twin of the
+  wrapper `--version` item above, and it would also close the separate hazard
+  that a cache silently survives a solver upgrade.
+
+`ramparils db` already exports `solved` / `status` / `confs` from a cache, so a
+`stats` sub-command (entries, distinct configurations, status histogram, share
+at cutoff) has an obvious home, and would turn "delete the cache and lose
+everything" into a one-line diagnosis.
