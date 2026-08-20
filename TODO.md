@@ -655,3 +655,50 @@ result in it. Three proposals, cheapest first:
 `stats` sub-command (entries, distinct configurations, status histogram, share
 at cutoff) has an obvious home, and would turn "delete the cache and lose
 everything" into a one-line diagnosis.
+
+---
+
+# Proposed — adaptive capping (2026-08-20)
+
+Two defects in the capping path: the bound is tested against the wrong
+statistic, and a partial evaluation is compared as if it were a full one.
+
+## ⬜ Adaptive capping: test the cumulative sum, not the running mean
+
+The cap fires when `partial[nid] / len > bound_multiplier × incumbent_score`.
+Results arrive in **completion** order — fastest first — so that running mean is
+a *lower bound* on the true mean and only converges on the last instance. The
+cap is therefore sound but nearly useless: it fires at the finish line, after
+the work is already paid for. Because the cap check precedes the completion
+check, a neighbour can run every instance and still be recorded as capped rather
+than completed.
+
+ParamILS's form is cumulative — cap once the configuration has spent the whole
+budget that beating the incumbent allows:
+
+```rust
+if partial[nid] > options.bound_multiplier * incumbent_score * n_instances as f64 { … }
+```
+
+Still sound, and it prunes early enough to matter.
+
+**Two properties to document while touching this.** ParamILS evaluates a fixed
+instance order one at a time, so two partial evaluations are comparable on the
+same prefix. Here workers run concurrently and the completed set is the
+dispatched prefix minus the stragglers still in flight — speed-biased at its
+boundary, and biased differently for each configuration. So **two capped scores
+are not comparable to each other**, and a partial mean must never be reported as
+if it were a score. Separately, the bound is relative to the incumbent frozen at
+the start of the round, so it prunes a small perturbation and a uniform random
+draw at very different rates; under `Approach::Random` a draw that starts above
+its own bound has its entire neighbourhood pruned unseen.
+
+## ⬜ `dominates` is passed nominal `n_runs`, not the count actually completed
+
+Both call sites pass the nominal instance count on each side even when pruning
+made one side a partial evaluation. `Basic` and `Random` ignore run counts, so
+it cannot bite today; **`Focused` compares `a_runs >= b_runs`** and would read a
+capped partial score as full-fidelity. `ConfigEvaluation.complete` already
+records this and the fidelity-increase path honours it, but `evaluate_config`
+discards it everywhere else. Thread it through, or pass the real completed
+count — before `Focused` is run with `pruning: true`.
