@@ -100,8 +100,8 @@ instances = N×I tasks, all 60 workers fill immediately — including the single
 
 Capping is checked by the ILS loop as results arrive, not inside the scheduler:
 - Accumulate partial sum per neighbor
-- If `partial_mean > bound_multiplier × incumbent_mean` → call `scheduler.reset()`,
-  mark neighbor as pruned, move on
+- If `partial_sum > bound_multiplier × incumbent_score × n_instances` → call
+  `scheduler.reset()`, mark neighbor as pruned, move on
 - This keeps the scheduler stateless and reusable
 
 ---
@@ -663,47 +663,29 @@ everything" into a one-line diagnosis.
 Two defects in the capping path: the bound is tested against the wrong
 statistic, and a partial evaluation is compared as if it were a full one.
 
-## ⬜ Adaptive capping: test the cumulative sum, not the running mean
+## ✅ Adaptive capping: test the cumulative sum, not the running mean
 
-The cap fires when `partial[nid] / len > bound_multiplier × incumbent_score`.
-Results arrive in **completion** order — fastest first — so that running mean is
-a *lower bound* on the true mean and only converges on the last instance. The
-cap is therefore sound but nearly useless: it fires at the finish line, after
-the work is already paid for. Because the cap check precedes the completion
-check, a neighbour can run every instance and still be recorded as capped rather
-than completed. At the other extreme there is no minimum sample: a single
-instance slower than the bound caps a configuration outright, and does.
+Was: cap when `partial / len > bound_multiplier × incumbent_score`. Results
+arrive in completion order — fastest first — so that running mean is a lower
+bound on the true mean and converges only at the end. The cap was sound by
+accident and useless in practice: it fired at the finish line, after the work
+was paid for. At the other extreme there was no minimum sample, so a single
+instance above the bound capped a configuration outright.
 
-ParamILS's form is cumulative — cap once the configuration has spent the whole
-budget that beating the incumbent allows:
+Now: cap when `partial_sum > bound_multiplier × incumbent_score × n_instances`
+— the budget beating the incumbent allows. Costs never go down, so passing it
+proves the final mean exceeds the bound. Exact rather than heuristic, and both
+failure modes go: no cap before `B/C` of the set, and none at the finish line.
 
-```rust
-if partial[nid] > options.bound_multiplier * incumbent_score * n_instances as f64 { … }
-```
+Also done, from the same work:
 
-Still sound, and it prunes early enough to matter.
-
-**Also worth documenting when this is touched.** ParamILS evaluates a fixed
-instance order one at a time, so two partial evaluations are comparable on the
-same prefix. Here workers run concurrently and the completed set is the
-dispatched prefix minus the stragglers still in flight — speed-biased at its
-boundary, and biased differently for each configuration, so **two capped scores
-are not comparable to each other**. And the bound is relative to the incumbent
-frozen at the start of the round, so it prunes a small perturbation and a
-uniform random draw at very different rates; under `Approach::Random` a draw
-worse than the bound has its whole neighbourhood pruned unseen.
-
-- ✅ **A capped score is no longer printed as if it were a score.**
+- **A capped score is no longer printed as if it were a score.**
   `ConfigEvaluation` carries `n_done` and renders as `>0.005220 (1/21)` — the
   `>` because a capped mean is a lower bound, the ratio because a cap after 1
-  instance and a cap after 470 are not the same claim. Used by
-  `bls local optimum`, `bls improvement (was …)`, `new home base` and
-  `restart: … score=`.
-- ✅ **An end-of-run `ils: summary` line** reports
-  `rounds / searched / gated / incumbents / evals / capped`, where a *gated*
-  round is one whose start was capped and which then accepted no move at all.
-  Without it, comparing two approaches on final score alone hides that one of
-  them was pruned out of most of its rounds.
+  instance and a cap after 470 are not the same claim.
+- **An end-of-run `ils: summary` line** with
+  `rounds / searched / gated / incumbents / evals / capped`; a *gated* round is
+  one whose start was capped and which then accepted no move.
 
 ## ⬜ Pass `dominates` the count actually completed, not nominal `n_runs`
 
@@ -717,3 +699,10 @@ returns a `ConfigEvaluation`, so `complete` and `n_done` survive to the
 comparison instead of being dropped by `evaluate_config`. What remains is to use
 them at the two `dominates` call sites. Before `Focused` is run with
 `pruning: true`.
+
+## ⬜ Capping sums even under `overall_obj: median`
+
+`compute_score` honours `overall_obj`, but the capping test always accumulates a
+sum. A median run therefore prunes on a statistic it does not score. A sound
+test exists: once more than half the instances have come back above the bound,
+the final median is above it too. Otherwise disable capping for `median`.

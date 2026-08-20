@@ -9,11 +9,20 @@ inactive parameters are omitted from the command line entirely.
 
 ---
 
-**Adaptive capping** (see also: *pruning*)
-A heuristic early-stopping rule that abandons evaluation when a candidate's partial mean
-exceeds `bound_multiplier × incumbent_score`. Later results could lower the final mean, so
-capping can change the search trajectory. Controlled by the `pruning` and `bound_multiplier`
-scenario fields.
+**Adaptive capping** (see also: *pruning*, *capped score*, *gated round*)
+Early stopping once a candidate has spent the whole budget beating the incumbent allows:
+`partial_sum > bound_multiplier × incumbent_score × n_instances`. Costs never go down, so
+this proves the final score exceeds the bound — capping never discards a configuration that
+would have been accepted. Controlled by the `pruning` and `bound_multiplier` scenario fields.
+
+---
+
+**Capped score**
+The value a capped evaluation yields: a mean over only the instances that finished before the
+cap fired. Those are the fastest, so it **understates** the true score — it is a lower bound,
+not a measurement. Logged with a leading `>` and the count it covers, `>2.698475 (312/473)`.
+Two capped scores cover different, differently biased prefixes and must not be compared to
+each other.
 
 ---
 
@@ -77,6 +86,15 @@ exploration.
 
 ---
 
+**Gated round**
+A round whose starting configuration was capped and which then accepted no move: every
+neighbour that did not finish under the bound was invisible, so the round produced no search
+at all. Counted in the end-of-run `ils: summary` line. The rate differs sharply between a
+small perturbation and a fresh random draw, so it belongs beside any comparison of two
+approaches.
+
+---
+
 **Incumbent**
 The best configuration found so far during the ILS run.
 Updated whenever a new configuration has a strictly lower aggregate score at the required
@@ -124,7 +142,8 @@ See also: *overall objective*.
 **Overall objective** (`overall_obj`)
 How per-instance results are aggregated into a single scalar for comparison.
 `mean` is sensitive to all instances including outliers; `median` is more robust but
-ignores magnitude differences.
+ignores magnitude differences. Note that adaptive capping always tests a running *sum*,
+so a `median` run prunes on a statistic it does not score — prefer `pruning: false` there.
 
 ---
 
@@ -142,9 +161,9 @@ a uniformly sampled value from its domain.  Larger values jump further in the sp
 
 ---
 
-**Pruning** (see also: *adaptive capping*)
-Shorthand for adaptive capping: heuristic early termination when a candidate's partial
-mean exceeds its configured bound. Enabled by default (`pruning: true`).
+**Pruning** (see also: *adaptive capping*, *capped score*)
+Shorthand for adaptive capping: early termination once a candidate has spent its configured
+budget. Enabled by default (`pruning: true`).
 
 ---
 

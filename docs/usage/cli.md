@@ -177,8 +177,8 @@ started.
 | `random_probes` | `0` | ParamILS's `R`: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of `0` starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires. |
 | `initial_fidelity` | `1` | Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count. |
 | `fidelity_step` | `1` | Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of `0` are treated as `1`. |
-| `bound_multiplier` | `10.0` | Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds `bound_multiplier × incumbent_score`. Lower values prune more aggressively and can change search results. |
-| `pruning` | `true` | Enable heuristic capping. Disable it when exact uncapped comparisons are required or when partial means are not meaningful for the objective. |
+| `bound_multiplier` | `10.0` | Capping threshold. A candidate is abandoned once its running sum exceeds `bound_multiplier × incumbent_score × n_instances` — the budget beating the incumbent allows. Lower values prune more aggressively; capping is exact, so it never discards a configuration that would have been accepted. |
+| `pruning` | `true` | Enable capping. Disable it for `overall_obj: median`, where the test sums a statistic the run does not score. |
 
 FocusedILS uses the first N entries from `instance_file`, not a random sample.
 Order the file deliberately or shuffle it before a run when early prefixes

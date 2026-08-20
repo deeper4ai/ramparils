@@ -818,8 +818,8 @@ fn accepted_within_tolerance(new_score: f64, incumbent_score: f64, options: &Ils
 /// Evaluate `config` on all instances in parallel.  Returns the scalar score.
 ///
 /// Cache hits are served immediately; misses are dispatched to worker threads.
-/// Adaptive capping prunes early if the running mean exceeds
-/// `bound_multiplier × incumbent_score`.
+/// Adaptive capping prunes as soon as the running sum exceeds the budget
+/// `bound_multiplier × incumbent_score × n_instances`.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_config(
     config: &Config,
@@ -1032,17 +1032,21 @@ fn basic_local_search(
             };
             partial[nid] += val;
 
-            // Adaptive capping: prune this neighbour if its running mean already
-            // exceeds the incumbent bound — it can't win even if the rest are fast.
+            // Adaptive capping: prune this neighbour once it has spent the whole
+            // budget that beating the incumbent allows. Costs never go down, so
+            // passing the budget *proves* the final mean exceeds the bound —
+            // this is a decision, not a guess, and it is the earliest point at
+            // which the proof exists.
             if options.pruning {
-                let pm = partial[nid] / runtimes[nid].len() as f64;
-                if pm > options.bound_multiplier * incumbent_score {
+                let budget = options.bound_multiplier * incumbent_score * n_instances as f64;
+                if partial[nid] > budget {
                     crate::debug_line(
                         options.debug.main,
                         &format!(
-                            "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
+                            "[{:8.2}s] ils: capped neighbor={nid} spent={:.6} budget={budget:.6} after {}/{n_instances}",
                             crate::t(),
-                            options.bound_multiplier * incumbent_score
+                            partial[nid],
+                            runtimes[nid].len(),
                         ),
                     );
                     done[nid] = true;
@@ -1171,8 +1175,8 @@ fn collect_one(
 
         if options.pruning {
             if let Some(inc) = incumbent_score {
-                let pm = partial_sum / runtimes.len() as f64;
-                if pm > options.bound_multiplier * inc {
+                // Same budget test as the neighbour loop above; see there.
+                if partial_sum > options.bound_multiplier * inc * n_instances as f64 {
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
                         if r.cacheable && r.status != "UNKNOWN" {

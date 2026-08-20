@@ -11,11 +11,43 @@ they describe what changed rather than what was announced at the time.
 
 ### Added
 
+- An end-of-run `ils: summary` line reporting
+  `rounds / searched / gated / incumbents / evals / capped`. A *gated* round is
+  one whose starting configuration was capped and which then accepted no move,
+  so the bound hid its whole neighbourhood and it produced no search. Comparing
+  two approaches on final score alone can hide that one of them was pruned out
+  of most of its rounds.
 - The changelog is published with the documentation, at
   `deeper4ai.github.io/ramparils`. `docs/changelog.md` is a one-line mdBook
   include of this file, so there is still one source of truth.
 - The landing page carries the current release, an install one-liner pinned to
   the tag, a "What's new" section and a link to the GitHub repository.
+
+### Changed
+
+- **Adaptive capping now tests the cumulative sum against a budget** —
+  `partial_sum > bound_multiplier × incumbent_score × n_instances` — instead of
+  the running mean against `bound_multiplier × incumbent_score`. Costs never go
+  down, so passing the budget proves the final mean exceeds the bound: capping
+  becomes exact rather than heuristic and never discards a configuration that
+  would have been accepted. It also fixes both ends of the old behaviour.
+  Results arrive fastest-first, so the running mean was a lower bound that only
+  converged at the end and most capped evaluations ran nearly the whole instance
+  set; at the other extreme there was no minimum sample, and one instance above
+  the bound capped a configuration outright. Now no cap is possible before
+  `bound_multiplier × incumbent_score / cutoff_time` of the set. The meaning of
+  `bound_multiplier` is unchanged, so no scenario file needs editing.
+- A capped score is now logged as `>2.698475 (312/473)` rather than as a plain
+  number. It is a mean over the instances that finished first — the fastest —
+  so it understates the true score: the `>` marks it as a lower bound and the
+  ratio says how much was actually seen, since a cap after 1 instance and a cap
+  after 470 are not the same claim. Affects `ils: bls local optimum`,
+  `ils: bls improvement … (was …)`, `ils: new home base` and
+  `ils: restart: … score=`. Two capped scores cover different, differently
+  biased prefixes and must not be compared with each other.
+- Adaptive capping is logged under `debug` rather than `debug_wrapper`. It is
+  one line per evaluation, not one per solver call, and the event explaining why
+  a neighbourhood yielded no improvement was invisible in an ordinary debug log.
 
 ## [0.2.0] — 2026-08-19
 

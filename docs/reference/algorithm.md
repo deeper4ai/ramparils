@@ -138,35 +138,48 @@ Restarts are inert under it, since every round already restarts.
 
 ## ✂️ Adaptive capping
 
-Adaptive capping (controlled by `pruning` and `bound_multiplier`) stops evaluating a configuration
-early if its partial mean exceeds `bound_multiplier × incumbent_score`. This is a heuristic:
-later results could lower the final mean, so capping can change which configurations are explored
-and accepted.
-
-A lower `bound_multiplier` (e.g., 2.0) prunes more aggressively and speeds up search, but may
-occasionally discard a configuration that would have been competitive on later instances.
-The default of 10.0 is conservative for positive cost objectives. Set `pruning: false` when exact
-uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
-for the objective.
-
-**Pick the multiplier against the objective's ceiling, not in the abstract.** Under a PAR1 runtime
-objective no instance can be charged more than `cutoff_time`, so a partial mean can never exceed
-it and capping is *mathematically unable to fire* unless
+Adaptive capping (`pruning`, `bound_multiplier`) abandons an evaluation once the configuration has
+spent the entire budget that beating the incumbent would allow:
 
 ```text
-bound_multiplier × incumbent_score < cutoff_time
+partial_sum > bound_multiplier × incumbent_score × n_instances
 ```
 
-A multiplier just below that ratio is indistinguishable from `pruning: false`. With an incumbent
-of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
-candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
-with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
-fraction of the ceiling and the multiplier follows.
+Costs never go down, so passing that budget *proves* the final mean exceeds the bound. Capping is
+therefore exact — it never discards a configuration that would have been accepted — and it fires at
+the earliest point where the proof exists.
 
-Aggressive settings are safer than the "later results could lower the mean" caveat suggests,
-because results arrive in completion order — the fast ones first. The running mean therefore
-climbs as an evaluation proceeds, and once it has passed a bound above `1 × incumbent_score` it
-rarely comes back down.
+**Pick the multiplier against the objective's ceiling, not in the abstract.** Under a runtime
+objective no instance is charged more than `cutoff_time`, so with `B = bound_multiplier ×
+incumbent_score` and `C = cutoff_time`, capping cannot fire at all unless `B < C`, and when it can,
+no cap is possible before `B / C` of the instance set — spending a budget of `B·N` takes at least
+that many instances. With an incumbent of 0.478 at a 1 s cutoff, multiplier 2.0 gives `B/C = 0.96`:
+nothing is pruned before 96% of the set, which is indistinguishable from `pruning: false`. The same
+2.0 at a 10 s cutoff with an incumbent of 2.95 gives 0.59 and prunes normally. Express the intent as
+a fraction of the ceiling and the multiplier follows.
+
+**A capped score is a lower bound, not a score**, and is logged as one:
+
+```text
+ils: bls local optimum score=>2.698475 (312/473)
+```
+
+It is a mean over the instances that finished first — the fastest — so it understates the true mean.
+Never compare two capped scores with each other: each covers a different, differently biased prefix.
+
+**Under `overall_obj: median` the cap tests a statistic the run does not score** — it always sums.
+Prefer `pruning: false` there.
+
+A run ends with an account of what the search actually got to do:
+
+```text
+ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489
+```
+
+A *gated* round is one whose starting configuration was capped and which then accepted no move: the
+bound hid every neighbour, so the round produced no search. Worth reporting whenever two approaches
+are compared — the bound is relative to the incumbent, so it prunes a small perturbation and a fresh
+random draw at very different rates, and a final-score comparison alone hides that.
 
 ---
 
