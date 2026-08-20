@@ -939,7 +939,7 @@ fn basic_local_search(
                 let pm = partial[nid] / runtimes[nid].len() as f64;
                 if pm > options.bound_multiplier * incumbent_score {
                     crate::debug_line(
-                        options.debug.wrapper,
+                        options.debug.main,
                         &format!(
                             "[{:8.2}s] ils: capped neighbor={nid} partial_mean={pm:.6} bound={:.6}",
                             crate::t(),
