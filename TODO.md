@@ -671,7 +671,8 @@ a *lower bound* on the true mean and only converges on the last instance. The
 cap is therefore sound but nearly useless: it fires at the finish line, after
 the work is already paid for. Because the cap check precedes the completion
 check, a neighbour can run every instance and still be recorded as capped rather
-than completed.
+than completed. At the other extreme there is no minimum sample: a single
+instance slower than the bound caps a configuration outright, and does.
 
 ParamILS's form is cumulative — cap once the configuration has spent the whole
 budget that beating the incumbent allows:
@@ -682,23 +683,37 @@ if partial[nid] > options.bound_multiplier * incumbent_score * n_instances as f6
 
 Still sound, and it prunes early enough to matter.
 
-**Two properties to document while touching this.** ParamILS evaluates a fixed
+**Also worth documenting when this is touched.** ParamILS evaluates a fixed
 instance order one at a time, so two partial evaluations are comparable on the
 same prefix. Here workers run concurrently and the completed set is the
 dispatched prefix minus the stragglers still in flight — speed-biased at its
-boundary, and biased differently for each configuration. So **two capped scores
-are not comparable to each other**, and a partial mean must never be reported as
-if it were a score. Separately, the bound is relative to the incumbent frozen at
-the start of the round, so it prunes a small perturbation and a uniform random
-draw at very different rates; under `Approach::Random` a draw that starts above
-its own bound has its entire neighbourhood pruned unseen.
+boundary, and biased differently for each configuration, so **two capped scores
+are not comparable to each other**. And the bound is relative to the incumbent
+frozen at the start of the round, so it prunes a small perturbation and a
+uniform random draw at very different rates; under `Approach::Random` a draw
+worse than the bound has its whole neighbourhood pruned unseen.
 
-## ⬜ `dominates` is passed nominal `n_runs`, not the count actually completed
+- ✅ **A capped score is no longer printed as if it were a score.**
+  `ConfigEvaluation` carries `n_done` and renders as `>0.005220 (1/21)` — the
+  `>` because a capped mean is a lower bound, the ratio because a cap after 1
+  instance and a cap after 470 are not the same claim. Used by
+  `bls local optimum`, `bls improvement (was …)`, `new home base` and
+  `restart: … score=`.
+- ✅ **An end-of-run `ils: summary` line** reports
+  `rounds / searched / gated / incumbents / evals / capped`, where a *gated*
+  round is one whose start was capped and which then accepted no move at all.
+  Without it, comparing two approaches on final score alone hides that one of
+  them was pruned out of most of its rounds.
+
+## ⬜ Pass `dominates` the count actually completed, not nominal `n_runs`
 
 Both call sites pass the nominal instance count on each side even when pruning
 made one side a partial evaluation. `Basic` and `Random` ignore run counts, so
 it cannot bite today; **`Focused` compares `a_runs >= b_runs`** and would read a
-capped partial score as full-fidelity. `ConfigEvaluation.complete` already
-records this and the fidelity-increase path honours it, but `evaluate_config`
-discards it everywhere else. Thread it through, or pass the real completed
-count — before `Focused` is run with `pruning: true`.
+capped partial score as full-fidelity.
+
+The plumbing this needed is now in place — `basic_local_search` takes and
+returns a `ConfigEvaluation`, so `complete` and `n_done` survive to the
+comparison instead of being dropped by `evaluate_config`. What remains is to use
+them at the two `dominates` call sites. Before `Focused` is run with
+`pruning: true`.
