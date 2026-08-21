@@ -1,0 +1,79 @@
+# E prover tuning scenario, via `eprover_wrapper.py` (solverpy, no grackle) --
+# the random-restart baseline: fresh uniform draw per round, acceptance
+# criterion skipped (`approach: random`), over the same reduced
+# core+ordering+heuristic domain in params-eprover.txt as eprover-basic.yaml.
+# See README.md.
+#
+# Pruning is off here, deliberately, unlike eprover-basic.yaml: the bound is
+# 1.2x the incumbent frozen at the start of the round, and a uniform draw
+# lands above it far more often than a perturbation does (see
+# ramparils-primo-cont's RUN 10 in the work26/expericon AGENTS.md for the
+# measured effect on primo -- about one round in ten gets through gated).
+# Pruned here, this arm would mostly measure how often draws clear the gate,
+# not how the random-restart search itself performs.
+
+algo: "python3 eprover_wrapper.py"
+paramfile: "params-eprover.txt"
+instance_file: "instances-bushy010.txt"
+
+# E's own defaults, spelled out. Conditional parameters are listed too, even
+# though they are inactive at this setting (tord: LPO4, slots: 0).
+initial_config:
+  sel: SelectMaxLComplexAvoidPosPred
+  simparamod: none
+  der: none
+  fwdemod: "2"
+  defcnf: "24"
+  condense: "0"
+  presat: "0"
+  prefer: "0"
+  tord: LPO4
+  tord_prec: arity
+  tord_weight: arity
+  tord_const: "0"
+  slots: "0"
+  heur1: nb7
+  freq1: "1"
+  heur2: fifo
+  freq2: "1"
+  heur3: precasc
+  freq3: "1"
+  heur4: mzr02
+  freq4: "1"
+
+cutoff_time: 1.0
+tuner_timeout: 30.0
+
+# PAR1: the wrapper charges the full cutoff for a timeout, an error, or a
+# GaveUp, so at a short cutoff this objective is close to a solved count and
+# its gradient is coarse. A tuning score is a property of the RUN, not of the
+# configuration -- score any final configuration on the benchmark you care
+# about before believing it.
+run_obj: runtime
+overall_obj: mean
+
+approach: random
+
+# initial_fidelity/fidelity_step, perturbation_strength, acceptance_tolerance
+# and restart_failures/restart_target/restart_strength are all omitted:
+# ignored under `random` (no fidelity schedule, no perturbation step, no
+# acceptance criterion, no restart mechanism -- every round already starts
+# from a fresh uniform draw), and all carry a `#[serde(default)]` so leaving
+# them out is safe.
+
+# bound_multiplier omitted too: both its uses in ils.rs are inside
+# `if options.pruning`, so it is never read while pruning is off.
+pruning: false
+
+# 0 = every logical core. See the `cores` note in examples/primo/scenario.yaml
+# before using this on a machine where the numbers matter.
+cores: 0
+
+# Shared with eprover-basic.yaml and eprover-focused.yaml: same algo,
+# paramfile and instances, so cached (config, instance) results are valid
+# across all three regardless of which one produced them.
+cache_db: "eprover.dbcache"
+
+debug: true
+debug_log: "eprover-random.log"
+error_log: "eprover-random.errors"

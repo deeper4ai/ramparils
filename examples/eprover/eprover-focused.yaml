@@ -1,0 +1,79 @@
+# E prover tuning scenario, via `eprover_wrapper.py` (solverpy, no grackle) --
+# FocusedILS (`approach: focused`) over the same reduced core+ordering+
+# heuristic domain in params-eprover.txt as eprover-basic.yaml, scoring
+# cheaply on a growing instance prefix instead of the whole set every round.
+# See README.md, and examples/primo/README.md's note on `focused` being much
+# less exercised than `basic` in this record.
+
+algo: "python3 eprover_wrapper.py"
+paramfile: "params-eprover.txt"
+instance_file: "instances-bushy010.txt"
+
+# E's own defaults, spelled out. Conditional parameters are listed too, even
+# though they are inactive at this setting (tord: LPO4, slots: 0).
+initial_config:
+  sel: SelectMaxLComplexAvoidPosPred
+  simparamod: none
+  der: none
+  fwdemod: "2"
+  defcnf: "24"
+  condense: "0"
+  presat: "0"
+  prefer: "0"
+  tord: LPO4
+  tord_prec: arity
+  tord_weight: arity
+  tord_const: "0"
+  slots: "0"
+  heur1: nb7
+  freq1: "1"
+  heur2: fifo
+  freq2: "1"
+  heur3: precasc
+  freq3: "1"
+  heur4: mzr02
+  freq4: "1"
+
+cutoff_time: 1.0
+tuner_timeout: 30.0
+
+# PAR1: the wrapper charges the full cutoff for a timeout, an error, or a
+# GaveUp, so at a short cutoff this objective is close to a solved count and
+# its gradient is coarse. A tuning score is a property of the RUN, not of the
+# configuration -- score any final configuration on the benchmark you care
+# about before believing it.
+run_obj: runtime
+overall_obj: mean
+
+approach: focused
+
+# Start at 2 of 10 instances, grow by 2 whenever the incumbent survives a
+# round. Small on purpose for this quick a run; the instance file's ORDER
+# decides what the early, low-fidelity rounds optimise for.
+initial_fidelity: 2
+fidelity_step: 2
+
+# ParamILS's own rule is max(2, ceil(0.2 * parameters)); 5 for this
+# 21-parameter space.
+perturbation_strength: 5
+
+acceptance_tolerance: 0.01
+restart_failures: 5
+restart_target: incumbent
+restart_strength: 4
+
+bound_multiplier: 1.2
+pruning: true
+
+# 0 = every logical core. See the `cores` note in examples/primo/scenario.yaml
+# before using this on a machine where the numbers matter.
+cores: 0
+
+# Shared with eprover-basic.yaml and eprover-random.yaml: same algo,
+# paramfile and instances, so cached (config, instance) results are valid
+# across all three regardless of which one produced them.
+cache_db: "eprover.dbcache"
+
+debug: true
+debug_log: "eprover-focused.log"
+error_log: "eprover-focused.errors"
