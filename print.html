@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-03f54fae.js";
+            window.path_to_searchindex_js = "searchindex-85a43fb3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -312,11 +312,107 @@ they describe what changed rather than what was announced at the time.</p>
 <h2 id="unreleased"><a class="header" href="#unreleased"><a href="https://github.com/deeper4ai/ramparils/compare/v0.2.0...HEAD">Unreleased</a></a></h2>
 <h3 id="added"><a class="header" href="#added">Added</a></h3>
 <ul>
+<li>An end-of-run <code>ils: summary</code> line reporting
+<code>rounds / searched / gated / incumbents / evals / capped</code>. A <em>gated</em> round is
+one whose starting configuration was capped and which then accepted no move,
+so the bound hid its whole neighbourhood and it produced no search. Comparing
+two approaches on final score alone can hide that one of them was pruned out
+of most of its rounds.</li>
 <li>The changelog is published with the documentation, at
 <code>deeper4ai.github.io/ramparils</code>. <code>docs/changelog.md</code> is a one-line mdBook
 include of this file, so there is still one source of truth.</li>
 <li>The landing page carries the current release, an install one-liner pinned to
 the tag, a “What’s new” section and a link to the GitHub repository.</li>
+<li><strong>A <code>--version</code> probe before the first evaluation.</strong> <code>ramparils</code> now runs
+<code>&lt;algo&gt; --version</code> at startup and refuses to start unless it exits <code>0</code> and
+its last stdout line is <code>supports: … version …</code>; the wrapper’s whole
+response is logged as its own block, separated from the run’s other startup
+stats. This is the fix for a real incident: a 24 h tuning run launched
+against a wrapper with no solver binary on <code>PATH</code> and no instance files in
+place ran to completion reporting nothing wrong, because the wrapper
+answered every evaluation with a well-formed but meaningless result line
+instead of failing to launch. A wrapper that can’t reach its solver prints a
+<code>&lt;solver&gt; MISSING</code> placeholder line in the version block but must still
+exit non-zero. <code>examples/primo</code> and <code>examples/eprover</code> both implement the
+convention; see docs/reference/protocol.md.</li>
+<li><strong>A <code>runhash</code> fingerprint, threaded end to end.</strong> A wrapper’s result line
+may carry an optional fourth field: a hash of the solver’s own internal
+counters, independent of runtime, that lets two configurations be compared
+for having done byte-identical work. <code>results.runhash</code> is a new nullable
+cache column; a descent XORs it across every evaluated neighbour and logs
+it beside each incumbent/home base; <code>ramparils db status</code> exports it as a
+fourth column; and a new <code>ramparils db runhashes</code> writes
+<code>ram-&lt;hash&gt; &lt;runhash&gt; &lt;n&gt;</code> per strategy (the XOR of every non-null runhash
+for that hash, skipping instances with none rather than disqualifying the
+whole hash; <code>n</code> counts every attempted instance, so <code>n == instances</code> means
+fully evaluated). Given a cache and no sub-command, <code>ramparils db</code> now
+exports all four (<code>solved</code>, <code>status</code>, <code>confs</code>, <code>runhashes</code>). Two strategies
+sharing a runhash did identical internal work, which is the signal a
+structurally dead parameter needs and nothing else can catch.</li>
+<li><strong><code>examples/eprover</code> rewritten as a grackle-free wrapper</strong> via solverpy’s
+<code>E</code>, replacing the old grackle-dependent example. A deliberately small
+domain — core proof-search switches, term ordering, and up to 4
+independently-tunable clause-selection heuristic slots with their own
+frequencies — rather than grackle’s full combinatorial space. Three
+scenarios (<code>eprover-basic</code>/<code>-random</code>/<code>-focused</code>) share one cache, differing
+only in search approach and fidelity schedule.</li>
+</ul>
+<h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
+<ul>
+<li><strong>Adaptive capping now tests the cumulative sum against a budget</strong> —
+<code>partial_sum &gt; bound_multiplier × incumbent_score × n_instances</code> — instead of
+the running mean against <code>bound_multiplier × incumbent_score</code>. Costs never go
+down, so passing the budget proves the final mean exceeds the bound: capping
+becomes exact rather than heuristic and never discards a configuration that
+would have been accepted. It also fixes both ends of the old behaviour.
+Results arrive fastest-first, so the running mean was a lower bound that only
+converged at the end and most capped evaluations ran nearly the whole instance
+set; at the other extreme there was no minimum sample, and one instance above
+the bound capped a configuration outright. Now no cap is possible before
+<code>bound_multiplier × incumbent_score / cutoff_time</code> of the set. The meaning of
+<code>bound_multiplier</code> is unchanged, so no scenario file needs editing.</li>
+<li>A capped score is now logged as <code>&gt;2.698475 (312/473)</code> rather than as a plain
+number. It is a mean over the instances that finished first — the fastest —
+so it understates the true score: the <code>&gt;</code> marks it as a lower bound and the
+ratio says how much was actually seen, since a cap after 1 instance and a cap
+after 470 are not the same claim. Affects <code>ils: bls local optimum</code>,
+<code>ils: bls improvement … (was …)</code>, <code>ils: new home base</code> and
+<code>ils: restart: … score=</code>. Two capped scores cover different, differently
+biased prefixes and must not be compared with each other.</li>
+<li>Adaptive capping is logged under <code>debug</code> rather than <code>debug_wrapper</code>. It is
+one line per evaluation, not one per solver call, and the event explaining why
+a neighbourhood yielded no improvement was invisible in an ordinary debug log.</li>
+<li><strong><code>examples/primo/primo_wrapper.py</code> migrated to solverpy’s <code>Primo</code></strong>, which
+already supplies time/memory limits, SMT status parsing and the <code>runhash</code>
+fingerprint, replacing the wrapper’s own hand-rolled subprocess/ulimit
+plumbing. Drops the <code>PRIMO</code> environment-variable override in favour of
+solverpy’s own binary resolution — point a different build at <code>PATH</code> under
+the expected name instead. Also gains the <code>--version</code>/<code>supports:</code> protocol
+above and a <code>--params</code> dry-run flag that resolves a parameter set to a
+command line without running anything.</li>
+</ul>
+<h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
+<ul>
+<li><strong>Debug and error logs no longer truncate on a rerun.</strong> Both were opened
+with <code>File::create</code>, so a second <code>ramparils run</code> (or <code>specialize()</code> call)
+against the same paths silently discarded the previous run’s history. They
+now open in append mode, so a rerun’s output adds to the running history.</li>
+<li><strong>The error log is created lazily, on the first crash, not at startup.</strong> It
+used to be created eagerly even when nothing ever crashed, so every clean
+run left a 0-byte file behind that looked exactly like “checked, nothing
+wrong” — indistinguishable from a real crash report that was never written.</li>
+<li><strong>A wrapper crash is routed through <code>UNKNOWN</code> with PAR1 scoring, not an
+invented status.</strong> <code>examples/primo/primo_wrapper.py</code> used to report a crash
+as its own <code>"error"</code> status with the real (possibly near-instant) elapsed
+time; RamParILS doesn’t recognise <code>"error"</code> as special, so every crash was
+silently cached as a legitimate result and the error log — the one place a
+human would notice — stayed empty, while a fast-failing configuration could
+score better than a genuine solve. It now reuses RamParILS’s own <code>UNKNOWN</code>
+sentinel (logged, excluded from the cache) and always charges the full
+cutoff on any non-success line. Found via <code>examples/eprover</code>’s new wrapper,
+where the same two bugs let a batch of invalid parameter values silently
+score better than real solves on ~43% of evaluations; see
+docs/reference/protocol.md.</li>
 </ul>
 <h2 id="020--2026-08-19"><a class="header" href="#020--2026-08-19"><a href="https://github.com/deeper4ai/ramparils/compare/v0.1.3...v0.2.0">0.2.0</a> — 2026-08-19</a></h2>
 <p>The escape mechanism, the provenance stamping, a unified CLI and a reworked
@@ -393,7 +489,7 @@ each choice. Its scenario now runs BasicILS with settings derived from a
 nine-run tuning campaign, and documents what to adjust first.</p>
 </li>
 </ul>
-<h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
+<h3 id="changed-1"><a class="header" href="#changed-1">Changed</a></h3>
 <ul>
 <li>
 <p><strong>BREAKING: one binary, two sub-commands.</strong> <code>ramparils run &lt;scenario.yaml&gt;</code>
@@ -445,7 +541,7 @@ below that ratio is indistinguishable from <code>pruning: false</code>.</p>
 <p><code>examples/primo/params-primo.txt</code> was renamed to <code>params-primo-qflra.txt</code>.</p>
 </li>
 </ul>
-<h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
+<h3 id="fixed-1"><a class="header" href="#fixed-1">Fixed</a></h3>
 <ul>
 <li><code>examples/eprover/run.sh</code> had been broken since 0.1.2: it passed <code>--debug</code>,
 <code>--debug-log</code> and <code>--cachedb</code>, which became scenario fields in that release,
@@ -476,7 +572,7 @@ via <code>initial_config_file</code>, validated against the parameter space.</li
 <li><code>examples/primo</code>, and <code>guarded_real_equality_lowering</code> in its space.</li>
 <li>Strategy extraction from tuning logs for the <code>llm2smt</code> example.</li>
 </ul>
-<h3 id="fixed-1"><a class="header" href="#fixed-1">Fixed</a></h3>
+<h3 id="fixed-2"><a class="header" href="#fixed-2">Fixed</a></h3>
 <ul>
 <li><strong>FocusedILS compared scores taken at different fidelities.</strong> The incumbent
 was re-measured when the fidelity grew but the ILS home base was not, so the
@@ -509,13 +605,13 @@ cutoff and cumulative deadline.</li>
 <li>Documentation moved to mdBook, with a scenario reference, an algorithm
 overview and a glossary.</li>
 </ul>
-<h3 id="changed-1"><a class="header" href="#changed-1">Changed</a></h3>
+<h3 id="changed-2"><a class="header" href="#changed-2">Changed</a></h3>
 <ul>
 <li><code>cache_db</code> defaults to <code>:memory:</code>, so a run no longer leaves a stray database
 behind.</li>
 <li>Solver status is stored in the cache.</li>
 </ul>
-<h3 id="fixed-2"><a class="header" href="#fixed-2">Fixed</a></h3>
+<h3 id="fixed-3"><a class="header" href="#fixed-3">Fixed</a></h3>
 <ul>
 <li>Improvement detection uses a strict <code>&lt;</code>, so an equal-scoring challenger no
 longer replaces the incumbent endlessly.</li>
@@ -697,8 +793,8 @@ started.</p>
 <tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of <code>0</code> starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of <code>0</code> are treated as <code>1</code>.</td></tr>
-<tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. Lower values prune more aggressively and can change search results.</td></tr>
-<tr><td><code>pruning</code></td><td><code>true</code></td><td>Enable heuristic capping. Disable it when exact uncapped comparisons are required or when partial means are not meaningful for the objective.</td></tr>
+<tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Capping threshold. A candidate is abandoned once its running sum exceeds <code>bound_multiplier × incumbent_score × n_instances</code> — the budget beating the incumbent allows. Lower values prune more aggressively; capping is exact, so it never discards a configuration that would have been accepted.</td></tr>
+<tr><td><code>pruning</code></td><td><code>true</code></td><td>Enable capping. Disable it for <code>overall_obj: median</code>, where the test sums a statistic the run does not score.</td></tr>
 </tbody>
 </table>
 </div>
@@ -1023,29 +1119,34 @@ random-restart baseline to measure an iterated local search against, not a tunin
 Restarts are inert under it, since every round already restarts.</p>
 <hr>
 <h2 id="-adaptive-capping"><a class="header" href="#-adaptive-capping">✂️ Adaptive capping</a></h2>
-<p>Adaptive capping (controlled by <code>pruning</code> and <code>bound_multiplier</code>) stops evaluating a configuration
-early if its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. This is a heuristic:
-later results could lower the final mean, so capping can change which configurations are explored
-and accepted.</p>
-<p>A lower <code>bound_multiplier</code> (e.g., 2.0) prunes more aggressively and speeds up search, but may
-occasionally discard a configuration that would have been competitive on later instances.
-The default of 10.0 is conservative for positive cost objectives. Set <code>pruning: false</code> when exact
-uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
-for the objective.</p>
-<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a PAR1 runtime
-objective no instance can be charged more than <code>cutoff_time</code>, so a partial mean can never exceed
-it and capping is <em>mathematically unable to fire</em> unless</p>
-<pre><code class="language-text">bound_multiplier × incumbent_score &lt; cutoff_time
+<p>Adaptive capping (<code>pruning</code>, <code>bound_multiplier</code>) abandons an evaluation once the configuration has
+spent the entire budget that beating the incumbent would allow:</p>
+<pre><code class="language-text">partial_sum &gt; bound_multiplier × incumbent_score × n_instances
 </code></pre>
-<p>A multiplier just below that ratio is indistinguishable from <code>pruning: false</code>. With an incumbent
-of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
-candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
-with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
-fraction of the ceiling and the multiplier follows.</p>
-<p>Aggressive settings are safer than the “later results could lower the mean” caveat suggests,
-because results arrive in completion order — the fast ones first. The running mean therefore
-climbs as an evaluation proceeds, and once it has passed a bound above <code>1 × incumbent_score</code> it
-rarely comes back down.</p>
+<p>Costs never go down, so passing that budget <em>proves</em> the final mean exceeds the bound. Capping is
+therefore exact — it never discards a configuration that would have been accepted — and it fires at
+the earliest point where the proof exists.</p>
+<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a runtime
+objective no instance is charged more than <code>cutoff_time</code>, so with <code>B = bound_multiplier × incumbent_score</code> and <code>C = cutoff_time</code>, capping cannot fire at all unless <code>B &lt; C</code>, and when it can,
+no cap is possible before <code>B / C</code> of the instance set — spending a budget of <code>B·N</code> takes at least
+that many instances. With an incumbent of 0.478 at a 1 s cutoff, multiplier 2.0 gives <code>B/C = 0.96</code>:
+nothing is pruned before 96% of the set, which is indistinguishable from <code>pruning: false</code>. The same
+2.0 at a 10 s cutoff with an incumbent of 2.95 gives 0.59 and prunes normally. Express the intent as
+a fraction of the ceiling and the multiplier follows.</p>
+<p><strong>A capped score is a lower bound, not a score</strong>, and is logged as one:</p>
+<pre><code class="language-text">ils: bls local optimum score=&gt;2.698475 (312/473)
+</code></pre>
+<p>It is a mean over the instances that finished first — the fastest — so it understates the true mean.
+Never compare two capped scores with each other: each covers a different, differently biased prefix.</p>
+<p><strong>Under <code>overall_obj: median</code> the cap tests a statistic the run does not score</strong> — it always sums.
+Prefer <code>pruning: false</code> there.</p>
+<p>A run ends with an account of what the search actually got to do:</p>
+<pre><code class="language-text">ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489
+</code></pre>
+<p>A <em>gated</em> round is one whose starting configuration was capped and which then accepted no move: the
+bound hid every neighbour, so the round produced no search. Worth reporting whenever two approaches
+are compared — the bound is relative to the incumbent, so it prunes a small perturbation and a fresh
+random draw at very different rates, and a final-score comparison alone hides that.</p>
 <hr>
 <p><a id="iterative-deepening"></a></p>
 <h2 id="-iterative-deepening-1"><a class="header" href="#-iterative-deepening-1">📈 Iterative deepening</a></h2>
@@ -1184,26 +1285,37 @@ two extreme values and confirm its own counters move. Structural checks cannot c
 parameter is active by all of them.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="-solver-wrapper-protocol"><a class="header" href="#-solver-wrapper-protocol">🔌 Solver wrapper protocol</a></h1>
-<p>RamParILS communicates with the target algorithm via a simple subprocess protocol.</p>
+<p>RamParILS never talks to the target algorithm directly — every evaluation goes through a
+<strong>wrapper</strong>: a small executable that translates a <code>-name value</code> parameter list into the
+algorithm’s real command line, runs it, and reports back over stdout in a fixed text format.
+The wrapper is the only thing that needs to know how to invoke the algorithm; RamParILS itself
+only ever speaks this protocol.</p>
+<p>Two real wrappers ship as worked examples and are the reference to copy from:
+<a href="https://github.com/deeper4ai/ramparils/blob/main/examples/primo/primo_wrapper.py"><code>examples/primo/primo_wrapper.py</code></a>
+(the primo QF_LRA solver, via <code>solverpy.solver.smt.primo</code>) and
+<a href="https://github.com/deeper4ai/ramparils/blob/main/examples/eprover/eprover_wrapper.py"><code>examples/eprover/eprover_wrapper.py</code></a>
+(the E prover, via <code>solverpy.solver.atp.eprover</code>). Both are Python and use
+<a href="https://github.com/ai4reason/solverpy">SolverPy</a> to run and parse the underlying solver, but
+nothing about the protocol requires either — a wrapper is any program the shell can run.</p>
 <h2 id="-invocation"><a class="header" href="#-invocation">📥 Invocation</a></h2>
-<p>The solver is invoked as a shell command:</p>
+<p>For each evaluation, RamParILS runs:</p>
 <pre><code>&lt;algo&gt; &lt;instance&gt; &lt;cutoff_time&gt; -param1 val1 -param2 val2 …
 </code></pre>
 <ul>
-<li><code>&lt;algo&gt;</code> — the command from the scenario’s <code>algo</code> field (passed to <code>sh -c</code>)</li>
+<li><code>&lt;algo&gt;</code> — the command from the scenario’s <code>algo</code> field, e.g. <code>"python3 primo_wrapper.py"</code></li>
 <li><code>&lt;instance&gt;</code> — path to the instance file</li>
 <li><code>&lt;cutoff_time&gt;</code> — per-run time limit in seconds</li>
-<li><code>-param val</code> pairs — active parameters in alphabetical order</li>
+<li><code>-param val</code> pairs — the <strong>active</strong> parameters (per the parameter file’s conditionals), in
+alphabetical order by name</li>
 </ul>
-<p>The complete command is passed to <code>sh -c</code>. Scenario files and parameter values
-must therefore be trusted, and wrappers should avoid paths or values that need
-shell quoting.</p>
-<p>Example:</p>
-<pre><code>ruby /path/to/saps_wrapper.rb /data/inst1.cnf 5.0 -alpha 1.189 -rho 0.5 -ps 0.1 -wp 0.03
+<p>The complete command is passed to <code>sh -c</code>. Scenario files and parameter values must therefore be
+trusted, and wrappers should avoid paths or values that need shell quoting.</p>
+<p>Example, resolved from <code>algo: "python3 primo_wrapper.py"</code>:</p>
+<pre><code>python3 primo_wrapper.py /data/QF_LRA/inst1.smt2 30.0 -lra_model_phase true -theory_phase polarity
 </code></pre>
-<h2 id="-output-1"><a class="header" href="#-output-1">📤 Output</a></h2>
-<p>The solver must print a result line to <strong>stdout</strong>:</p>
-<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;
+<h2 id="-result-line"><a class="header" href="#-result-line">📤 Result line</a></h2>
+<p>The wrapper must print one result line to <strong>stdout</strong>:</p>
+<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;[, &lt;runhash&gt;]
 </code></pre>
 <div class="table-wrapper">
 <table>
@@ -1211,34 +1323,196 @@ shell quoting.</p>
 <tr><th>Field</th><th>Values</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>status</code></td><td>text</td><td>Outcome of the run; stored verbatim in the cache</td></tr>
-<tr><td><code>runtime</code></td><td>float</td><td>Actual runtime in seconds (capped to <code>cutoff_time</code>)</td></tr>
-<tr><td><code>quality</code></td><td>float</td><td>Numeric cost to minimise when <code>run_obj: quality</code></td></tr>
+<tr><td><code>status</code></td><td>text</td><td>Outcome of the run, stored verbatim in the cache and in <code>ramparils db status</code> exports</td></tr>
+<tr><td><code>runtime</code></td><td>float, seconds</td><td>Charged runtime — see PAR1 below</td></tr>
+<tr><td><code>quality</code></td><td>float</td><td>Numeric cost to minimise when <code>run_obj: quality</code>; conventionally <code>0.0</code> on success</td></tr>
+<tr><td><code>runhash</code></td><td>16 hex digits, <em>optional</em></td><td>Fingerprint of the solver’s internal work on this instance — see <a href="#-the-optional-runhash-field">below</a></td></tr>
 </tbody>
 </table>
 </div>
-<p>The result line may appear anywhere in stdout; other output is ignored.
-RamParILS stores <code>status</code> for reporting but does not use it when scoring.
-The wrapper must therefore encode timeouts, crashes, and unsolved cases as an
-appropriate runtime or quality penalty.</p>
-<p>If no valid result line is found, the status becomes <code>UNKNOWN</code>, runtime is set
-to <code>cutoff_time</code>, and quality is set to <code>10000000</code>. <code>UNKNOWN</code> results are not
-written to the persistent cache.</p>
-<h2 id="-examples"><a class="header" href="#-examples">🧪 Examples</a></h2>
-<p>Successful run:</p>
-<pre><code>#%# RamParIls #%# OK, 1.23, 0.0
+<p>The line may appear anywhere in stdout; everything else on stdout and stderr is ignored (but
+still worth printing — it is what lands in the debug/error logs when a run needs debugging).
+RamParILS stores <code>status</code> for reporting but does not interpret it when scoring; it is the
+wrapper’s own contract with itself. <strong>If no valid result line is found at all</strong>, RamParILS
+synthesizes one: status <code>UNKNOWN</code>, runtime <code>cutoff_time</code>, quality <code>10000000</code>. <code>UNKNOWN</code> results
+are excluded from the persistent cache and logged to the run’s error log — the wrapper can, and
+for real crashes should, emit this itself; see below.</p>
+<h3 id="examples-by-solver-status-vocabulary"><a class="header" href="#examples-by-solver-status-vocabulary">Examples, by solver status vocabulary</a></h3>
+<p>A wrapper’s <code>status</code> values are whatever the underlying solver reports — RamParILS doesn’t
+constrain the vocabulary, only how the two special outcomes (success, <code>UNKNOWN</code>) are used. Two
+worked families, matching the two example wrappers:</p>
+<p><strong>SMT (<code>primo_wrapper.py</code>, via SolverPy’s <code>smt</code> status plugin)</strong> — success is <code>sat</code> / <code>unsat</code>;
+<code>unknown</code> is a real, cacheable non-success answer distinct from a crash:</p>
+<pre><code>#%# RamParIls #%# sat, 1.234500, 0.0, 3f9a1c7b2e6d4085
+#%# RamParIls #%# unsat, 0.087200, 0.0, 9c1e0a2f7b6d5443
+#%# RamParIls #%# unknown, 30.000000, 10000000.0
+#%# RamParIls #%# UNKNOWN, 30.000000, 10000000.0
 </code></pre>
-<p>Timeout:</p>
-<pre><code>#%# RamParIls #%# TIMEOUT, 5.0, 0.0
+<p><strong>TPTP/SZS (<code>eprover_wrapper.py</code>, via SolverPy’s <code>tptp</code> status plugin)</strong> — success is <code>Theorem</code> /
+<code>Unsatisfiable</code> / <code>Satisfiable</code> / <code>CounterSatisfiable</code> / <code>ContradictoryAxioms</code>; <code>ResourceOut</code>,
+<code>Timeout</code> and <code>GaveUp</code> are real non-success answers:</p>
+<pre><code>#%# RamParIls #%# Theorem, 4.812000, 0.0, 812babf67d10cf3d
+#%# RamParIls #%# Unsatisfiable, 0.930000, 0.0, e74b8847f11fb0e8
+#%# RamParIls #%# ResourceOut, 30.000000, 10000000.0
+#%# RamParIls #%# GaveUp, 30.000000, 10000000.0
+#%# RamParIls #%# UNKNOWN, 30.000000, 10000000.0
 </code></pre>
-<h2 id="-minimal-wrapper-skeleton"><a class="header" href="#-minimal-wrapper-skeleton">🦴 Minimal wrapper skeleton</a></h2>
-<pre><code class="language-ruby">#!/usr/bin/env ruby
-instance, cutoff, *params = ARGV
+<p>Note what both families share: <strong>only a success line carries a <code>runhash</code></strong>, and <strong>every
+non-success line — real or <code>UNKNOWN</code> — charges the full <code>cutoff_time</code>, never the solver’s actual
+elapsed time</strong>. Both are deliberate, not incidental; see the two subsections below.</p>
+<h2 id="-par1--a-failure-must-never-look-cheap"><a class="header" href="#-par1--a-failure-must-never-look-cheap">⏱️ PAR1 — a failure must never look cheap</a></h2>
+<p><code>runtime</code> on a non-success line must be <code>cutoff_time</code>, not whatever time the process actually
+took — including a crash that failed in milliseconds. This is the standard <strong>PAR1</strong> (penalized
+average runtime, ×1) convention: a run scored on <code>run_obj: runtime</code> treats a lower number as
+better, so a wrapper that reports a crash’s true near-instant runtime makes crashing look like
+the <em>best</em> possible outcome, and the search climbs toward configurations that reliably fail fast
+instead of ones that actually solve instances.</p>
+<pre><code class="language-python">if status in solver.success:
+    runtime = result.get("runtime", cutoff)   # real elapsed time
+else:
+    runtime = cutoff                          # PAR1: always the full budget, however it failed
+</code></pre>
+<p>This was a real bug, not a hypothetical: an early version of <code>eprover_wrapper.py</code> reported real
+elapsed time unconditionally, and a batch of invalid parameter values (below) made ~43% of
+evaluations fail near-instantly — all scoring better than genuine solves.</p>
+<h2 id="-unknown--a-genuine-crash-is-not-a-new-status"><a class="header" href="#-unknown--a-genuine-crash-is-not-a-new-status">🆘 <code>UNKNOWN</code> — a genuine crash is not a new status</a></h2>
+<p>When the wrapper itself cannot produce a real result — the solver binary is missing, an
+argument was rejected, an exception was raised before the solver could even start — report it as
+status <code>UNKNOWN</code>, reusing RamParILS’s own sentinel rather than inventing something like <code>"error"</code>
+or <code>"CRASH"</code>. <code>UNKNOWN</code> is the <strong>only</strong> status RamParILS treats specially:</p>
+<ul>
+<li>it is written to the run’s error log (<code>log_crash</code>), which is otherwise the one place a human
+would notice something went wrong;</li>
+<li>it is <strong>excluded from the persistent cache</strong> — a wrapper-side crash is not a fact about the
+configuration and must not be remembered as one.</li>
+</ul>
+<p>An invented status (say, <code>"ERROR"</code>) gets neither: RamParILS doesn’t recognise it, so it is cached
+as an ordinary, cacheable, permanent-looking result, and nothing is logged anywhere. This is
+exactly the failure a real run hit: two stale parameter values made the solver exit non-zero on
+a large fraction of evaluations, and because the wrapper reported them under a made-up status,
+every one of those “crashes” was silently cached as a legitimate outcome and the error log —
+the only place that would have shown it — stayed empty for the whole run.</p>
+<pre><code class="language-python">try:
+    result = solver.solve(instance, strategy)
+except (KeyError, OSError, ValueError) as error:
+    print(f"wrapper error: {error}", file=sys.stderr)
+    status, runtime, quality, runhash = "UNKNOWN", cutoff, FAILURE_QUALITY, ""
+else:
+    status = result.get("status", "UNKNOWN") if solver.valid(result) else "UNKNOWN"
+    # ... success/PAR1 branch as above ...
+</code></pre>
+<p>A genuine solver-reported failure (<code>ResourceOut</code>, <code>GaveUp</code>, SMT’s <code>unknown</code>, …) is <em>not</em>
+<code>UNKNOWN</code> — it keeps its real status and stays cached, because it is a fact about that
+configuration on that instance, reproducible on a re-run. <code>UNKNOWN</code> means specifically “the
+wrapper could not get an answer,” not “the answer was negative.”</p>
+<h2 id="-the-optional-runhash-field"><a class="header" href="#-the-optional-runhash-field">#️⃣ The optional <code>runhash</code> field</a></h2>
+<p>A fourth, optional field carries a <strong>runhash</strong>: an 8-byte (16 hex digit) fingerprint of the
+solver’s own internal work on this instance — a hash over a selected subset of the solver’s own
+result counters (<code>RunHash</code> in SolverPy), independent of wall-clock runtime. Two runs of the same
+solver build on the same instance that did byte-identical internal work produce the same
+runhash; a parameter that changed nothing observable produces the same runhash as the run
+without it, which is exactly the signal needed to catch a <strong>structurally dead parameter</strong> — one
+that parses, reaches the command line, and changes nothing, which otherwise shows up only as an
+unexplained plateau in the search (see <a href="#-designing-a-space">Designing a space</a>).</p>
+<p>Rules for emitting it:</p>
+<ul>
+<li><strong>only on a success line.</strong> A crashed or capped run has no solver counters to hash — hashing
+an empty/default selection would produce a fixed constant that reads as “identical behaviour”
+between runs that share nothing but having produced no data;</li>
+<li>16 lowercase hex digits, no <code>0x</code> prefix;</li>
+<li>omit the field entirely (not an empty value) when not applicable — the trailing comma and
+value are absent, not blank.</li>
+</ul>
+<p><code>ramparils</code> stores it per result (nullable, so old caches without it still open) and XORs it
+across a descent’s evaluated neighbours for a per-round fingerprint; <code>ramparils db status</code> and
+<code>ramparils db runhashes</code> export it for offline analysis (<code>work26/expericon/scripts/group-runhashes.py</code> groups
+strategies that produced the same runhash).</p>
+<h2 id="---version"><a class="header" href="#---version">🆚 <code>--version</code></a></h2>
+<p>Before the first evaluation, RamParILS runs <code>&lt;algo&gt; --version</code> and refuses to start unless it
+succeeds — this is the fix for a run that silently spent 24 hours tuning against a solver binary
+that was never on <code>PATH</code>, reporting nothing wrong because every evaluation quietly “timed out”
+instead of failing to launch. The wrapper must:</p>
+<ul>
+<li><strong>exit <code>0</code></strong> when it could reach the inner solver, <strong>non-zero</strong> otherwise;</li>
+<li>print its own version, then the inner solver’s own <code>--version</code> output verbatim — or, if the
+solver could not be reached, a <code>&lt;solver&gt; MISSING</code> placeholder line in its place, keeping the
+block’s shape the same either way so the trailing line is always <code>supports:</code>;</li>
+<li><strong>end with</strong> a line <code>supports: &lt;feature&gt; &lt;feature&gt; …</code> — space-separated keywords naming what
+this wrapper implements. <code>version</code> itself must always be listed; RamParILS checks for it and
+refuses to start if it’s absent, so a wrapper that answers <code>--version</code> at all but omits the
+keyword is treated the same as one that doesn’t answer it.</li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>supports</code> keyword</th><th>Means the wrapper also</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td>answers <code>--version</code> per this section (required)</td></tr>
+<tr><td><code>runhash</code></td><td>emits the optional fourth field on success lines</td></tr>
+<tr><td><code>params</code></td><td>answers <code>--params [-name value ...]</code> — prints the resolved solver command line for a given parameter set, and exits without running anything; useful for inspecting what a configuration actually resolves to</td></tr>
+</tbody>
+</table>
+</div>
+<p>RamParILS logs the whole <code>--version</code> block once, at startup, separated from the per-instance
+solver stats. This is what lets a run’s own log attribute its results to an exact solver build
+— <code>primo --version</code> prints <code>primo 0.1.0</code> for every build ever made, so without this a build
+mismatch across two runs is invisible until someone compares scores and can’t explain the gap.</p>
+<p>Reference implementation (<code>primo_wrapper.py</code>):</p>
+<pre><code>$ primo_wrapper.py --version
+primo_wrapper.py 0.3.0
+primo 0.1.0 (git b3c4188)
+supports: version runhash params
+</code></pre>
+<p>With the solver unreachable — the wrapper still prints the full block, but exits non-zero, so
+RamParILS refuses to start rather than running for hours against a solver that was never there:</p>
+<pre><code>$ primo_wrapper.py --version; echo "exit: $?"
+primo_wrapper.py 0.3.0
+primo MISSING
+supports: version runhash params
+exit: 1
+</code></pre>
+<h2 id="-full-example--the-crashsuccess-branch"><a class="header" href="#-full-example--the-crashsuccess-branch">🧩 Full example — the crash/success branch</a></h2>
+<p>The essential shape, distilled from <code>eprover_wrapper.py</code>’s <code>main()</code>:</p>
+<pre><code class="language-python">try:
+    result = solver.solve(instance, strategy)
+except (KeyError, OSError, ValueError) as error:
+    print(f"wrapper error: {error}", file=sys.stderr)
+    status, runtime, quality, runhash = "UNKNOWN", cutoff, FAILURE_QUALITY, ""
+else:
+    valid = solver.valid(result)
+    status = result.get("status", "UNKNOWN") if valid else "UNKNOWN"
+    if status in solver.success:
+        runtime = result.get("runtime", cutoff)
+        quality = 0.0
+        runhash = f", {result['runhash']:016x}"
+    else:
+        runtime = cutoff          # PAR1
+        quality = FAILURE_QUALITY
+        runhash = ""
 
-# ... run your solver here ...
-
-puts "#%# RamParIls #%# OK, #{runtime}, 0.0"
+print(f"#%# RamParIls #%# {status}, {runtime:.6f}, {quality:.1f}{runhash}")
 </code></pre>
+<p>Three rules, all visible in this shape and all covered above: a crash is <code>UNKNOWN</code>, not an
+invented status; every non-success line — crash or genuine failure alike — charges the full
+cutoff; and <code>runhash</code> is present if and only if <code>status</code> is a success.</p>
+<h2 id="-design-notes"><a class="header" href="#-design-notes">💬 Design notes</a></h2>
+<ul>
+<li><strong><code>--params</code> and dry-run inspection.</strong> Because <code>--params</code> resolves a parameter set to a
+command line without running anything, it’s the fastest way to sanity-check a parameter file
+against the actual wrapper: <code>primo_wrapper.py --params -lra_model_phase true</code> prints exactly
+what the solver will see, catching a typo’d flag name before it costs a single evaluation.</li>
+<li><strong>Prefer reusing <code>UNKNOWN</code> over adding a wrapper-specific error status.</strong> It is not a stylistic
+preference — an invented status silently opts a whole failure class out of both the error log
+and cache exclusion, and the failure is invisible until a human notices the numbers don’t add
+up, which is what actually happened. Reach for a new status only when it’s a genuine outcome
+the solver itself reports.</li>
+<li><strong>Verify a parameter’s domain against the real binary, not an inherited one.</strong> The 43%-error
+incident above was two stale values (valid in an older, different codebase’s domain, rejected
+by the version actually installed) — <code>eprover -W none</code> / <code>-G none</code> printed the accepted-values
+list as part of a “wrong argument” error, and diffing that against the parameter file’s domain
+found both. Cheap to check before trusting a domain copied from elsewhere.</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="-glossary"><a class="header" href="#-glossary">📖 Glossary</a></h1>
 <hr>
@@ -1247,11 +1521,18 @@ A parameter that is included in the solver invocation for a given configuration.
 Conditional parameters are only active when their parent parameter has the required value;
 inactive parameters are omitted from the command line entirely.</p>
 <hr>
-<p><strong>Adaptive capping</strong> (see also: <em>pruning</em>)
-A heuristic early-stopping rule that abandons evaluation when a candidate’s partial mean
-exceeds <code>bound_multiplier × incumbent_score</code>. Later results could lower the final mean, so
-capping can change the search trajectory. Controlled by the <code>pruning</code> and <code>bound_multiplier</code>
-scenario fields.</p>
+<p><strong>Adaptive capping</strong> (see also: <em>pruning</em>, <em>capped score</em>, <em>gated round</em>)
+Early stopping once a candidate has spent the whole budget beating the incumbent allows:
+<code>partial_sum &gt; bound_multiplier × incumbent_score × n_instances</code>. Costs never go down, so
+this proves the final score exceeds the bound — capping never discards a configuration that
+would have been accepted. Controlled by the <code>pruning</code> and <code>bound_multiplier</code> scenario fields.</p>
+<hr>
+<p><strong>Capped score</strong>
+The value a capped evaluation yields: a mean over only the instances that finished before the
+cap fired. Those are the fastest, so it <strong>understates</strong> the true score — it is a lower bound,
+not a measurement. Logged with a leading <code>&gt;</code> and the count it covers, <code>&gt;2.698475 (312/473)</code>.
+Two capped scores cover different, differently biased prefixes and must not be compared to
+each other.</p>
 <hr>
 <p><strong>Configuration</strong>
 A complete assignment of values to all parameters in the parameter space.
@@ -1298,6 +1579,13 @@ Declared in the <code>.params</code> file as <code>{param1=val1, param2=val2}</c
 Any configuration containing a forbidden combination is skipped during neighbourhood
 exploration.</p>
 <hr>
+<p><strong>Gated round</strong>
+A round whose starting configuration was capped and which then accepted no move: every
+neighbour that did not finish under the bound was invisible, so the round produced no search
+at all. Counted in the end-of-run <code>ils: summary</code> line. The rate differs sharply between a
+small perturbation and a fresh random draw, so it belongs beside any comparison of two
+approaches.</p>
+<hr>
 <p><strong>Incumbent</strong>
 The best configuration found so far during the ILS run.
 Updated whenever a new configuration has a strictly lower aggregate score at the required
@@ -1333,7 +1621,8 @@ See also: <em>overall objective</em>.</p>
 <p><strong>Overall objective</strong> (<code>overall_obj</code>)
 How per-instance results are aggregated into a single scalar for comparison.
 <code>mean</code> is sensitive to all instances including outliers; <code>median</code> is more robust but
-ignores magnitude differences.</p>
+ignores magnitude differences. Note that adaptive capping always tests a running <em>sum</em>,
+so a <code>median</code> run prunes on a statistic it does not score — prefer <code>pruning: false</code> there.</p>
 <hr>
 <p><strong>Parameter space</strong>
 The set of all configurations defined by the <code>.params</code> file: parameter names, discrete
@@ -1345,9 +1634,9 @@ A random walk of <code>perturbation_strength</code> steps applied to the current
 escape it and seed the next local search.  Each step randomly changes one parameter to
 a uniformly sampled value from its domain.  Larger values jump further in the space.</p>
 <hr>
-<p><strong>Pruning</strong> (see also: <em>adaptive capping</em>)
-Shorthand for adaptive capping: heuristic early termination when a candidate’s partial
-mean exceeds its configured bound. Enabled by default (<code>pruning: true</code>).</p>
+<p><strong>Pruning</strong> (see also: <em>adaptive capping</em>, <em>capped score</em>)
+Shorthand for adaptive capping: early termination once a candidate has spent its configured
+budget. Enabled by default (<code>pruning: true</code>).</p>
 <hr>
 <p><strong>Run objective</strong> (<code>run_obj</code>)
 What a single solver invocation measures: <code>runtime</code> (wall-clock seconds) or <code>quality</code>

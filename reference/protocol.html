@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-03f54fae.js";
+            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -181,26 +181,37 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="-solver-wrapper-protocol"><a class="header" href="#-solver-wrapper-protocol">🔌 Solver wrapper protocol</a></h1>
-<p>RamParILS communicates with the target algorithm via a simple subprocess protocol.</p>
+<p>RamParILS never talks to the target algorithm directly — every evaluation goes through a
+<strong>wrapper</strong>: a small executable that translates a <code>-name value</code> parameter list into the
+algorithm’s real command line, runs it, and reports back over stdout in a fixed text format.
+The wrapper is the only thing that needs to know how to invoke the algorithm; RamParILS itself
+only ever speaks this protocol.</p>
+<p>Two real wrappers ship as worked examples and are the reference to copy from:
+<a href="https://github.com/deeper4ai/ramparils/blob/main/examples/primo/primo_wrapper.py"><code>examples/primo/primo_wrapper.py</code></a>
+(the primo QF_LRA solver, via <code>solverpy.solver.smt.primo</code>) and
+<a href="https://github.com/deeper4ai/ramparils/blob/main/examples/eprover/eprover_wrapper.py"><code>examples/eprover/eprover_wrapper.py</code></a>
+(the E prover, via <code>solverpy.solver.atp.eprover</code>). Both are Python and use
+<a href="https://github.com/ai4reason/solverpy">SolverPy</a> to run and parse the underlying solver, but
+nothing about the protocol requires either — a wrapper is any program the shell can run.</p>
 <h2 id="-invocation"><a class="header" href="#-invocation">📥 Invocation</a></h2>
-<p>The solver is invoked as a shell command:</p>
+<p>For each evaluation, RamParILS runs:</p>
 <pre><code>&lt;algo&gt; &lt;instance&gt; &lt;cutoff_time&gt; -param1 val1 -param2 val2 …
 </code></pre>
 <ul>
-<li><code>&lt;algo&gt;</code> — the command from the scenario’s <code>algo</code> field (passed to <code>sh -c</code>)</li>
+<li><code>&lt;algo&gt;</code> — the command from the scenario’s <code>algo</code> field, e.g. <code>"python3 primo_wrapper.py"</code></li>
 <li><code>&lt;instance&gt;</code> — path to the instance file</li>
 <li><code>&lt;cutoff_time&gt;</code> — per-run time limit in seconds</li>
-<li><code>-param val</code> pairs — active parameters in alphabetical order</li>
+<li><code>-param val</code> pairs — the <strong>active</strong> parameters (per the parameter file’s conditionals), in
+alphabetical order by name</li>
 </ul>
-<p>The complete command is passed to <code>sh -c</code>. Scenario files and parameter values
-must therefore be trusted, and wrappers should avoid paths or values that need
-shell quoting.</p>
-<p>Example:</p>
-<pre><code>ruby /path/to/saps_wrapper.rb /data/inst1.cnf 5.0 -alpha 1.189 -rho 0.5 -ps 0.1 -wp 0.03
+<p>The complete command is passed to <code>sh -c</code>. Scenario files and parameter values must therefore be
+trusted, and wrappers should avoid paths or values that need shell quoting.</p>
+<p>Example, resolved from <code>algo: "python3 primo_wrapper.py"</code>:</p>
+<pre><code>python3 primo_wrapper.py /data/QF_LRA/inst1.smt2 30.0 -lra_model_phase true -theory_phase polarity
 </code></pre>
-<h2 id="-output"><a class="header" href="#-output">📤 Output</a></h2>
-<p>The solver must print a result line to <strong>stdout</strong>:</p>
-<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;
+<h2 id="-result-line"><a class="header" href="#-result-line">📤 Result line</a></h2>
+<p>The wrapper must print one result line to <strong>stdout</strong>:</p>
+<pre><code>#%# RamParIls #%# &lt;status&gt;, &lt;runtime&gt;, &lt;quality&gt;[, &lt;runhash&gt;]
 </code></pre>
 <div class="table-wrapper">
 <table>
@@ -208,34 +219,196 @@ shell quoting.</p>
 <tr><th>Field</th><th>Values</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>status</code></td><td>text</td><td>Outcome of the run; stored verbatim in the cache</td></tr>
-<tr><td><code>runtime</code></td><td>float</td><td>Actual runtime in seconds (capped to <code>cutoff_time</code>)</td></tr>
-<tr><td><code>quality</code></td><td>float</td><td>Numeric cost to minimise when <code>run_obj: quality</code></td></tr>
+<tr><td><code>status</code></td><td>text</td><td>Outcome of the run, stored verbatim in the cache and in <code>ramparils db status</code> exports</td></tr>
+<tr><td><code>runtime</code></td><td>float, seconds</td><td>Charged runtime — see PAR1 below</td></tr>
+<tr><td><code>quality</code></td><td>float</td><td>Numeric cost to minimise when <code>run_obj: quality</code>; conventionally <code>0.0</code> on success</td></tr>
+<tr><td><code>runhash</code></td><td>16 hex digits, <em>optional</em></td><td>Fingerprint of the solver’s internal work on this instance — see <a href="#-the-optional-runhash-field">below</a></td></tr>
 </tbody>
 </table>
 </div>
-<p>The result line may appear anywhere in stdout; other output is ignored.
-RamParILS stores <code>status</code> for reporting but does not use it when scoring.
-The wrapper must therefore encode timeouts, crashes, and unsolved cases as an
-appropriate runtime or quality penalty.</p>
-<p>If no valid result line is found, the status becomes <code>UNKNOWN</code>, runtime is set
-to <code>cutoff_time</code>, and quality is set to <code>10000000</code>. <code>UNKNOWN</code> results are not
-written to the persistent cache.</p>
-<h2 id="-examples"><a class="header" href="#-examples">🧪 Examples</a></h2>
-<p>Successful run:</p>
-<pre><code>#%# RamParIls #%# OK, 1.23, 0.0
+<p>The line may appear anywhere in stdout; everything else on stdout and stderr is ignored (but
+still worth printing — it is what lands in the debug/error logs when a run needs debugging).
+RamParILS stores <code>status</code> for reporting but does not interpret it when scoring; it is the
+wrapper’s own contract with itself. <strong>If no valid result line is found at all</strong>, RamParILS
+synthesizes one: status <code>UNKNOWN</code>, runtime <code>cutoff_time</code>, quality <code>10000000</code>. <code>UNKNOWN</code> results
+are excluded from the persistent cache and logged to the run’s error log — the wrapper can, and
+for real crashes should, emit this itself; see below.</p>
+<h3 id="examples-by-solver-status-vocabulary"><a class="header" href="#examples-by-solver-status-vocabulary">Examples, by solver status vocabulary</a></h3>
+<p>A wrapper’s <code>status</code> values are whatever the underlying solver reports — RamParILS doesn’t
+constrain the vocabulary, only how the two special outcomes (success, <code>UNKNOWN</code>) are used. Two
+worked families, matching the two example wrappers:</p>
+<p><strong>SMT (<code>primo_wrapper.py</code>, via SolverPy’s <code>smt</code> status plugin)</strong> — success is <code>sat</code> / <code>unsat</code>;
+<code>unknown</code> is a real, cacheable non-success answer distinct from a crash:</p>
+<pre><code>#%# RamParIls #%# sat, 1.234500, 0.0, 3f9a1c7b2e6d4085
+#%# RamParIls #%# unsat, 0.087200, 0.0, 9c1e0a2f7b6d5443
+#%# RamParIls #%# unknown, 30.000000, 10000000.0
+#%# RamParIls #%# UNKNOWN, 30.000000, 10000000.0
 </code></pre>
-<p>Timeout:</p>
-<pre><code>#%# RamParIls #%# TIMEOUT, 5.0, 0.0
+<p><strong>TPTP/SZS (<code>eprover_wrapper.py</code>, via SolverPy’s <code>tptp</code> status plugin)</strong> — success is <code>Theorem</code> /
+<code>Unsatisfiable</code> / <code>Satisfiable</code> / <code>CounterSatisfiable</code> / <code>ContradictoryAxioms</code>; <code>ResourceOut</code>,
+<code>Timeout</code> and <code>GaveUp</code> are real non-success answers:</p>
+<pre><code>#%# RamParIls #%# Theorem, 4.812000, 0.0, 812babf67d10cf3d
+#%# RamParIls #%# Unsatisfiable, 0.930000, 0.0, e74b8847f11fb0e8
+#%# RamParIls #%# ResourceOut, 30.000000, 10000000.0
+#%# RamParIls #%# GaveUp, 30.000000, 10000000.0
+#%# RamParIls #%# UNKNOWN, 30.000000, 10000000.0
 </code></pre>
-<h2 id="-minimal-wrapper-skeleton"><a class="header" href="#-minimal-wrapper-skeleton">🦴 Minimal wrapper skeleton</a></h2>
-<pre><code class="language-ruby">#!/usr/bin/env ruby
-instance, cutoff, *params = ARGV
+<p>Note what both families share: <strong>only a success line carries a <code>runhash</code></strong>, and <strong>every
+non-success line — real or <code>UNKNOWN</code> — charges the full <code>cutoff_time</code>, never the solver’s actual
+elapsed time</strong>. Both are deliberate, not incidental; see the two subsections below.</p>
+<h2 id="-par1--a-failure-must-never-look-cheap"><a class="header" href="#-par1--a-failure-must-never-look-cheap">⏱️ PAR1 — a failure must never look cheap</a></h2>
+<p><code>runtime</code> on a non-success line must be <code>cutoff_time</code>, not whatever time the process actually
+took — including a crash that failed in milliseconds. This is the standard <strong>PAR1</strong> (penalized
+average runtime, ×1) convention: a run scored on <code>run_obj: runtime</code> treats a lower number as
+better, so a wrapper that reports a crash’s true near-instant runtime makes crashing look like
+the <em>best</em> possible outcome, and the search climbs toward configurations that reliably fail fast
+instead of ones that actually solve instances.</p>
+<pre><code class="language-python">if status in solver.success:
+    runtime = result.get("runtime", cutoff)   # real elapsed time
+else:
+    runtime = cutoff                          # PAR1: always the full budget, however it failed
+</code></pre>
+<p>This was a real bug, not a hypothetical: an early version of <code>eprover_wrapper.py</code> reported real
+elapsed time unconditionally, and a batch of invalid parameter values (below) made ~43% of
+evaluations fail near-instantly — all scoring better than genuine solves.</p>
+<h2 id="-unknown--a-genuine-crash-is-not-a-new-status"><a class="header" href="#-unknown--a-genuine-crash-is-not-a-new-status">🆘 <code>UNKNOWN</code> — a genuine crash is not a new status</a></h2>
+<p>When the wrapper itself cannot produce a real result — the solver binary is missing, an
+argument was rejected, an exception was raised before the solver could even start — report it as
+status <code>UNKNOWN</code>, reusing RamParILS’s own sentinel rather than inventing something like <code>"error"</code>
+or <code>"CRASH"</code>. <code>UNKNOWN</code> is the <strong>only</strong> status RamParILS treats specially:</p>
+<ul>
+<li>it is written to the run’s error log (<code>log_crash</code>), which is otherwise the one place a human
+would notice something went wrong;</li>
+<li>it is <strong>excluded from the persistent cache</strong> — a wrapper-side crash is not a fact about the
+configuration and must not be remembered as one.</li>
+</ul>
+<p>An invented status (say, <code>"ERROR"</code>) gets neither: RamParILS doesn’t recognise it, so it is cached
+as an ordinary, cacheable, permanent-looking result, and nothing is logged anywhere. This is
+exactly the failure a real run hit: two stale parameter values made the solver exit non-zero on
+a large fraction of evaluations, and because the wrapper reported them under a made-up status,
+every one of those “crashes” was silently cached as a legitimate outcome and the error log —
+the only place that would have shown it — stayed empty for the whole run.</p>
+<pre><code class="language-python">try:
+    result = solver.solve(instance, strategy)
+except (KeyError, OSError, ValueError) as error:
+    print(f"wrapper error: {error}", file=sys.stderr)
+    status, runtime, quality, runhash = "UNKNOWN", cutoff, FAILURE_QUALITY, ""
+else:
+    status = result.get("status", "UNKNOWN") if solver.valid(result) else "UNKNOWN"
+    # ... success/PAR1 branch as above ...
+</code></pre>
+<p>A genuine solver-reported failure (<code>ResourceOut</code>, <code>GaveUp</code>, SMT’s <code>unknown</code>, …) is <em>not</em>
+<code>UNKNOWN</code> — it keeps its real status and stays cached, because it is a fact about that
+configuration on that instance, reproducible on a re-run. <code>UNKNOWN</code> means specifically “the
+wrapper could not get an answer,” not “the answer was negative.”</p>
+<h2 id="-the-optional-runhash-field"><a class="header" href="#-the-optional-runhash-field">#️⃣ The optional <code>runhash</code> field</a></h2>
+<p>A fourth, optional field carries a <strong>runhash</strong>: an 8-byte (16 hex digit) fingerprint of the
+solver’s own internal work on this instance — a hash over a selected subset of the solver’s own
+result counters (<code>RunHash</code> in SolverPy), independent of wall-clock runtime. Two runs of the same
+solver build on the same instance that did byte-identical internal work produce the same
+runhash; a parameter that changed nothing observable produces the same runhash as the run
+without it, which is exactly the signal needed to catch a <strong>structurally dead parameter</strong> — one
+that parses, reaches the command line, and changes nothing, which otherwise shows up only as an
+unexplained plateau in the search (see <a href="params.html#-designing-a-space">Designing a space</a>).</p>
+<p>Rules for emitting it:</p>
+<ul>
+<li><strong>only on a success line.</strong> A crashed or capped run has no solver counters to hash — hashing
+an empty/default selection would produce a fixed constant that reads as “identical behaviour”
+between runs that share nothing but having produced no data;</li>
+<li>16 lowercase hex digits, no <code>0x</code> prefix;</li>
+<li>omit the field entirely (not an empty value) when not applicable — the trailing comma and
+value are absent, not blank.</li>
+</ul>
+<p><code>ramparils</code> stores it per result (nullable, so old caches without it still open) and XORs it
+across a descent’s evaluated neighbours for a per-round fingerprint; <code>ramparils db status</code> and
+<code>ramparils db runhashes</code> export it for offline analysis (<code>work26/expericon/scripts/group-runhashes.py</code> groups
+strategies that produced the same runhash).</p>
+<h2 id="---version"><a class="header" href="#---version">🆚 <code>--version</code></a></h2>
+<p>Before the first evaluation, RamParILS runs <code>&lt;algo&gt; --version</code> and refuses to start unless it
+succeeds — this is the fix for a run that silently spent 24 hours tuning against a solver binary
+that was never on <code>PATH</code>, reporting nothing wrong because every evaluation quietly “timed out”
+instead of failing to launch. The wrapper must:</p>
+<ul>
+<li><strong>exit <code>0</code></strong> when it could reach the inner solver, <strong>non-zero</strong> otherwise;</li>
+<li>print its own version, then the inner solver’s own <code>--version</code> output verbatim — or, if the
+solver could not be reached, a <code>&lt;solver&gt; MISSING</code> placeholder line in its place, keeping the
+block’s shape the same either way so the trailing line is always <code>supports:</code>;</li>
+<li><strong>end with</strong> a line <code>supports: &lt;feature&gt; &lt;feature&gt; …</code> — space-separated keywords naming what
+this wrapper implements. <code>version</code> itself must always be listed; RamParILS checks for it and
+refuses to start if it’s absent, so a wrapper that answers <code>--version</code> at all but omits the
+keyword is treated the same as one that doesn’t answer it.</li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>supports</code> keyword</th><th>Means the wrapper also</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td>answers <code>--version</code> per this section (required)</td></tr>
+<tr><td><code>runhash</code></td><td>emits the optional fourth field on success lines</td></tr>
+<tr><td><code>params</code></td><td>answers <code>--params [-name value ...]</code> — prints the resolved solver command line for a given parameter set, and exits without running anything; useful for inspecting what a configuration actually resolves to</td></tr>
+</tbody>
+</table>
+</div>
+<p>RamParILS logs the whole <code>--version</code> block once, at startup, separated from the per-instance
+solver stats. This is what lets a run’s own log attribute its results to an exact solver build
+— <code>primo --version</code> prints <code>primo 0.1.0</code> for every build ever made, so without this a build
+mismatch across two runs is invisible until someone compares scores and can’t explain the gap.</p>
+<p>Reference implementation (<code>primo_wrapper.py</code>):</p>
+<pre><code>$ primo_wrapper.py --version
+primo_wrapper.py 0.3.0
+primo 0.1.0 (git b3c4188)
+supports: version runhash params
+</code></pre>
+<p>With the solver unreachable — the wrapper still prints the full block, but exits non-zero, so
+RamParILS refuses to start rather than running for hours against a solver that was never there:</p>
+<pre><code>$ primo_wrapper.py --version; echo "exit: $?"
+primo_wrapper.py 0.3.0
+primo MISSING
+supports: version runhash params
+exit: 1
+</code></pre>
+<h2 id="-full-example--the-crashsuccess-branch"><a class="header" href="#-full-example--the-crashsuccess-branch">🧩 Full example — the crash/success branch</a></h2>
+<p>The essential shape, distilled from <code>eprover_wrapper.py</code>’s <code>main()</code>:</p>
+<pre><code class="language-python">try:
+    result = solver.solve(instance, strategy)
+except (KeyError, OSError, ValueError) as error:
+    print(f"wrapper error: {error}", file=sys.stderr)
+    status, runtime, quality, runhash = "UNKNOWN", cutoff, FAILURE_QUALITY, ""
+else:
+    valid = solver.valid(result)
+    status = result.get("status", "UNKNOWN") if valid else "UNKNOWN"
+    if status in solver.success:
+        runtime = result.get("runtime", cutoff)
+        quality = 0.0
+        runhash = f", {result['runhash']:016x}"
+    else:
+        runtime = cutoff          # PAR1
+        quality = FAILURE_QUALITY
+        runhash = ""
 
-# ... run your solver here ...
-
-puts "#%# RamParIls #%# OK, #{runtime}, 0.0"
+print(f"#%# RamParIls #%# {status}, {runtime:.6f}, {quality:.1f}{runhash}")
 </code></pre>
+<p>Three rules, all visible in this shape and all covered above: a crash is <code>UNKNOWN</code>, not an
+invented status; every non-success line — crash or genuine failure alike — charges the full
+cutoff; and <code>runhash</code> is present if and only if <code>status</code> is a success.</p>
+<h2 id="-design-notes"><a class="header" href="#-design-notes">💬 Design notes</a></h2>
+<ul>
+<li><strong><code>--params</code> and dry-run inspection.</strong> Because <code>--params</code> resolves a parameter set to a
+command line without running anything, it’s the fastest way to sanity-check a parameter file
+against the actual wrapper: <code>primo_wrapper.py --params -lra_model_phase true</code> prints exactly
+what the solver will see, catching a typo’d flag name before it costs a single evaluation.</li>
+<li><strong>Prefer reusing <code>UNKNOWN</code> over adding a wrapper-specific error status.</strong> It is not a stylistic
+preference — an invented status silently opts a whole failure class out of both the error log
+and cache exclusion, and the failure is invisible until a human notices the numbers don’t add
+up, which is what actually happened. Reach for a new status only when it’s a genuine outcome
+the solver itself reports.</li>
+<li><strong>Verify a parameter’s domain against the real binary, not an inherited one.</strong> The 43%-error
+incident above was two stale values (valid in an older, different codebase’s domain, rejected
+by the version actually installed) — <code>eprover -W none</code> / <code>-G none</code> printed the accepted-values
+list as part of a “wrong argument” error, and diffing that against the parameter file’s domain
+found both. Cheap to check before trusting a domain copied from elsewhere.</li>
+</ul>
 
                     </main>
 

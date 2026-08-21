@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-03f54fae.js";
+            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -187,11 +187,18 @@ A parameter that is included in the solver invocation for a given configuration.
 Conditional parameters are only active when their parent parameter has the required value;
 inactive parameters are omitted from the command line entirely.</p>
 <hr>
-<p><strong>Adaptive capping</strong> (see also: <em>pruning</em>)
-A heuristic early-stopping rule that abandons evaluation when a candidate’s partial mean
-exceeds <code>bound_multiplier × incumbent_score</code>. Later results could lower the final mean, so
-capping can change the search trajectory. Controlled by the <code>pruning</code> and <code>bound_multiplier</code>
-scenario fields.</p>
+<p><strong>Adaptive capping</strong> (see also: <em>pruning</em>, <em>capped score</em>, <em>gated round</em>)
+Early stopping once a candidate has spent the whole budget beating the incumbent allows:
+<code>partial_sum &gt; bound_multiplier × incumbent_score × n_instances</code>. Costs never go down, so
+this proves the final score exceeds the bound — capping never discards a configuration that
+would have been accepted. Controlled by the <code>pruning</code> and <code>bound_multiplier</code> scenario fields.</p>
+<hr>
+<p><strong>Capped score</strong>
+The value a capped evaluation yields: a mean over only the instances that finished before the
+cap fired. Those are the fastest, so it <strong>understates</strong> the true score — it is a lower bound,
+not a measurement. Logged with a leading <code>&gt;</code> and the count it covers, <code>&gt;2.698475 (312/473)</code>.
+Two capped scores cover different, differently biased prefixes and must not be compared to
+each other.</p>
 <hr>
 <p><strong>Configuration</strong>
 A complete assignment of values to all parameters in the parameter space.
@@ -238,6 +245,13 @@ Declared in the <code>.params</code> file as <code>{param1=val1, param2=val2}</c
 Any configuration containing a forbidden combination is skipped during neighbourhood
 exploration.</p>
 <hr>
+<p><strong>Gated round</strong>
+A round whose starting configuration was capped and which then accepted no move: every
+neighbour that did not finish under the bound was invisible, so the round produced no search
+at all. Counted in the end-of-run <code>ils: summary</code> line. The rate differs sharply between a
+small perturbation and a fresh random draw, so it belongs beside any comparison of two
+approaches.</p>
+<hr>
 <p><strong>Incumbent</strong>
 The best configuration found so far during the ILS run.
 Updated whenever a new configuration has a strictly lower aggregate score at the required
@@ -273,7 +287,8 @@ See also: <em>overall objective</em>.</p>
 <p><strong>Overall objective</strong> (<code>overall_obj</code>)
 How per-instance results are aggregated into a single scalar for comparison.
 <code>mean</code> is sensitive to all instances including outliers; <code>median</code> is more robust but
-ignores magnitude differences.</p>
+ignores magnitude differences. Note that adaptive capping always tests a running <em>sum</em>,
+so a <code>median</code> run prunes on a statistic it does not score — prefer <code>pruning: false</code> there.</p>
 <hr>
 <p><strong>Parameter space</strong>
 The set of all configurations defined by the <code>.params</code> file: parameter names, discrete
@@ -285,9 +300,9 @@ A random walk of <code>perturbation_strength</code> steps applied to the current
 escape it and seed the next local search.  Each step randomly changes one parameter to
 a uniformly sampled value from its domain.  Larger values jump further in the space.</p>
 <hr>
-<p><strong>Pruning</strong> (see also: <em>adaptive capping</em>)
-Shorthand for adaptive capping: heuristic early termination when a candidate’s partial
-mean exceeds its configured bound. Enabled by default (<code>pruning: true</code>).</p>
+<p><strong>Pruning</strong> (see also: <em>adaptive capping</em>, <em>capped score</em>)
+Shorthand for adaptive capping: early termination once a candidate has spent its configured
+budget. Enabled by default (<code>pruning: true</code>).</p>
 <hr>
 <p><strong>Run objective</strong> (<code>run_obj</code>)
 What a single solver invocation measures: <code>runtime</code> (wall-clock seconds) or <code>quality</code>

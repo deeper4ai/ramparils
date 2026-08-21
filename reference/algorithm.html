@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-03f54fae.js";
+            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -289,29 +289,34 @@ random-restart baseline to measure an iterated local search against, not a tunin
 Restarts are inert under it, since every round already restarts.</p>
 <hr>
 <h2 id="-adaptive-capping"><a class="header" href="#-adaptive-capping">✂️ Adaptive capping</a></h2>
-<p>Adaptive capping (controlled by <code>pruning</code> and <code>bound_multiplier</code>) stops evaluating a configuration
-early if its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. This is a heuristic:
-later results could lower the final mean, so capping can change which configurations are explored
-and accepted.</p>
-<p>A lower <code>bound_multiplier</code> (e.g., 2.0) prunes more aggressively and speeds up search, but may
-occasionally discard a configuration that would have been competitive on later instances.
-The default of 10.0 is conservative for positive cost objectives. Set <code>pruning: false</code> when exact
-uncapped comparisons are required or when partial means and multiplier bounds are inappropriate
-for the objective.</p>
-<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a PAR1 runtime
-objective no instance can be charged more than <code>cutoff_time</code>, so a partial mean can never exceed
-it and capping is <em>mathematically unable to fire</em> unless</p>
-<pre><code class="language-text">bound_multiplier × incumbent_score &lt; cutoff_time
+<p>Adaptive capping (<code>pruning</code>, <code>bound_multiplier</code>) abandons an evaluation once the configuration has
+spent the entire budget that beating the incumbent would allow:</p>
+<pre><code class="language-text">partial_sum &gt; bound_multiplier × incumbent_score × n_instances
 </code></pre>
-<p>A multiplier just below that ratio is indistinguishable from <code>pruning: false</code>. With an incumbent
-of 0.478 at a 1 s cutoff the ratio is 2.09, so the seemingly aggressive 2.0 prunes only a
-candidate that has timed out on ~96% of the instances scored so far; the same 2.0 at a 10 s cutoff
-with an incumbent of 2.95 caps at 59% of the ceiling and prunes normally. Express the intent as a
-fraction of the ceiling and the multiplier follows.</p>
-<p>Aggressive settings are safer than the “later results could lower the mean” caveat suggests,
-because results arrive in completion order — the fast ones first. The running mean therefore
-climbs as an evaluation proceeds, and once it has passed a bound above <code>1 × incumbent_score</code> it
-rarely comes back down.</p>
+<p>Costs never go down, so passing that budget <em>proves</em> the final mean exceeds the bound. Capping is
+therefore exact — it never discards a configuration that would have been accepted — and it fires at
+the earliest point where the proof exists.</p>
+<p><strong>Pick the multiplier against the objective’s ceiling, not in the abstract.</strong> Under a runtime
+objective no instance is charged more than <code>cutoff_time</code>, so with <code>B = bound_multiplier × incumbent_score</code> and <code>C = cutoff_time</code>, capping cannot fire at all unless <code>B &lt; C</code>, and when it can,
+no cap is possible before <code>B / C</code> of the instance set — spending a budget of <code>B·N</code> takes at least
+that many instances. With an incumbent of 0.478 at a 1 s cutoff, multiplier 2.0 gives <code>B/C = 0.96</code>:
+nothing is pruned before 96% of the set, which is indistinguishable from <code>pruning: false</code>. The same
+2.0 at a 10 s cutoff with an incumbent of 2.95 gives 0.59 and prunes normally. Express the intent as
+a fraction of the ceiling and the multiplier follows.</p>
+<p><strong>A capped score is a lower bound, not a score</strong>, and is logged as one:</p>
+<pre><code class="language-text">ils: bls local optimum score=&gt;2.698475 (312/473)
+</code></pre>
+<p>It is a mean over the instances that finished first — the fastest — so it understates the true mean.
+Never compare two capped scores with each other: each covers a different, differently biased prefix.</p>
+<p><strong>Under <code>overall_obj: median</code> the cap tests a statistic the run does not score</strong> — it always sums.
+Prefer <code>pruning: false</code> there.</p>
+<p>A run ends with an account of what the search actually got to do:</p>
+<pre><code class="language-text">ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489
+</code></pre>
+<p>A <em>gated</em> round is one whose starting configuration was capped and which then accepted no move: the
+bound hid every neighbour, so the round produced no search. Worth reporting whenever two approaches
+are compared — the bound is relative to the incumbent, so it prunes a small perturbation and a fresh
+random draw at very different rates, and a final-score comparison alone hides that.</p>
 <hr>
 <p><a id="iterative-deepening"></a></p>
 <h2 id="-iterative-deepening"><a class="header" href="#-iterative-deepening">📈 Iterative deepening</a></h2>

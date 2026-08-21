@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-03f54fae.js";
+            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -348,8 +348,8 @@ started.</p>
 <tr><td><code>random_probes</code></td><td><code>0</code></td><td>ParamILS’s <code>R</code>: probe this many random configurations before the first descent, stepping to any that beats the starting configuration. The default of <code>0</code> starts from the supplied configuration and nothing else, which is what specializing a caller-supplied strategy requires.</td></tr>
 <tr><td><code>initial_fidelity</code></td><td><code>1</code></td><td>Initial number of instances used to score each configuration in FocusedILS. Larger values shift worker capacity from speculative neighbor evaluation toward parallel instance evaluation. Values are clamped to the available instance count.</td></tr>
 <tr><td><code>fidelity_step</code></td><td><code>1</code></td><td>Number of instances added when FocusedILS increases fidelity after the incumbent survives a challenge. Values of <code>0</code> are treated as <code>1</code>.</td></tr>
-<tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Heuristic capping threshold. A candidate is abandoned when its partial mean exceeds <code>bound_multiplier × incumbent_score</code>. Lower values prune more aggressively and can change search results.</td></tr>
-<tr><td><code>pruning</code></td><td><code>true</code></td><td>Enable heuristic capping. Disable it when exact uncapped comparisons are required or when partial means are not meaningful for the objective.</td></tr>
+<tr><td><code>bound_multiplier</code></td><td><code>10.0</code></td><td>Capping threshold. A candidate is abandoned once its running sum exceeds <code>bound_multiplier × incumbent_score × n_instances</code> — the budget beating the incumbent allows. Lower values prune more aggressively; capping is exact, so it never discards a configuration that would have been accepted.</td></tr>
+<tr><td><code>pruning</code></td><td><code>true</code></td><td>Enable capping. Disable it for <code>overall_obj: median</code>, where the test sums a statistic the run does not score.</td></tr>
 </tbody>
 </table>
 </div>
