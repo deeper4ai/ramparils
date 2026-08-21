@@ -215,6 +215,53 @@ pub fn log_crash(cmd: &str, stdout: &str, stderr: &str, exit_code: Option<i32>) 
     let _ = writeln!(f, "{sep}");
 }
 
+/// Probe `algo`'s `--version` response before any evaluation runs.
+///
+/// Runs `sh -c "<algo> --version"` — the same path `run_wrapper_process`
+/// (`eval.rs`) takes for a real evaluation, so this also proves the `algo`
+/// string is executable at all, before the budget is spent on it
+/// (ramparils-primo-cont/IDEAS.md item 1).
+///
+/// Requires: the process exits 0, its stdout's **last** line starts with
+/// `supports:`, and that line lists `version` as a whitespace-separated
+/// token. Anything else is an error — "No valid response, no run." Returns
+/// the trimmed stdout on success, for the caller to log.
+///
+/// The incident this closes: a 24 h run against a wrapper with no solver
+/// binary on `PATH` and no instance files in place reported nothing wrong,
+/// because the wrapper answered every evaluation with a well-formed but
+/// meaningless result line rather than crashing (`TODO.md`, 2026-08-20). This
+/// probe would have refused to start in under a second.
+pub fn probe_wrapper_version(algo: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", &format!("{algo} --version")])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run `{algo} --version`: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim_end().to_string();
+    let report = |detail: &str| -> anyhow::Error {
+        anyhow::anyhow!(
+            "`{algo} --version` {detail}; refusing to start.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        )
+    };
+
+    if !output.status.success() {
+        return Err(report(&format!("exited with {}", output.status)));
+    }
+    let Some(last_line) = stdout.lines().next_back() else {
+        return Err(report("produced no output"));
+    };
+    let Some(supports) = last_line.strip_prefix("supports:") else {
+        return Err(report("did not end with a `supports:` line"));
+    };
+    if !supports.split_whitespace().any(|feature| feature == "version") {
+        return Err(report("`supports:` line does not list `version`"));
+    }
+
+    Ok(stdout)
+}
+
 /// Returns true if any debug destination (stderr or file) is active.
 pub fn any_debug_active() -> bool {
     DEBUG_STDERR.load(Ordering::Relaxed) || LOG_FILE.lock().unwrap().is_some()
@@ -326,4 +373,36 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn probe_wrapper_version_ok() {
+        let block = super::probe_wrapper_version(
+            "printf 'primo_wrapper.py 0.1.0\\nprimo 0.1.0\\nsupports: version runhash params'",
+        )
+        .unwrap();
+        assert!(block.contains("supports: version runhash params"));
+    }
+
+    #[test]
+    fn probe_wrapper_version_rejects_nonzero_exit() {
+        let err = super::probe_wrapper_version("sh -c 'echo supports: version; exit 1'")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exited with"), "{err}");
+    }
+
+    #[test]
+    fn probe_wrapper_version_rejects_missing_supports_line() {
+        let err = super::probe_wrapper_version("echo no version info here")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("supports:"), "{err}");
+    }
+
+    #[test]
+    fn probe_wrapper_version_rejects_supports_without_version() {
+        let err = super::probe_wrapper_version("echo supports: runhash params")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not list"), "{err}");
+    }
 }

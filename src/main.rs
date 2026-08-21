@@ -37,11 +37,12 @@ enum Command {
 
     /// Export the contents of a `.dbcache` to files.
     ///
-    /// Given a cache and no sub-command, exports all three at once —
-    /// `ramparils db results.dbcache` is `solved`, `status` and `confs`.
+    /// Given a cache and no sub-command, exports all four at once —
+    /// `ramparils db results.dbcache` is `solved`, `status`, `confs` and
+    /// `runhashes`.
     #[command(args_conflicts_with_subcommands = true, arg_required_else_help = true)]
     Db {
-        /// Path to the .dbcache file: exports solved, status and confs.
+        /// Path to the .dbcache file: exports solved, status, confs and runhashes.
         dbcache: Option<PathBuf>,
 
         /// Output root directory.
@@ -112,6 +113,29 @@ enum DbCommand {
         #[arg(long)]
         json: bool,
     },
+
+    /// Write `ram-<hash> <SPACE> runhash <SPACE> n`, one line per hash
+    /// (`ram-<hash>` matches the filenames under `solved`/`status`/`confs`),
+    /// to a single file rather than one-per-hash like those three. Also run
+    /// by the plain `ramparils db <cache>` default export, alongside
+    /// `solved`, `status` and `confs`.
+    ///
+    /// `runhash` is the XOR of every non-null runhash for that hash;
+    /// instances with none (timeout, error, unknown) are skipped when
+    /// combining, not disqualifying (see `db.rs` for why: requiring full
+    /// coverage excluded nearly every hash in practice, and this is computed
+    /// fresh on every export rather than stored back into the cache). `n`
+    /// counts every result for that hash, timeouts included, same as
+    /// `status`'s export would show — `n == instances` means fully evaluated,
+    /// not "runhash on every instance".
+    Runhashes {
+        /// Path to the .dbcache file.
+        dbcache: PathBuf,
+
+        /// Output root directory.
+        #[arg(long, default_value = "solverpy_db")]
+        out_dir: PathBuf,
+    },
 }
 
 fn sh(cmd: &str) -> String {
@@ -164,6 +188,22 @@ fn print_debug_header() {
     );
     let argv: Vec<String> = std::env::args().collect();
     ramparils::debug_line(d, &format!("[{t:8.2}s] args:    {}", argv.join(" ")));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
+}
+
+/// Print the `--version` probe's response as its own block, separate from
+/// `print_debug_header`'s own stats (ramparils-primo-cont/IDEAS.md item 1:
+/// "log the whole block beside its own version header").
+fn print_debug_wrapper_version(algo: &str, block: &str) {
+    if !ramparils::any_debug_active() {
+        return;
+    }
+    let t = ramparils::t();
+    let d = true;
+    let sep = "-".repeat(60);
+    ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
+    ramparils::debug_line(d, &format!("[{t:8.2}s] wrapper --version: {algo}"));
+    ramparils::debug_block(d, block);
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
 
@@ -239,6 +279,7 @@ fn main() -> Result<()> {
             Some(DbCommand::Solved { dbcache, out_dir }) => ramparils::db::solved(&dbcache, &out_dir),
             Some(DbCommand::Status { dbcache, out_dir }) => ramparils::db::status(&dbcache, &out_dir),
             Some(DbCommand::Confs { dbcache, out_dir, json }) => ramparils::db::confs(&dbcache, &out_dir, json),
+            Some(DbCommand::Runhashes { dbcache, out_dir }) => ramparils::db::runhashes(&dbcache, &out_dir),
             // `arg_required_else_help` means one of the two is always present.
             None => ramparils::db::export_all(&dbcache.expect("clap requires a cache or a sub-command"), &out_dir),
         },
@@ -260,6 +301,9 @@ fn cmd_run(scenariofile: &str) -> Result<()> {
     }
     let main_debug = ramparils::any_debug_active();
     print_debug_header();
+
+    let wrapper_version = ramparils::probe_wrapper_version(&scenario.algo)?;
+    print_debug_wrapper_version(&scenario.algo, &wrapper_version);
 
     let space = ParamSpace::from_file(&scenario.paramfile)?;
 

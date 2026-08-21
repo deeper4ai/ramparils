@@ -126,6 +126,10 @@ fn run_specialize_inner(
     strategy: HashMap<String, String>,
     scenario: &Scenario,
 ) -> anyhow::Result<HashMap<String, String>> {
+    let wrapper_version = crate::probe_wrapper_version(&scenario.algo)?;
+    crate::debug_line(crate::any_debug_active(), "wrapper --version:");
+    crate::debug_block(crate::any_debug_active(), &wrapper_version);
+
     let space = ParamSpace::from_file(&scenario.paramfile)?;
     let instance_paths = scenario.instance_paths()?;
     anyhow::ensure!(!instance_paths.is_empty(), "instance list is empty");

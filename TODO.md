@@ -194,13 +194,24 @@ name "dead". Item 4 is about a parameter that genuinely changes behaviour by an
 amount the objective cannot resolve — a property of the experiment (budget,
 cutoff, instance set), not of the solver.
 
-## ⬜ Wrapper `--version` protocol
+## ✅ Wrapper `--version` protocol
 
 Give algorithm wrappers a `--version` convention: `python3 primo_wrapper.py
 --version` prints the wrapper's own revision and the solver's version block
 (for `primo_wrapper.py`, the output of `primo --version`). `ramparils` calls it
 once at launch and writes the result into the debug log header, beside the
 `binary:` / `git:` lines it already emits.
+
+Implemented: `probe_wrapper_version()` (`lib.rs`) runs the wrapper's
+`--version` at startup from `main.rs` and `python.rs`, checks the exit code,
+requires a `supports:` line containing `version`, logs the result separated
+from the run's other stats, and refuses to start otherwise. When the wrapper
+can't reach its solver it prints a `<solver> MISSING` line right after its own
+version block, so a missing binary is caught in under a second instead of
+producing 24 hours of flat-objective silence (see the fail-fast section
+below, which this item was the first fix for). `eprover_wrapper.py` and
+`primo_wrapper.py` both implement the convention now — use them as the
+reference shape for a new wrapper.
 
 Two independent reasons, both now evidenced:
 
