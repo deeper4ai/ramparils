@@ -30,8 +30,8 @@ DEFAULT_MEMORY_LIMIT_MB = 4096
 
 WRAPPER_VERSION = "0.1.0"
 # Features this wrapper answers `--version` with a `supports:` line for, per
-# ramparils-primo-cont/IDEAS.md item 1. "clean" is not implemented.
-SUPPORTS = ["version", "runhash", "params"]
+# ramparils-primo-cont/IDEAS.md item 1.
+SUPPORTS = ["version", "runhash", "params", "clean"]
 
 # Boolean parameters, off by default: E is told about them only to turn them on.
 POSITIVE_FLAGS = {
@@ -103,6 +103,46 @@ HEURISTIC_CEFS = {
 }
 
 MAX_SLOTS = 4
+
+# Every RamParILS parameter's default, per params-eprover.txt -- the sentinel
+# `clean` (see `clean_parameters`) strips a value against.
+PARAM_DEFAULTS = {
+    "sel": "SelectMaxLComplexAvoidPosPred",
+    "simparamod": "none",
+    "der": "none",
+    "fwdemod": "2",
+    "defcnf": "24",
+    "condense": "0",
+    "presat": "0",
+    "prefer": "0",
+    "tord": "LPO4",
+    "tord_prec": "arity",
+    "tord_weight": "arity",
+    "tord_const": "0",
+    "slots": "0",
+    "heur1": "nb7",
+    "freq1": "1",
+    "heur2": "fifo",
+    "freq2": "1",
+    "heur3": "precasc",
+    "freq3": "1",
+    "heur4": "mzr02",
+    "freq4": "1",
+}
+
+# The parameters that together define the `-H`/`--define-heuristic` clause --
+# `slots` plus each active `heurN`/`freqN` pair, in the order `build_strategy`
+# assembles them. `clean` prints this group last, after every other parameter
+# sorted alphabetically, since splitting it by name (`freq1` before `heur1`)
+# would obscure that they are one heuristic definition, not independent
+# options.
+HEURISTIC_PARAM_ORDER = [
+    "slots",
+    "heur1", "freq1",
+    "heur2", "freq2",
+    "heur3", "freq3",
+    "heur4", "freq4",
+]
 
 
 def parse_parameters(arguments: list[str]) -> dict[str, str]:
@@ -268,6 +308,77 @@ def print_params(arguments: list[str]) -> int:
     return 0
 
 
+def is_active(name: str, parameters: dict[str, str]) -> bool:
+    """Whether *name* is live under *parameters*, per params-eprover.txt's two
+    guards: `tord_weight`/`tord_const` on `tord in {KBO6}`, `heurN`/`freqN` on
+    `slots in {N, ..., MAX_SLOTS}`. Every other parameter is unconditional.
+    """
+    if name in ("tord_weight", "tord_const"):
+        return parameters.get("tord") == "KBO6"
+    if name.startswith("heur") or name.startswith("freq"):
+        slot = int(name[len("heur"):] if name.startswith("heur") else name[len("freq"):])
+        try:
+            n_slots = int(parameters.get("slots", "0"))
+        except ValueError:
+            return False
+        return n_slots >= slot
+    return True
+
+
+# `sel`/`tord` are never dropped on a default match, unlike the rest of
+# PARAM_DEFAULTS: `eprover --help` states no actual default for
+# `--literal-selection-strategy` or `--term-ordering` (unlike, say,
+# `--forward-demod-level`), so params-eprover.txt's bracketed value is only
+# this domain's default, not E's -- omitting the flag would leave E to pick
+# its own, which need not agree.
+ALWAYS_KEEP = {"sel", "tord"}
+
+
+def clean_parameters(parameters: dict[str, str]) -> dict[str, str]:
+    """Drop every parameter at its default value or under an inactive guard.
+
+    `slots` and each active `heurN`/`freqN` are kept even at their default
+    value: `build_strategy` requires exactly the first `n_slots` pairs to be
+    present whenever `slots` is active, so dropping one on a default match
+    would turn a valid heuristic definition into a missing-parameter error.
+    `sel` and `tord` are kept regardless of value; see `ALWAYS_KEEP`.
+    """
+    cleaned: dict[str, str] = {}
+    for name, value in parameters.items():
+        if name not in PARAM_DEFAULTS:
+            raise ValueError(f"unknown parameter: {name!r}")
+        if not is_active(name, parameters):
+            continue
+        if (
+            name not in HEURISTIC_PARAM_ORDER
+            and name not in ALWAYS_KEEP
+            and value == PARAM_DEFAULTS[name]
+        ):
+            continue
+        cleaned[name] = value
+    return cleaned
+
+
+def print_clean(arguments: list[str]) -> int:
+    """Answer `--clean`: like `--params`, but print the `-name value` pairs
+    themselves (not the E options they resolve to) with defaulted and
+    inactive-guard parameters dropped, sorted by name -- except `slots` and
+    the `heurN`/`freqN` pairs it activates, which print last as one group in
+    build order rather than being scattered alphabetically (`freq1` before
+    `heur1`) across the rest.
+    """
+    try:
+        cleaned = clean_parameters(parse_parameters(arguments))
+    except ValueError as error:
+        print(f"eprover wrapper error: {error}", file=sys.stderr)
+        return 1
+    ordered = sorted(name for name in cleaned if name not in HEURISTIC_PARAM_ORDER)
+    ordered += [name for name in HEURISTIC_PARAM_ORDER if name in cleaned]
+    parts = [token for name in ordered for token in (f"-{name}", cleaned[name])]
+    print(" ".join(parts))
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--version":
         return print_version()
@@ -275,11 +386,15 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--params":
         return print_params(sys.argv[2:])
 
+    if len(sys.argv) >= 2 and sys.argv[1] == "--clean":
+        return print_clean(sys.argv[2:])
+
     if len(sys.argv) < 3:
         print(
             f"usage: {Path(sys.argv[0]).name} INSTANCE CUTOFF [-name value ...]\n"
             f"       {Path(sys.argv[0]).name} --version\n"
-            f"       {Path(sys.argv[0]).name} --params [-name value ...]",
+            f"       {Path(sys.argv[0]).name} --params [-name value ...]\n"
+            f"       {Path(sys.argv[0]).name} --clean [-name value ...]",
             file=sys.stderr,
         )
         return 2
