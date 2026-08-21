@@ -100,6 +100,18 @@ the work. Do not falsely attribute work to another assistant.
 - Cache access stays coordinated by the ILS side; solver workers should not
   independently mutate the SQLite connection.
 
+## Example Scenario Naming
+
+New `ramparils run` examples (not retroactive — `examples/primo` and other
+existing examples keep their current names): scenario file `<name>.yaml`, no
+`scenario-` prefix (e.g. `eprover-basic.yaml`); debug log `<name>.log`; error
+log `<name>.errors`; cache `<name>.dbcache` (unless deliberately shared with
+another scenario — e.g. `eprover-basic.yaml`, `eprover-random.yaml` and
+`eprover-focused.yaml`, three approaches over the same algo/paramfile/
+instances, all sharing `eprover.dbcache`). `params-`/`instances-` files keep
+their existing prefixes, named after the benchmark/domain rather than the
+scenario. Default naming — deviate only when asked.
+
 ## Engineering Conventions
 
 - Follow existing module patterns and use `anyhow::Result` for fallible
