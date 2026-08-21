@@ -18,6 +18,8 @@
 //!     quality       REAL    NOT NULL,
 //!     status_id     INTEGER NOT NULL DEFAULT 0,
 //!     cutoff        REAL    NOT NULL,
+//!     runhash       INTEGER,          -- nullable: absent for timeouts/errors,
+//!                                     -- and for rows written before this column existed
 //!     PRIMARY KEY (strategy_hash, instance_id)
 //! );
 //! CREATE TABLE IF NOT EXISTS strategies (
@@ -48,6 +50,18 @@
 //! `results` rows only carry an integer FK.  `status_id = 0` means `UNKNOWN`
 //! (used for rows inserted before status tracking was introduced).
 //!
+//! `runhash` is the wrapper's optional fourth result-line field (see
+//! `eval::parse_solver_output`): a fingerprint of the solver's internal
+//! behaviour on that instance, independent of runtime, used to notice when a
+//! configuration change did nothing (ramparils-primo-cont/IDEAS.md item 2).
+//! It is `NULL` whenever the wrapper didn't supply one — which, by the
+//! wrapper contract this record assumes, means every non-terminating run
+//! (timeout, error, unknown): a runhash is only meaningful for a run that
+//! actually finished, so `adapt_cached_result` drops it whenever it
+//! synthesizes a timeout from a stored result. Opening an older cache adds
+//! the column (nullable `ALTER TABLE`, same as the `strategies` table below
+//! is added wholesale) — existing rows simply have no runhash.
+//!
 //! The `instances` table is populated once at startup via `load_instances()`,
 //! which returns an in-memory `HashMap<String, i64>` used for all subsequent
 //! queries — no path strings appear in hot-path SQL.
@@ -66,6 +80,10 @@ pub struct CachedResult {
     pub runtime: f64,
     pub quality: f64,
     pub status: String,
+    /// Fingerprint of the solver's internal behaviour on this instance; see
+    /// the `runhash` column note above. `None` for a timeout/error/unknown
+    /// result, or for a row written before this column existed.
+    pub runhash: Option<u64>,
 }
 
 pub struct Cache {
@@ -101,6 +119,7 @@ impl Cache {
                 quality       REAL    NOT NULL,
                 status_id     INTEGER NOT NULL DEFAULT 0,
                 cutoff        REAL    NOT NULL,
+                runhash       INTEGER,
                 PRIMARY KEY (strategy_hash, instance_id)
             );
             CREATE TABLE IF NOT EXISTS strategies (
@@ -121,6 +140,13 @@ impl Cache {
             columns.iter().any(|column| column == "status_id") && columns.iter().any(|column| column == "cutoff"),
             "cache uses an incompatible schema; remove it and create a fresh cache"
         );
+        // Nullable, added after `status_id`/`cutoff` were already load-bearing:
+        // an older cache just gets the column, same as `strategies` above gets
+        // created wholesale — existing rows have no runhash, new ones do.
+        if !columns.iter().any(|column| column == "runhash") {
+            conn.execute("ALTER TABLE results ADD COLUMN runhash INTEGER", [])
+                .context("failed to add runhash column to an older cache")?;
+        }
 
         crate::debug_line(debug, &format!("[{:8.2}s] cache: opened path={path}", crate::t()));
         Ok(Cache {
@@ -253,7 +279,7 @@ impl Cache {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT r.instance_id, r.runtime, r.quality, s.status, r.cutoff \
+            "SELECT r.instance_id, r.runtime, r.quality, s.status, r.cutoff, r.runhash \
              FROM results r JOIN statuses s ON r.status_id = s.id \
              WHERE r.strategy_hash = ?1 AND r.instance_id IN ({placeholders})"
         );
@@ -272,6 +298,7 @@ impl Cache {
                             runtime: row.get(1)?,
                             quality: row.get(2)?,
                             status: row.get(3)?,
+                            runhash: row.get::<_, Option<i64>>(5)?.map(|h| h as u64),
                         },
                         row.get::<_, f64>(4)?,
                     ),
@@ -291,6 +318,11 @@ impl Cache {
     }
 
     /// Store a single result.
+    ///
+    /// `runhash` is the wrapper's optional fourth result-line field — `None`
+    /// for anything but a terminated (sat/unsat-shaped) run; see the module
+    /// doc note on the `runhash` column.
+    #[allow(clippy::too_many_arguments)]
     pub fn put(
         &mut self,
         strategy_hash: u64,
@@ -299,6 +331,7 @@ impl Cache {
         quality: f64,
         status: &str,
         cutoff: f64,
+        runhash: Option<u64>,
     ) -> Result<()> {
         let status_id = self.intern_status(status)?;
         let existing = self
@@ -325,9 +358,17 @@ impl Cache {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO results \
-             (strategy_hash, instance_id, runtime, quality, status_id, cutoff) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![strategy_hash as i64, instance_id, runtime, quality, status_id, cutoff],
+             (strategy_hash, instance_id, runtime, quality, status_id, cutoff, runhash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    strategy_hash as i64,
+                    instance_id,
+                    runtime,
+                    quality,
+                    status_id,
+                    cutoff,
+                    runhash.map(|h| h as i64)
+                ],
             )
             .context("failed to write to result cache")?;
         Ok(())
@@ -367,10 +408,14 @@ fn adapt_cached_result(cached: CachedResult, stored_cutoff: f64, requested_cutof
     }
 
     if cached.runtime > requested_cutoff {
+        // A synthetic timeout at a shorter cutoff: the stored runhash describes
+        // the *completed* run, not this simulated one, so it does not carry
+        // over — matching the wrapper's own contract of no runhash on a timeout.
         return Some(CachedResult {
             runtime: requested_cutoff,
             quality: SYNTHETIC_TIMEOUT_QUALITY,
             status: "TIMEOUT".to_string(),
+            runhash: None,
         });
     }
 
@@ -426,7 +471,7 @@ mod tests {
 
         assert!(cache.get_batch(42, &[id1, id2], 10.0).unwrap().is_empty());
 
-        cache.put(42, id1, 1.23, 0.0, "Theorem", 10.0).unwrap();
+        cache.put(42, id1, 1.23, 0.0, "Theorem", 10.0, None).unwrap();
         let hits = cache.get_batch(42, &[id1, id2], 10.0).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[&id1].runtime - 1.23).abs() < 1e-9);
@@ -439,10 +484,10 @@ mod tests {
         let mut cache = open();
         let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
         let id = ids["x.cnf"];
-        cache.put(1, id, 2.0, 5.0, "Timeout", 2.0).unwrap();
-        cache.put(1, id, 3.5, 7.0, "Timeout", 5.0).unwrap();
-        cache.put(1, id, 1.5, 1.0, "Theorem", 5.0).unwrap();
-        cache.put(1, id, 1.0, 0.0, "Timeout", 10.0).unwrap();
+        cache.put(1, id, 2.0, 5.0, "Timeout", 2.0, None).unwrap();
+        cache.put(1, id, 3.5, 7.0, "Timeout", 5.0, None).unwrap();
+        cache.put(1, id, 1.5, 1.0, "Theorem", 5.0, None).unwrap();
+        cache.put(1, id, 1.0, 0.0, "Timeout", 10.0, None).unwrap();
 
         let hits = cache.get_batch(1, &[id], 10.0).unwrap();
         assert!((hits[&id].runtime - 1.5).abs() < 1e-9);
@@ -455,7 +500,7 @@ mod tests {
         let mut cache = open();
         let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
         let id = ids["x.cnf"];
-        cache.put(1, id, 5.0, 7.0, "timeout", 5.0).unwrap();
+        cache.put(1, id, 5.0, 7.0, "timeout", 5.0, None).unwrap();
 
         let shorter = cache.get_batch(1, &[id], 2.0).unwrap();
         assert!((shorter[&id].runtime - 2.0).abs() < 1e-9);
@@ -468,7 +513,7 @@ mod tests {
         let mut cache = open();
         let ids = cache.load_instances(&["x.cnf".to_string()]).unwrap();
         let id = ids["x.cnf"];
-        cache.put(1, id, 8.0, 0.0, "sat", 10.0).unwrap();
+        cache.put(1, id, 8.0, 0.0, "sat", 10.0, None).unwrap();
 
         let hits = cache.get_batch(1, &[id], 5.0).unwrap();
         assert!((hits[&id].runtime - 5.0).abs() < 1e-9);
@@ -546,7 +591,7 @@ mod tests {
         {
             let mut cache = Cache::open(&path, false).unwrap();
             let ids = cache.load_instances(&["p1.cnf".to_string()]).unwrap();
-            cache.put(7, ids["p1.cnf"], 1.5, 0.0, "sat", 10.0).unwrap();
+            cache.put(7, ids["p1.cnf"], 1.5, 0.0, "sat", 10.0, None).unwrap();
             cache.conn.execute_batch("DROP TABLE strategies;").unwrap();
         }
 
@@ -560,6 +605,41 @@ mod tests {
         let config: Config = [("a".to_string(), "1".to_string())].into_iter().collect();
         cache.put_strategy(7, &config).unwrap();
         assert_eq!(cache.get_strategy(7).unwrap(), Some(config));
+    }
+
+    #[test]
+    fn opening_an_older_cache_adds_the_runhash_column() {
+        // A cache written before `runhash` existed must keep working, and
+        // start accepting/returning it once reopened with the current binary.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE results (
+                    strategy_hash INTEGER NOT NULL,
+                    instance_id INTEGER NOT NULL,
+                    runtime REAL NOT NULL,
+                    quality REAL NOT NULL,
+                    status_id INTEGER NOT NULL DEFAULT 0,
+                    cutoff REAL NOT NULL,
+                    PRIMARY KEY (strategy_hash, instance_id)
+                );
+                CREATE TABLE statuses (id INTEGER PRIMARY KEY, status TEXT UNIQUE NOT NULL);
+                INSERT INTO statuses (id, status) VALUES (0, 'UNKNOWN'), (1, 'sat');
+                INSERT INTO results VALUES (7, 1, 1.5, 0.0, 1, 10.0);",
+            )
+            .unwrap();
+        }
+
+        let mut cache = Cache::open(&path, false).unwrap();
+        let hits = cache.get_batch(7, &[1], 10.0).unwrap();
+        assert_eq!(hits[&1].runtime, 1.5, "pre-existing results must survive the migration");
+        assert_eq!(hits[&1].runhash, None, "a pre-migration row has no runhash");
+
+        cache.put(7, 2, 0.5, 0.0, "sat", 10.0, Some(0x3eff6fcf0e4d910d)).unwrap();
+        let hits = cache.get_batch(7, &[2], 10.0).unwrap();
+        assert_eq!(hits[&2].runhash, Some(0x3eff6fcf0e4d910d));
     }
 
     #[test]

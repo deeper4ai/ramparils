@@ -259,6 +259,21 @@ Catches occurrences 1 and 3, which nothing else can. Cost is roughly
 `|params| × 2 × |sample|` solver calls: for an 11-parameter space and 8 fast
 instances, ~176 calls, a couple of minutes on 60 workers.
 
+**Building blocks now exist, the startup probe itself does not.** The
+statistics-digest half is built: `solverpy`'s `runhash()` (a SHA-256 over a
+sorted-key subset of the solver's own result counters, XOR-combinable across
+instances) is wired through both `primo.py` and `eprover.py`, `ramparils`
+stores it per result (`cache.rs`'s nullable `results.runhash` column,
+`TaskResult`/`ConfigEvaluation` carry it, `ils.rs` XORs it across a descent's
+neighbours and logs it beside each incumbent), and `ramparils db runhashes`
+exports a per-strategy `ram-<hash> <runhash> <n>` line so two configurations
+that produced byte-identical solver behaviour can be spotted after the fact
+(`work26/expericon/scripts/group-runhashes.py` groups them). What is still
+missing is exactly the "at startup, run one variant per extreme domain value
+and compare automatically" loop this item describes — today the comparison is
+a manual post-hoc `ramparils db` + script pass over a completed run, not a
+preflight gate.
+
 ## ⬜ Noise-relative inertness report at end of run
 
 Report, per parameter: how many times a neighbour differing only in it was
@@ -717,3 +732,40 @@ them at the two `dominates` call sites. Before `Focused` is run with
 sum. A median run therefore prunes on a statistic it does not score. A sound
 test exists: once more than half the instances have come back above the bound,
 the final median is above it too. Otherwise disable capping for `median`.
+
+---
+
+# Wrapper failure-reporting contract — established (2026-08-21)
+
+Building `eprover_wrapper.py` (a grackle-free E prover wrapper for
+`ramparils`) surfaced a wrapper-side failure class distinct from the dead-
+parameter one above: **a wrapper that reports a genuine crash as if it were a
+normal result.** Two concrete bugs, both fixed in `eprover_wrapper.py` and
+worth stating as the contract every future wrapper should follow rather than
+re-discovering:
+
+- **A crash must charge the full cutoff, never the real elapsed time.**
+  `run_obj: runtime` means a wrapper that returns a crash's true (possibly
+  near-instant) runtime lets crashes score *better* than genuine solves — the
+  ILS then climbs toward configurations that reliably fail fast. PAR1: failed,
+  timed-out, and errored runs all report `runtime = cutoff`.
+- **Report a genuine crash as `status = "UNKNOWN"`, not an invented status.**
+  `ramparils`'s `parse_solver_output` (`eval.rs`) already treats `UNKNOWN` as
+  the *only* status that both logs to the error log (`log_crash`) and is
+  excluded from the cache — this exists for the missing-`#%# RamParIls #%#`-
+  line case, but a wrapper can deliberately emit it for its own crashes too.
+  An early version of `eprover_wrapper.py` instead invented its own `"ERROR"`
+  status; ramparils didn't recognise it as special, so every crash was cached
+  as a legitimate result and the error log — the one place a human would have
+  noticed — stayed empty. Reusing `UNKNOWN` needed zero Rust changes.
+
+**How this was found**: two stale domain values inherited from an older
+grackle-based parameter file (`sel=SelectNoLiterals`, `tord_prec=invfreqrank`)
+turned out to be invalid against the actual E build (confirmed via `eprover -W
+none` / `-G none`, which print the accepted-values list as part of a "wrong
+argument" error) and made E exit nonzero on ~43% of evaluations. With the two
+bugs above both present, that 43% silently scored better than real solves and
+would have been cached as such forever. Fixed the domain (dropped both
+values) and the wrapper (PAR1 + `UNKNOWN`) together; see
+`examples/eprover/eprover_wrapper.py` and `examples/eprover/params-eprover.txt`
+for the corrected reference.

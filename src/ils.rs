@@ -39,15 +39,17 @@ use crate::eval::{EvalTask, Scheduler};
 use crate::params::{Config, ParamSpace, config_to_yaml};
 use crate::scenario::{OverallObjective, RunObjective};
 
-fn log_incumbent(enabled: bool, incumbent: &Config, score: f64, n_runs: usize, space: &ParamSpace) -> Result<()> {
+fn log_incumbent(enabled: bool, incumbent: &Config, eval: &ConfigEvaluation, n_runs: usize, space: &ParamSpace) -> Result<()> {
     if !enabled {
         return Ok(());
     }
     let hash = hash_config(&active_config(incumbent, space));
+    let score = eval.score;
+    let runhash = eval.runhash_suffix(n_runs);
     crate::debug_line(
         true,
         &format!(
-            "[{:8.2}s] ils: new incumbent: hash={hash:016x} score={score:.6} instances={n_runs}",
+            "[{:8.2}s] ils: new incumbent: hash={hash:016x} score={score:.6} instances={n_runs}{runhash}",
             crate::t()
         ),
     );
@@ -78,10 +80,11 @@ fn log_home_base(enabled: bool, previous: &Config, home_base: &Config, score: &C
         return;
     }
     let hash = hash_config(&active_config(home_base, space));
+    let runhash = score.runhash_suffix(n_runs);
     crate::debug_line(
         true,
         &format!(
-            "[{:8.2}s] ils: new home base: hash={hash:016x} score={} instances={n_runs} changes: {changes}",
+            "[{:8.2}s] ils: new home base: hash={hash:016x} score={} instances={n_runs}{runhash} changes: {changes}",
             crate::t(),
             score.display(n_runs)
         ),
@@ -358,7 +361,7 @@ pub fn run(
         incumbent = lm.clone();
         incumbent_score = lm_eval.score;
         n_incumbents += 1;
-        log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
+        log_incumbent(options.debug.main, &incumbent, &lm_eval, n_runs, space)?;
     }
     let mut last_lm = lm;
     let mut last_lm_eval = lm_eval;
@@ -467,7 +470,7 @@ pub fn run(
             incumbent = new_lm.clone();
             incumbent_score = new_lm_eval.score;
             n_incumbents += 1;
-            log_incumbent(options.debug.main, &incumbent, incumbent_score, n_runs, space)?;
+            log_incumbent(options.debug.main, &incumbent, &new_lm_eval, n_runs, space)?;
         }
 
         // Acceptance criterion: keep new local opt only if it dominates the
@@ -622,8 +625,11 @@ pub fn run(
                 // evaluation is already done.
                 let home_base_is_incumbent =
                     hash_config(&active_config(&last_lm, space)) == hash_config(&active_config(&incumbent, space));
-                let home_base_score = if home_base_is_incumbent {
-                    next_evaluation.score
+                // Carry the full evaluation (runhash included) rather than
+                // just its score, so `last_lm_eval` below keeps that data
+                // instead of losing it to a bare `ConfigEvaluation::complete`.
+                let home_base_evaluation = if home_base_is_incumbent {
+                    next_evaluation
                 } else {
                     let home_base_evaluation = evaluate_config_outcome(
                         &last_lm,
@@ -645,14 +651,15 @@ pub fn run(
                         );
                         break;
                     }
-                    home_base_evaluation.score
+                    home_base_evaluation
                 };
 
                 n_runs = next;
                 incumbent_score = next_evaluation.score;
                 // Both re-measurements above are guarded on `complete`, so the
                 // home base's new score is a full one at the new fidelity.
-                last_lm_eval = ConfigEvaluation::complete(home_base_score, next);
+                let home_base_score = home_base_evaluation.score;
+                last_lm_eval = home_base_evaluation;
                 last_lm_runs = next;
                 crate::debug_line(
                     options.debug.main,
@@ -857,11 +864,21 @@ struct ConfigEvaluation {
     score: f64,
     complete: bool,
     n_done: usize,
+    /// XOR of the `runhash` of every contributing instance that terminated
+    /// (see `eval::TaskResult::runhash`). Meaningless when `runhash_n == 0`.
+    runhash: u64,
+    /// How many instances contributed to `runhash` — always `<= n_done`,
+    /// since a timeout/error/unknown result carries no runhash. Comparing two
+    /// evaluations' `runhash` is only informative when their `runhash_n`
+    /// agree; a partial batch is measured over a different set of instances.
+    runhash_n: usize,
 }
 
 impl ConfigEvaluation {
+    /// A complete evaluation with no runhash data (e.g. a random probe, whose
+    /// caller only kept the scalar score).
     fn complete(score: f64, n_done: usize) -> Self {
-        Self { score, complete: true, n_done }
+        Self { score, complete: true, n_done, runhash: 0, runhash_n: 0 }
     }
 
     /// `2.698475` when complete, `>2.698475 (312/473)` when capped.
@@ -870,6 +887,16 @@ impl ConfigEvaluation {
             format!("{:.6}", self.score)
         } else {
             format!(">{:.6} ({}/{})", self.score, self.n_done, n_instances)
+        }
+    }
+
+    /// `runhash=<hex> (n=<runhash_n>/<n_instances>)`, or empty when nothing
+    /// contributed — appended to a log line beside `display()`.
+    fn runhash_suffix(&self, n_instances: usize) -> String {
+        if self.runhash_n == 0 {
+            String::new()
+        } else {
+            format!(" runhash={:016x} (n={}/{n_instances})", self.runhash, self.runhash_n)
         }
     }
 }
@@ -982,6 +1009,8 @@ fn basic_local_search(
         let mut runtimes: Vec<Vec<f64>> = vec![vec![]; n];
         let mut qualities: Vec<Vec<f64>> = vec![vec![]; n];
         let mut partial: Vec<f64> = vec![0.0; n];
+        let mut runhashes: Vec<u64> = vec![0; n];
+        let mut runhash_ns: Vec<usize> = vec![0; n];
         let mut done = vec![false; n];
         let mut n_done = 0usize;
 
@@ -1011,6 +1040,7 @@ fn basic_local_search(
                     result.quality,
                     &result.status,
                     result.cutoff,
+                    result.runhash,
                 )?;
             }
             if result.batch_id != batch_id {
@@ -1026,6 +1056,10 @@ fn basic_local_search(
 
             runtimes[nid].push(result.runtime);
             qualities[nid].push(result.quality);
+            if let Some(h) = result.runhash {
+                runhashes[nid] ^= h;
+                runhash_ns[nid] += 1;
+            }
             let val = match options.run_obj {
                 RunObjective::Runtime => result.runtime,
                 RunObjective::Quality => result.quality,
@@ -1067,7 +1101,7 @@ fn basic_local_search(
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
                         if r.cacheable && r.status != "UNKNOWN" {
-                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
+                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
                         }
                     }
                     crate::debug_line(
@@ -1087,7 +1121,13 @@ fn basic_local_search(
                         ),
                     );
                     current = neighbors[nid].clone();
-                    current_eval = ConfigEvaluation::complete(score, n_instances);
+                    current_eval = ConfigEvaluation {
+                        score,
+                        complete: true,
+                        n_done: n_instances,
+                        runhash: runhashes[nid],
+                        runhash_n: runhash_ns[nid],
+                    };
                     steps += 1;
                     changed = true;
                     break 'collect;
@@ -1099,7 +1139,7 @@ fn basic_local_search(
             scheduler.reset();
             while let Ok(r) = scheduler.results().try_recv() {
                 if r.cacheable && r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
+                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
                 }
             }
             crate::debug_line(
@@ -1132,6 +1172,8 @@ fn collect_one(
     let mut runtimes = Vec::with_capacity(n_instances);
     let mut qualities = Vec::with_capacity(n_instances);
     let mut partial_sum = 0.0f64;
+    let mut runhash = 0u64;
+    let mut runhash_n = 0usize;
 
     while runtimes.len() < n_instances {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1156,6 +1198,7 @@ fn collect_one(
                 result.quality,
                 &result.status,
                 result.cutoff,
+                result.runhash,
             )?;
         }
         if result.batch_id != batch_id {
@@ -1172,6 +1215,10 @@ fn collect_one(
         partial_sum += val;
         runtimes.push(result.runtime);
         qualities.push(result.quality);
+        if let Some(h) = result.runhash {
+            runhash ^= h;
+            runhash_n += 1;
+        }
 
         if options.pruning {
             if let Some(inc) = incumbent_score {
@@ -1180,7 +1227,7 @@ fn collect_one(
                     scheduler.reset();
                     while let Ok(r) = scheduler.results().try_recv() {
                         if r.cacheable && r.status != "UNKNOWN" {
-                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff)?;
+                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
                         }
                     }
                     break;
@@ -1196,7 +1243,7 @@ fn collect_one(
         compute_score(&runtimes, &qualities, options)
     };
     counters::eval(!complete);
-    Ok(ConfigEvaluation { score, complete, n_done: runtimes.len() })
+    Ok(ConfigEvaluation { score, complete, n_done: runtimes.len(), runhash, runhash_n })
 }
 
 /// Compute a scalar score from per-instance results.
@@ -1856,7 +1903,7 @@ mod tests {
         let space = simple_space();
         let config = cfg(&[("alpha", "1"), ("beta", "a")]);
         let hash = hash_config(&active_config(&config, &space));
-        cache.put(hash, ids["cached.cnf"], 0.1, 0.0, "sat", 2.0).unwrap();
+        cache.put(hash, ids["cached.cnf"], 0.1, 0.0, "sat", 2.0, None).unwrap();
 
         let scheduler = Scheduler::new(
             1,
@@ -1898,5 +1945,69 @@ mod tests {
 
         assert!(!evaluation.complete);
         assert!((evaluation.score - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn evaluation_combines_runhash_via_xor() {
+        // Both instances get the exact same runhash from this fake wrapper
+        // (a constant, not derived from the instance), so a correct XOR
+        // combination over the two must cancel to zero -- a cheap way to
+        // prove the combiner actually ran over both results rather than,
+        // say, just taking the first one.
+        let mut cache = Cache::open(":memory:", false).unwrap();
+        let paths = vec!["a.cnf".to_string(), "b.cnf".to_string()];
+        let ids = cache.load_instances(&paths).unwrap();
+        let instances = paths.iter().map(|path| (ids[path], path.clone())).collect::<Vec<_>>();
+        let space = simple_space();
+        let config = cfg(&[("alpha", "1"), ("beta", "a")]);
+
+        // `printf`, not `echo`: the command is invoked as `{algo} {instance}
+        // {cutoff} -k v...`, and unlike `echo`, `printf` with no conversion
+        // specifiers in its format ignores the trailing positional args
+        // instead of echoing them onto the result line, where they would
+        // land inside the runhash field (the last, unbounded split segment)
+        // and break its hex parse.
+        let scheduler = Scheduler::new(
+            1,
+            "printf '#%%# RamParIls #%%# sat, 0.1, 0.0, 00000000000000ff\\n'".to_string(),
+            2.0,
+            crate::DebugOptions::default(),
+        );
+        let options = IlsOptions {
+            approach: Approach::Focused,
+            n_workers: 1,
+            perturbation_strength: 1,
+            restart_probability: 0.0,
+            restart_failures: 0,
+            restart_target: RestartTarget::Incumbent,
+            restart_strength: 8,
+            acceptance_tolerance: 0.0,
+            random_probes: 0,
+            initial_fidelity: 1,
+            fidelity_step: 1,
+            bound_multiplier: 10.0,
+            pruning: false,
+            tuner_timeout: 2.0,
+            run_obj: RunObjective::Runtime,
+            overall_obj: OverallObjective::Mean,
+            debug: crate::DebugOptions::default(),
+        };
+
+        let evaluation = evaluate_config_outcome(
+            &config,
+            &instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            None,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+
+        assert!(evaluation.complete);
+        assert_eq!(evaluation.runhash_n, 2);
+        assert_eq!(evaluation.runhash, 0, "XOR of two identical runhashes must cancel to zero");
+        assert_eq!(evaluation.runhash_suffix(2), " runhash=0000000000000000 (n=2/2)");
     }
 }
