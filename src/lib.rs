@@ -38,7 +38,10 @@ use std::time::Instant;
 static START: OnceLock<Instant> = OnceLock::new();
 // Mutable so it can be opened, closed, and re-opened between Python `specialize()` calls.
 static LOG_FILE: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> = LazyLock::new(|| Mutex::new(None));
-static ERROR_LOG: LazyLock<Mutex<Option<std::io::LineWriter<std::fs::File>>>> = LazyLock::new(|| Mutex::new(None));
+// Holds the path, not an open file: the error log is created on the first
+// crash, not at startup, so a run with nothing to report never leaves a
+// zero-byte file behind (see `log_crash`).
+static ERROR_LOG: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 /// Set to true when `--debug` is passed — controls stderr output.
 static DEBUG_STDERR: AtomicBool = AtomicBool::new(false);
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -122,9 +125,17 @@ pub fn enable_debug_stderr() {
     DEBUG_STDERR.store(true, Ordering::Relaxed);
 }
 
-/// Open (or replace) the debug log file (`--debug-log` / `specialize(debug_log=…)`).
+/// Open the debug log file (`--debug-log` / `specialize(debug_log=…)`), appending.
+///
+/// A rerun against the same path keeps prior runs' output rather than
+/// truncating it, so the file is a running history across invocations, not
+/// just this one.
 pub fn init_log_file(path: &str) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path).map_err(|e| anyhow::anyhow!("failed to open debug log {path}: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("failed to open debug log {path}: {e}"))?;
     *LOG_FILE.lock().unwrap() = Some(std::io::LineWriter::new(file));
     Ok(())
 }
@@ -134,25 +145,51 @@ pub fn close_log_file() {
     *LOG_FILE.lock().unwrap() = None;
 }
 
-/// Open (or replace) the error log file (`--error-log` / `specialize(error_log=…)`).
+/// Register the error log path (`--error-log` / `specialize(error_log=…)`).
+///
+/// Validates the path is writable now — so a bad path fails fast at startup,
+/// as before. Two rules balance against each other:
+///
+/// - A path with no file yet is left with none: the log is created for real
+///   only on the first crash (`log_crash`), so a clean run never produces a
+///   zero-byte error log that looks like evidence nothing was checked.
+/// - A path that already holds crash history (from an earlier run against
+///   the same scenario) keeps it: this call never truncates or deletes an
+///   existing file, only appends to it later, so a rerun's crashes add to
+///   the running history instead of erasing the previous run's.
 pub fn init_error_log(path: &str) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path).map_err(|e| anyhow::anyhow!("failed to open error log {path}: {e}"))?;
-    *ERROR_LOG.lock().unwrap() = Some(std::io::LineWriter::new(file));
+    let existed = std::path::Path::new(path).exists();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("failed to open error log {path}: {e}"))?;
+    drop(file);
+    if !existed {
+        // Only remove what this call just created -- pre-existing history
+        // (and, if concurrently written, any content it just gained) is
+        // never touched.
+        let _ = std::fs::remove_file(path);
+    }
+    *ERROR_LOG.lock().unwrap() = Some(path.to_string());
     Ok(())
 }
 
-/// Close and discard the current error log file.
+/// Forget the current error log path.
 pub fn close_error_log() {
     *ERROR_LOG.lock().unwrap() = None;
 }
 
-/// Write a crash entry to the error log (if one is open).
+/// Write a crash entry to the error log (if one is registered), creating the
+/// file on the first call and appending on every one after.
 ///
 /// Called from worker threads — the `Mutex` serialises concurrent writes so
 /// entries from parallel solver calls never interleave.
 pub fn log_crash(cmd: &str, stdout: &str, stderr: &str, exit_code: Option<i32>) {
-    let mut guard = ERROR_LOG.lock().unwrap();
-    let Some(f) = guard.as_mut() else { return };
+    let guard = ERROR_LOG.lock().unwrap();
+    let Some(path) = guard.as_deref() else { return };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    let mut f = std::io::LineWriter::new(file);
     let t = t();
     let exit_str = exit_code
         .map(|c| c.to_string())
@@ -243,4 +280,50 @@ mod tests {
         );
         assert!(!super::BUILD_INFO.is_empty());
     }
+
+    /// A clean run (nothing crashes) must not leave a zero-byte error log
+    /// behind — only `init_error_log`'s own writability probe touches the
+    /// path, and that probe removes what it created.
+    #[test]
+    fn error_log_not_created_until_first_crash() {
+        let path = std::env::temp_dir().join(format!("ramparils-test-errlog-{}", std::process::id()));
+        let path_str = path.to_str().unwrap();
+
+        super::init_error_log(path_str).unwrap();
+        assert!(!path.exists(), "init_error_log must not leave the file behind");
+
+        super::log_crash("cmd", "out", "err", Some(1));
+        assert!(path.exists(), "log_crash must create the file on first write");
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert!(first.contains("cmd"));
+
+        super::log_crash("cmd2", "", "", None);
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            second.starts_with(&first),
+            "a later crash must append, not truncate, the earlier entry"
+        );
+        assert!(second.contains("cmd2"));
+        super::close_error_log();
+
+        // A rerun against the same path (a fresh `ramparils run` invocation,
+        // not just a fresh crash within one -- kept in this same test, not a
+        // separate one, since `ERROR_LOG` is a shared global static and a
+        // second test running in parallel on it would race this one) must
+        // keep the previous run's crash history rather than reset it.
+        super::init_error_log(path_str).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            second,
+            "re-registering the path must not truncate the previous run's history"
+        );
+        super::log_crash("cmd3", "out3", "err3", Some(1));
+        let third = std::fs::read_to_string(&path).unwrap();
+        assert!(third.starts_with(&second), "a later run must append after the earlier run's entries, not replace them");
+        assert!(third.contains("cmd3"));
+
+        super::close_error_log();
+        let _ = std::fs::remove_file(&path);
+    }
+
 }
