@@ -22,6 +22,39 @@ they describe what changed rather than what was announced at the time.
   include of this file, so there is still one source of truth.
 - The landing page carries the current release, an install one-liner pinned to
   the tag, a "What's new" section and a link to the GitHub repository.
+- **A `--version` probe before the first evaluation.** `ramparils` now runs
+  `<algo> --version` at startup and refuses to start unless it exits `0` and
+  its last stdout line is `supports: … version …`; the wrapper's whole
+  response is logged as its own block, separated from the run's other startup
+  stats. This is the fix for a real incident: a 24 h tuning run launched
+  against a wrapper with no solver binary on `PATH` and no instance files in
+  place ran to completion reporting nothing wrong, because the wrapper
+  answered every evaluation with a well-formed but meaningless result line
+  instead of failing to launch. A wrapper that can't reach its solver prints a
+  `<solver> MISSING` placeholder line in the version block but must still
+  exit non-zero. `examples/primo` and `examples/eprover` both implement the
+  convention; see docs/reference/protocol.md.
+- **A `runhash` fingerprint, threaded end to end.** A wrapper's result line
+  may carry an optional fourth field: a hash of the solver's own internal
+  counters, independent of runtime, that lets two configurations be compared
+  for having done byte-identical work. `results.runhash` is a new nullable
+  cache column; a descent XORs it across every evaluated neighbour and logs
+  it beside each incumbent/home base; `ramparils db status` exports it as a
+  fourth column; and a new `ramparils db runhashes` writes
+  `ram-<hash> <runhash> <n>` per strategy (the XOR of every non-null runhash
+  for that hash, skipping instances with none rather than disqualifying the
+  whole hash; `n` counts every attempted instance, so `n == instances` means
+  fully evaluated). Given a cache and no sub-command, `ramparils db` now
+  exports all four (`solved`, `status`, `confs`, `runhashes`). Two strategies
+  sharing a runhash did identical internal work, which is the signal a
+  structurally dead parameter needs and nothing else can catch.
+- **`examples/eprover` rewritten as a grackle-free wrapper** via solverpy's
+  `E`, replacing the old grackle-dependent example. A deliberately small
+  domain — core proof-search switches, term ordering, and up to 4
+  independently-tunable clause-selection heuristic slots with their own
+  frequencies — rather than grackle's full combinatorial space. Three
+  scenarios (`eprover-basic`/`-random`/`-focused`) share one cache, differing
+  only in search approach and fidelity schedule.
 
 ### Changed
 
@@ -48,6 +81,37 @@ they describe what changed rather than what was announced at the time.
 - Adaptive capping is logged under `debug` rather than `debug_wrapper`. It is
   one line per evaluation, not one per solver call, and the event explaining why
   a neighbourhood yielded no improvement was invisible in an ordinary debug log.
+- **`examples/primo/primo_wrapper.py` migrated to solverpy's `Primo`**, which
+  already supplies time/memory limits, SMT status parsing and the `runhash`
+  fingerprint, replacing the wrapper's own hand-rolled subprocess/ulimit
+  plumbing. Drops the `PRIMO` environment-variable override in favour of
+  solverpy's own binary resolution — point a different build at `PATH` under
+  the expected name instead. Also gains the `--version`/`supports:` protocol
+  above and a `--params` dry-run flag that resolves a parameter set to a
+  command line without running anything.
+
+### Fixed
+
+- **Debug and error logs no longer truncate on a rerun.** Both were opened
+  with `File::create`, so a second `ramparils run` (or `specialize()` call)
+  against the same paths silently discarded the previous run's history. They
+  now open in append mode, so a rerun's output adds to the running history.
+- **The error log is created lazily, on the first crash, not at startup.** It
+  used to be created eagerly even when nothing ever crashed, so every clean
+  run left a 0-byte file behind that looked exactly like "checked, nothing
+  wrong" — indistinguishable from a real crash report that was never written.
+- **A wrapper crash is routed through `UNKNOWN` with PAR1 scoring, not an
+  invented status.** `examples/primo/primo_wrapper.py` used to report a crash
+  as its own `"error"` status with the real (possibly near-instant) elapsed
+  time; RamParILS doesn't recognise `"error"` as special, so every crash was
+  silently cached as a legitimate result and the error log — the one place a
+  human would notice — stayed empty, while a fast-failing configuration could
+  score better than a genuine solve. It now reuses RamParILS's own `UNKNOWN`
+  sentinel (logged, excluded from the cache) and always charges the full
+  cutoff on any non-success line. Found via `examples/eprover`'s new wrapper,
+  where the same two bugs let a batch of invalid parameter values silently
+  score better than real solves on ~43% of evaluations; see
+  docs/reference/protocol.md.
 
 ## [0.2.0] — 2026-08-19
 
