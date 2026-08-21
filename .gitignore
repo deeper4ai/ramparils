@@ -11,6 +11,8 @@ site/
 *.dbcache-shm
 *.dbcache-wal
 *.log
+*.errors
+examples/*/solverpy_db/
 diagrams/**/*.png
 diagrams/**/*.svg
 book/
