@@ -1,8 +1,9 @@
 # 🧪 primo tuning example
 
-This example tunes the `primo` QF_LRA solver without `solverpy`. The wrapper
-uses only the Python standard library and translates RamParILS parameter pairs
-directly to the solver's command-line options.
+This example tunes the `primo` QF_LRA solver via `solverpy`'s `Primo` class.
+The wrapper translates RamParILS parameter pairs into a primo strategy string
+and lets `solverpy` handle process limits, status parsing, and the `runhash`
+fingerprint (see Output below).
 
 The included `instances.txt` lists all 21 bundled SMT-LIB 2 problems, every one
 of them QF_LRA. Paths are interpreted from the directory in which RamParILS is
@@ -18,16 +19,14 @@ ramparils run scenario.yaml
 The working directory matters because the scenario refers to the wrapper,
 parameter file, instance list, cache, and logs using relative paths.
 
-By default the wrapper runs `primo` from `PATH`. Override the executable when
-needed:
+The wrapper runs `primo` from `PATH`, via `solverpy`'s `Primo` class (its
+default `binary`). To use a different build, put it on `PATH` under that name
+(a symlink is enough) rather than pointing the wrapper at it directly — the
+wrapper no longer reads a `PRIMO` environment variable.
 
-```bash
-PRIMO=/path/to/primo ramparils run scenario.yaml
-```
-
-Each solver run has a 4096 MiB virtual-memory limit by default. The limit is
-applied with `RLIMIT_AS` and inherited by solver subprocesses. Override it with
-`PRIMO_MEMORY_MB`, for example:
+Each solver run has a 4096 MiB virtual-memory limit by default, applied via
+`ulimit -Sv` around the primo invocation. Override it with `PRIMO_MEMORY_MB`,
+for example:
 
 ```bash
 PRIMO_MEMORY_MB=8192 ramparils run scenario.yaml
@@ -214,3 +213,24 @@ and is followed by its complete YAML configuration.
 The wrapper reports `sat` and `unsat` as successful. `unknown`, process errors,
 and timeouts receive the full cutoff runtime and a large quality penalty, so a
 fast failed run cannot win the runtime objective.
+
+On a successful (`sat`/`unsat`) run the wrapper appends a fourth field to the
+result line, `status, runtime, quality, runhash` (IDEAS.md item 2): a
+fingerprint (`solverpy`'s `RunHash`/`PRIMO_RUNHASH_GEN`) of primo's internal
+`--stats` counters, independent of runtime. Two runs of the same instance
+under different strategies that share a runhash did byte-identical internal
+work, which is what makes it useful for spotting an option that reaches the
+command line but never actually changes primo's behaviour. It is omitted for
+`unknown`/error/timeout runs, since those may carry no counters at all (primo
+killed before printing `--stats`), and an empty-counter hash is a fixed
+constant rather than a fingerprint of anything. The field is not yet consumed
+anywhere downstream — `ramparils` only parses and discards it for now.
+
+The wrapper also answers two standalone flags (IDEAS.md item 1 and item 3),
+neither of which runs a solve:
+
+- `primo_wrapper.py --version` prints its own name and version, primo's own
+  `--version` output verbatim, and a trailing `supports: version runhash
+  params` line.
+- `primo_wrapper.py --params [-name value ...]` prints the primo command-line
+  options the parameter list resolves to, without an instance or a solve.
