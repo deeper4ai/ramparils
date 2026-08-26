@@ -263,3 +263,49 @@ would have been cached as such forever. Fixed the domain (dropped both
 values) and the wrapper (PAR1 + `UNKNOWN`) together; see
 `examples/eprover/eprover_wrapper.py` and `examples/eprover/params-eprover.txt`
 for the corrected reference.
+
+---
+
+# Test forbidden clauses against the active projection (2026-08-26)
+
+`random_config` and `neighbourhood` (`src/ils.rs`) used to call
+`space.is_forbidden(&cfg)` on the **full**, unprojected config — including
+whatever value each currently-inactive parameter happened to be carrying.
+Since only `active_config(config, space)` is ever hashed, cached or sent to
+the wrapper (`evaluate_config_outcome`, `ils.rs:919`), a forbidden clause that
+names a parameter which is inactive in a given draw could reject a
+configuration whose *active* projection was perfectly legal — a spurious
+rejection, biasing the sampled distribution and (per the still-open item
+above) an unmeasured amplifier of the unbounded-rejection-loop hang.
+
+Fixed by testing the active projection instead, at both call sites:
+
+```rust
+if !space.is_forbidden(&active_config(&cfg, space)) { ... }       // random_config
+if !space.is_forbidden(&active_config(&new_cfg, space)) { ... }   // neighbourhood
+```
+
+`active_config` was already computed the same way at the evaluation call site,
+so this makes all three call sites agree on what "forbidden" means. Three new
+tests in `ils.rs`'s test module cover the shape of the bug and its inverse:
+
+- `forbidden_clause_on_inactive_parameter_is_not_a_real_constraint` — a raw
+  config matches a clause naming an inactive parameter, but its active
+  projection does not.
+- `neighbourhood_does_not_reject_move_due_to_inactive_forbidden_match` — a
+  move that deactivates a parameter must not be blocked by a clause naming
+  that parameter's now-irrelevant stale value.
+- `neighbourhood_catches_forbidden_combo_exposed_by_activating_a_shared_guard`
+  — the fix's flip side: two children of the same guard can each hold a
+  value that is individually harmless while both are inactive, but forbidden
+  in combination; the single move that activates their shared guard must
+  still be rejected, since `active_config` is recomputed fresh from the
+  post-move config and picks up both newly-active values before the check.
+- `random_config_does_not_reject_due_to_inactive_forbidden_match` — 200 draws
+  against a space with such a clause, none of which should ever fail the
+  active-projection check.
+
+Does not touch `validate_initial`'s forbidden check (`params.rs:207-208`),
+which still tests the raw caller-supplied config — that check is already
+*too strict* (over-rejecting), the opposite direction from this bug, and
+changing it wasn't asked for here.

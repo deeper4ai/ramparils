@@ -248,32 +248,7 @@ Note `perturbation` and `neighbourhood` do not share the defect — they
 enumerate candidates and filter, so an over-constrained point yields an empty
 neighbourhood and `perturbation` simply breaks out (`ils.rs:644`).
 
-## ⬜ Test forbidden clauses against the active projection
-
-`random_config` calls `space.is_forbidden(&cfg)` on the **full** draw
-(`ils.rs:1268`), so a
-clause mentioning a parameter that is *inactive* in that draw can reject a
-configuration whose active projection is perfectly legal. Since only the active
-projection is ever evaluated, hashed or sent to the solver, that rejection is
-spurious.
-
-Two effects, and it is worth separating them because the first is certain and
-the second is a hypothesis:
-
-- **Certain**: it biases the sampled distribution, on top of the
-  non-uniformity in the next item.
-- **Hypothesis**: it is an *amplifier* of the hang above. Under
-  `is_forbidden(active_config(&cfg, space))` a clause naming an inactive
-  parameter cannot match at all — `config.get(param)` returns `None`, so
-  `params.rs:259`'s `config.get(param) != Some(val)` skips the clause — and the
-  projected test
-  rejects a strict subset of what the current one rejects, and the legal
-  fraction p can only go up. How much depends on whether a given space's
-  clauses mention conditional parameters, so this narrows the failure without
-  removing it. Do the previous item regardless.
-
-`neighbourhood` (`ils.rs:628`) tests the full config too, and should be changed
-with it or deliberately left alone; decide once and document which.
+**✅ Test forbidden clauses against the active projection — done, see `DONE.md`.**
 
 ## ⬜ Decide, and document, what `random` is uniform over
 

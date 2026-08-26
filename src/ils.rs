@@ -690,7 +690,8 @@ pub fn run(
 // ---------------------------------------------------------------------------
 
 /// All one-parameter-away neighbours of `config` within `space`.
-/// Only iterates over active params; skips forbidden combinations.
+/// Only iterates over active params; skips forbidden combinations, tested
+/// against each candidate's active projection (see `random_config`).
 pub fn neighbourhood(config: &Config, space: &ParamSpace) -> Vec<Config> {
     let active = space.active_params(config);
     let mut result = Vec::new();
@@ -703,7 +704,7 @@ pub fn neighbourhood(config: &Config, space: &ParamSpace) -> Vec<Config> {
             }
             let mut new_cfg = config.clone();
             new_cfg.insert(param.name.clone(), value.clone());
-            if !space.is_forbidden(&new_cfg) {
+            if !space.is_forbidden(&active_config(&new_cfg, space)) {
                 result.push(new_cfg);
             }
         }
@@ -1417,6 +1418,11 @@ pub fn iterative_deepening_ils(
 }
 
 /// Sample a random non-forbidden configuration.
+///
+/// Forbidden clauses are tested against the active projection, not the full
+/// draw: a clause naming a parameter that is inactive in this draw must not
+/// reject a configuration whose active projection is perfectly legal, since
+/// only the active projection is ever evaluated, hashed or sent to the solver.
 fn random_config(space: &ParamSpace, rng: &mut impl Rng) -> Config {
     loop {
         let cfg: Config = space
@@ -1424,7 +1430,7 @@ fn random_config(space: &ParamSpace, rng: &mut impl Rng) -> Config {
             .iter()
             .map(|p| (p.name.clone(), p.domain[rng.gen_range(0..p.domain.len())].clone()))
             .collect();
-        if !space.is_forbidden(&cfg) {
+        if !space.is_forbidden(&active_config(&cfg, space)) {
             return cfg;
         }
     }
@@ -1464,6 +1470,20 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "mode {{fast, slow}} [fast]").unwrap();
         writeln!(f, "limit {{1, 2}} [1] | mode in {{slow}}").unwrap();
+        let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
+        drop(f);
+        space
+    }
+
+    /// Like `conditional_space`, plus a clause naming `limit`, which is
+    /// inactive whenever `mode=fast` — so `{mode=fast, limit=2}` must not
+    /// reject a configuration whose active projection is just `{mode=fast}`.
+    fn conditional_forbidden_space() -> ParamSpace {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "mode {{fast, slow}} [fast]").unwrap();
+        writeln!(f, "limit {{1, 2}} [1] | mode in {{slow}}").unwrap();
+        writeln!(f, "{{mode=fast, limit=2}}").unwrap();
         let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
         drop(f);
         space
@@ -1830,6 +1850,82 @@ mod tests {
         for _ in 0..50 {
             let cfg = random_config(&space, &mut rng);
             assert!(!space.is_forbidden(&cfg));
+        }
+    }
+
+    #[test]
+    fn forbidden_clause_on_inactive_parameter_is_not_a_real_constraint() {
+        let space = conditional_forbidden_space();
+        // `limit` is inactive when mode=fast, so a stale limit=2 sitting in
+        // the raw config must not turn into a real constraint.
+        let raw = cfg(&[("mode", "fast"), ("limit", "2")]);
+        assert!(space.is_forbidden(&raw), "raw config still matches the clause literally");
+        assert!(
+            !space.is_forbidden(&active_config(&raw, &space)),
+            "active projection drops the inactive `limit` entry, so the clause can't match"
+        );
+    }
+
+    #[test]
+    fn neighbourhood_does_not_reject_move_due_to_inactive_forbidden_match() {
+        let space = conditional_forbidden_space();
+        let config = cfg(&[("mode", "slow"), ("limit", "2")]);
+        let n = neighbourhood(&config, &space);
+        // From mode=slow,limit=2: mode->fast drops (deactivates) `limit`, so
+        // the resulting active projection is just {mode=fast} and the clause
+        // {mode=fast, limit=2} must not block the move; limit->1 is unrelated.
+        assert_eq!(n.len(), 2);
+        assert!(n.iter().any(|c| c.get("mode").map(String::as_str) == Some("fast")));
+        assert!(n.iter().any(|c| c.get("limit").map(String::as_str) == Some("1")));
+    }
+
+    /// Two children of the same guard, forbidden only in combination with
+    /// each other: `a=2,b=2` is fine while both are inactive (mode=fast), but
+    /// must be caught the moment a single move flips the shared guard and
+    /// activates both at once with their still-stale values.
+    fn shared_guard_forbidden_space() -> ParamSpace {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "mode {{fast, slow}} [fast]").unwrap();
+        writeln!(f, "a {{1, 2}} [1] | mode in {{slow}}").unwrap();
+        writeln!(f, "b {{1, 2}} [1] | mode in {{slow}}").unwrap();
+        writeln!(f, "{{a=2, b=2}}").unwrap();
+        let space = crate::params::ParamSpace::from_file(f.path().to_str().unwrap()).unwrap();
+        drop(f);
+        space
+    }
+
+    #[test]
+    fn neighbourhood_catches_forbidden_combo_exposed_by_activating_a_shared_guard() {
+        let space = shared_guard_forbidden_space();
+        // a=2,b=2 sit dormant while mode=fast; nothing has ever validated
+        // that combination against the forbidden clause, because both were
+        // inactive whenever the value was assigned (random draw or a prior,
+        // independent perturbation step).
+        let config = cfg(&[("mode", "fast"), ("a", "2"), ("b", "2")]);
+        assert!(!space.is_forbidden(&active_config(&config, &space)), "dormant, so not yet forbidden");
+
+        let n = neighbourhood(&config, &space);
+        // The only active param at mode=fast is `mode` itself, so the only
+        // neighbour is mode->slow — which activates both a and b at once,
+        // exposing the forbidden {a=2,b=2} they were carrying. It must be
+        // rejected, leaving no neighbours at all.
+        assert!(
+            n.iter().all(|c| c.get("mode").map(String::as_str) != Some("slow")),
+            "activating the shared guard must not silently surface a forbidden combination: {n:?}"
+        );
+        assert!(n.is_empty());
+    }
+
+    #[test]
+    fn random_config_does_not_reject_due_to_inactive_forbidden_match() {
+        let space = conditional_forbidden_space();
+        let mut rng = rand::thread_rng();
+        for _ in 0..200 {
+            let cfg = random_config(&space, &mut rng);
+            // A forbidden combination naming only an inactive parameter must
+            // never make random_config reject a legal active configuration.
+            assert!(!space.is_forbidden(&active_config(&cfg, &space)));
         }
     }
 
