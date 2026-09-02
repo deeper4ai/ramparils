@@ -122,35 +122,22 @@ HO_ORDER_KIND_DEFAULT = "lfho"
 SATCHECK_DEFAULT = "none"
 SATCHECK_PROC_INTERVAL = 5000
 
-# Clause-selection heuristic: up to 5 slots (was 4), each an independent
-# (heurN, freqN) pair -- freq tuned separately from the CEF it multiplies,
-# same design as eprover_wrapper.py's HEURISTIC_CEFS, just over all 20 named
-# CEFs from solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS instead
-# of a fixed subset of 5. nb7/fifo/precasc/mzr02/bls are the SAME CEF strings
-# at the SAME indices (0/2/5/16/19) as eprover_wrapper.py's HEURISTIC_CEFS --
-# carried over, not renumbered. Comments give each name's grackle index and
-# family label from that module's own header comment.
+# Clause-selection heuristic: up to 5 slots, each an independent (heurN,
+# freqN) pair -- freq tuned separately from the CEF it multiplies. Reduced
+# 2026-09-02 (user) from all 20 named CEFs in
+# solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS back down to just
+# the 5 that e-nb7 itself uses (indices 0-4, its "nb7/new_bool family") --
+# the wider 20-CEF/6-freq space made the domain enormous (1.7e23
+# configurations) without buying anything for a run seeded at e-nb7, since
+# nothing steers the search toward the other 15 over that first pass. The
+# other 15 names/CEFs and the fuller freq domain are recoverable from git
+# history (see the commit that reduced this) if a later run wants them back.
 HEURISTIC_CEFS = {
-    "nb7": "ConjectureRelativeSymbolWeight(PreferGround,0.5,100,100,100,100,1.5,1.5,1)",  # 0, nb7/new_bool
-    "nb7dd": "ConjectureRelativeSymbolWeight(ByDerivationDepth,0.1,100,100,100,100,1.5,1.5,1.5)",  # 1, nb7/new_bool
-    "fifo": "FIFOWeight(PreferProcessed)",  # 2, nb7/new_bool
-    "nb7ng": "ConjectureRelativeSymbolWeight(PreferNonGoals,0.5,100,100,100,100,1.5,1.5,1)",  # 3, nb7/new_bool
-    "refgoals": "Refinedweight(PreferGoals,3,2,2,1.5,2)",  # 4, nb7/new_bool
-    "precasc": "ConjectureRelativeSymbolWeight(SimulateSOS,0.5,100,100,100,100,1.5,1.5,1)",  # 5, pre_casc/post_as_ho
-    "constprio": "ConjectureRelativeSymbolWeight(ConstPrio,0.1,100,100,100,100,1.5,1.5,1.5)",  # 6, pre_casc/post_as_ho
-    "refsos": "Refinedweight(SimulateSOS,3,2,2,1.5,2)",  # 7, pre_casc/post_as_ho
-    "prefo": "ConjectureRelativeSymbolWeight(PreferFO,0.1,100,100,100,100,1.5,1.5,1.5)",  # 8, HO-specific
-    "prefhosteps": "ConjectureRelativeSymbolWeight(PreferHOSteps,0.5,100,100,100,100,1.5,1.5,1)",  # 9, HO-specific
-    "ngbig": "ConjectureRelativeSymbolWeight(PreferNonGoals,3,9999,4,3,5,4,4,2.5)",  # 10, HO-specific
-    "prefixdefsos": "ConjectureTermPrefixWeight(DeferSOS,1,3,0.1,5,0,0.1,1,4)",  # 11, mzr02 family
-    "prefixng": "ConjectureTermPrefixWeight(PreferNonGoals,1,3,100,9999.9,0,9999.9,3,5)",  # 12, mzr02 family
-    "stag1": "StaggeredWeight(DeferSOS,1)",  # 13, mzr02 family
-    "stag2": "StaggeredWeight(DeferSOS,2)",  # 14, mzr02 family
-    "symtype": "SymbolTypeweight(DeferSOS,18,7,-2,5,9999.9,2,1.5)",  # 15, mzr02 family
-    "mzr02": "Clauseweight(PreferWatchlist,20,9999,4)",  # 16, mzr02 family
-    "csw": "ConjectureSymbolWeight(DeferSOS,9999,20,50,-1,50,3,3,0.5)",  # 17, mzr02 family
-    "rlw2": "RelevanceLevelWeight2(ConstPrio,1,0,2,2,7,-1,2,0,0.2,9999.9,9999.9)",  # 18, mzr01/bls0f17
-    "bls": "Clauseweight(PreferUnitGroundGoals,7,9999,5)",  # 19, mzr01/bls0f17
+    "nb7": "ConjectureRelativeSymbolWeight(PreferGround,0.5,100,100,100,100,1.5,1.5,1)",  # 0
+    "nb7dd": "ConjectureRelativeSymbolWeight(ByDerivationDepth,0.1,100,100,100,100,1.5,1.5,1.5)",  # 1
+    "fifo": "FIFOWeight(PreferProcessed)",  # 2
+    "nb7ng": "ConjectureRelativeSymbolWeight(PreferNonGoals,0.5,100,100,100,100,1.5,1.5,1)",  # 3
+    "refgoals": "Refinedweight(PreferGoals,3,2,2,1.5,2)",  # 4
 }
 
 MAX_SLOTS = 5
@@ -188,13 +175,13 @@ PARAM_DEFAULTS = {
     "slots": "0",
     "heur1": "nb7",
     "freq1": "1",
-    "heur2": "fifo",
+    "heur2": "nb7dd",
     "freq2": "1",
-    "heur3": "precasc",
+    "heur3": "fifo",
     "freq3": "1",
-    "heur4": "mzr02",
+    "heur4": "nb7ng",
     "freq4": "1",
-    "heur5": "bls",
+    "heur5": "refgoals",
     "freq5": "1",
 }
 

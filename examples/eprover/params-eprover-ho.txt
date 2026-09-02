@@ -5,11 +5,14 @@
 # space still means the same thing here, plus every option `e-nb7`'s own
 # strategy line uses that the small domain could not express (HO extension
 # rules, lambda handling, more preprocessing/SAT-checking switches), plus the
-# heuristic clause-selection slots grow from 4 to 5 (e-nb7 uses 5) and the
-# fixed-CEF name set grows from 5 to all 20 of
-# solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS (nb7, fifo,
-# precasc, mzr02, bls are the same 5 names/CEFs as the old domain, at the same
-# indices 0/2/5/16/19 -- "old ones" carried forward, not renumbered).
+# heuristic clause-selection slots grow from 4 to 5 (e-nb7 uses 5). The named
+# CEF set (`heur1`..`heur5`) and freq set (`freq1`..`freq5`) are e-nb7's own
+# 5 CEFs and 3 distinct freqs -- nb7/nb7dd/fifo/nb7ng/refgoals at
+# {1,2,6} -- not the full 20-CEF/6-freq
+# solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS space this file
+# started from (reduced 2026-09-02, user: the wider space made the domain
+# 1.7e23 configurations without buying anything for a run seeded at e-nb7;
+# recoverable from git history if a later run wants it back).
 #
 # Domains and E defaults verified against solverpy_grackle's
 # trainer/eprover/{core,ho,ordering,heuristic}.py and cross-checked directly
@@ -68,21 +71,27 @@ tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq,
 tord_weight {invfreqrank,precrank10,precrank20,arity,aritymax0} [arity] | tord in {KBO6}
 tord_const {0,1} [0] | tord in {KBO6}
 
-# Up to 5 clause-selection heuristic slots (was 4), each an independent
-# (heurN, freqN) pair -- freq tuned separately from which CEF it multiplies,
-# same design choice params-eprover.txt's README documents, not
-# solverpy_grackle's fixed (freq, CEF) index pairs. 20 named CEFs, one per
-# entry of HEURISTIC_CEFS (see eprover_ho_wrapper.py's HEURISTIC_CEFS dict for
-# the name -> CEF-string mapping and the source citation for each). `slots 0`
-# emits no `-H`/`--define-heuristic` at all, matching params-eprover.txt.
+# Up to 5 clause-selection heuristic slots, each an independent (heurN,
+# freqN) pair -- freq tuned separately from which CEF it multiplies, same
+# design choice params-eprover.txt's README documents, not solverpy_grackle's
+# fixed (freq, CEF) index pairs. Reduced 2026-09-02 (user) from the full
+# 20-CEF/6-freq HEURISTIC_CEFS set (see eprover_ho_wrapper.py's git history)
+# down to just the 5 CEFs and 3 freqs e-nb7 itself uses -- the wider space
+# made this domain's configuration count 1.7e23 without buying anything for
+# a run seeded at e-nb7. `heur1..5`'s defaults are e-nb7's own slot order
+# (nb7, nb7dd, fifo, nb7ng, refgoals), so `slots: 5` at every heurN/freqN
+# default reproduces e-nb7's heuristic exactly (mod the wrapper's own trailing
+# completeness term -- see eprover-ho-random.yaml's initial_config comment).
+# `slots 0` emits no `-H`/`--define-heuristic` at all, matching
+# params-eprover.txt.
 slots {0,1,2,3,4,5} [0]
-heur1 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [nb7] | slots in {1,2,3,4,5}
-freq1 {1,2,3,4,8,16} [1] | slots in {1,2,3,4,5}
-heur2 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [fifo] | slots in {2,3,4,5}
-freq2 {1,2,3,4,8,16} [1] | slots in {2,3,4,5}
-heur3 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [precasc] | slots in {3,4,5}
-freq3 {1,2,3,4,8,16} [1] | slots in {3,4,5}
-heur4 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [mzr02] | slots in {4,5}
-freq4 {1,2,3,4,8,16} [1] | slots in {4,5}
-heur5 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [bls] | slots in {5}
-freq5 {1,2,3,4,8,16} [1] | slots in {5}
+heur1 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7] | slots in {1,2,3,4,5}
+freq1 {1,2,6} [1] | slots in {1,2,3,4,5}
+heur2 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7dd] | slots in {2,3,4,5}
+freq2 {1,2,6} [1] | slots in {2,3,4,5}
+heur3 {nb7,nb7dd,fifo,nb7ng,refgoals} [fifo] | slots in {3,4,5}
+freq3 {1,2,6} [1] | slots in {3,4,5}
+heur4 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7ng] | slots in {4,5}
+freq4 {1,2,6} [1] | slots in {4,5}
+heur5 {nb7,nb7dd,fifo,nb7ng,refgoals} [refgoals] | slots in {5}
+freq5 {1,2,6} [1] | slots in {5}
