@@ -1,0 +1,88 @@
+# E prover tuning domain -- HO extension of params-eprover.txt.
+#
+# Superset of the original small domain: every parameter in params-eprover.txt
+# is kept (same name, same domain, same default) so a configuration from that
+# space still means the same thing here, plus every option `e-nb7`'s own
+# strategy line uses that the small domain could not express (HO extension
+# rules, lambda handling, more preprocessing/SAT-checking switches), plus the
+# heuristic clause-selection slots grow from 4 to 5 (e-nb7 uses 5) and the
+# fixed-CEF name set grows from 5 to all 20 of
+# solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS (nb7, fifo,
+# precasc, mzr02, bls are the same 5 names/CEFs as the old domain, at the same
+# indices 0/2/5/16/19 -- "old ones" carried forward, not renumbered).
+#
+# Domains and E defaults verified against solverpy_grackle's
+# trainer/eprover/{core,ho,ordering,heuristic}.py and cross-checked directly
+# against E sources (this repo, checked out at
+# /home/yan/repos/cbboyan/eprover): PROVER/e_options.h for every flag's
+# ArgType and E-side default, PROVER/eprover.c for the case handlers, and
+# CLAUSES/ccl_satinterface.c for the full GroundingStratNames list `satcheck`
+# draws from. Two additions beyond what solverpy_grackle's HoDomain offers:
+# `neg_ext`/`pos_ext` gained `max` (a third value the E source accepts
+# alongside `all`/`off`, PROVER/eprover.c:2010-2045) and `satcheck` gained the
+# rest of `GroundingStratNames` beyond `ConjMinMinFreq` -- `NoGrounding` itself
+# is left out of the tunable domain since it duplicates this file's own `none`
+# sentinel (both mean "no flag, E's own default"); see the eprover_wrapper.py
+# README's own warning about exactly this kind of sentinel duplication.
+#
+# `--delete-bad-limit` is NOT a parameter here: eprover_ho_wrapper.py always
+# emits it fixed at 2000000000 (e-nb7's own value; E's own OptArg default is
+# 1500000, solverpy_grackle's runner hardcodes 150000000 -- three different
+# constants in circulation, so this file picks the one from the one strategy
+# actually run on this benchmark rather than inventing a fourth). Per-instance
+# tuning of a memory/incompleteness knob like this one is out of scope for a
+# runtime-tuned proof-search space.
+
+sel {SelectMaxLComplexAvoidAppVar,SelectComplexExceptUniqMaxHorn,PSelectComplexExceptUniqMaxHorn,SelectMaxLComplexAPPNTNp,SelectMaxLComplexAvoidPosPred,SelectNewComplexAHP,SelectComplexG,SelectCQIPrecWNTNp,SelectNoLiterals} [SelectMaxLComplexAvoidPosPred]
+simparamod {none,normal,oriented} [none]
+der {none,std,strong,agg,stragg} [none]
+forwardcntxtsr {0,1} [0]
+fwdemod {0,1,2} [2]
+defcnf {none,0,3,4,6,8,12,24} [24]
+condense {0,1} [0]
+presat {0,1} [0]
+prefer {0,1} [0]
+splaggr {0,1} [0]
+srd {0,1} [0]
+splcl {0,4,7} [0]
+strong_rw_inst {0,1} [0]
+no_eq_unfolding {0,1} [0]
+sos_input_types {0,1} [0]
+satcheck {none,PseudoVar,FirstConst,ConjMinMinFreq,ConjMaxMinFreq,ConjMinMaxFreq,ConjMaxMaxFreq,GlobalMax,GlobalMin} [none]
+
+# HO extension rules and lambda/injectivity handling -- new in this domain,
+# absent from params-eprover.txt entirely (its README: "No HO-specific
+# options ... are in this space at all").
+neg_ext {off,max,all} [off]
+pos_ext {off,max,all} [off]
+ext_sup_max_depth {-1,0,1} [-1]
+lift_lambdas {true,false} [true]
+local_rw {false,true} [false]
+fool_unroll {true,false} [true]
+inverse_recognition {false,true} [false]
+replace_inj_defs {false,true} [false]
+ho_order_kind {lfho,lambda} [lfho]
+
+tord {LPO4,KBO6} [LPO4]
+tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq,invfreqrank} [arity]
+tord_weight {invfreqrank,precrank10,precrank20,arity,aritymax0} [arity] | tord in {KBO6}
+tord_const {0,1} [0] | tord in {KBO6}
+
+# Up to 5 clause-selection heuristic slots (was 4), each an independent
+# (heurN, freqN) pair -- freq tuned separately from which CEF it multiplies,
+# same design choice params-eprover.txt's README documents, not
+# solverpy_grackle's fixed (freq, CEF) index pairs. 20 named CEFs, one per
+# entry of HEURISTIC_CEFS (see eprover_ho_wrapper.py's HEURISTIC_CEFS dict for
+# the name -> CEF-string mapping and the source citation for each). `slots 0`
+# emits no `-H`/`--define-heuristic` at all, matching params-eprover.txt.
+slots {0,1,2,3,4,5} [0]
+heur1 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [nb7] | slots in {1,2,3,4,5}
+freq1 {1,2,3,4,8,16} [1] | slots in {1,2,3,4,5}
+heur2 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [fifo] | slots in {2,3,4,5}
+freq2 {1,2,3,4,8,16} [1] | slots in {2,3,4,5}
+heur3 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [precasc] | slots in {3,4,5}
+freq3 {1,2,3,4,8,16} [1] | slots in {3,4,5}
+heur4 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [mzr02] | slots in {4,5}
+freq4 {1,2,3,4,8,16} [1] | slots in {4,5}
+heur5 {nb7,nb7dd,fifo,nb7ng,refgoals,precasc,constprio,refsos,prefo,prefhosteps,ngbig,prefixdefsos,prefixng,stag1,stag2,symtype,mzr02,csw,rlw2,bls} [bls] | slots in {5}
+freq5 {1,2,3,4,8,16} [1] | slots in {5}
