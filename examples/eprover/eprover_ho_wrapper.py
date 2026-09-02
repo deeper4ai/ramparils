@@ -23,10 +23,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from solverpy.solver.atp.eprover import E, E_BINARY
+from solverpy.solver.atp.eprover import E
 
 FAILURE_QUALITY = 10_000_000.0
 DEFAULT_MEMORY_LIMIT_MB = 4096
+
+# This domain's whole point is the HO extension rules/lambda handling
+# (neg_ext, pos_ext, ho_order_kind, ...), which plain "eprover" rejects
+# outright ("To support HOL reasoning, recompile E using './configure
+# --enable-ho && make rebuild'") -- unlike eprover_wrapper.py, which is fine
+# with solverpy's own "eprover" default since its domain has no HO options at
+# all. Override with EPROVER_BINARY if a different HO build is on PATH.
+DEFAULT_BINARY = "eprover-ho"
 
 WRAPPER_VERSION = "0.1.0"
 SUPPORTS = ["version", "runhash", "params", "clean"]
@@ -347,7 +355,12 @@ def limit_string(cutoff: float, giga: float) -> str:
     return f"T{seconds}-M{giga}"
 
 
-def print_version(binary: str = E_BINARY) -> int:
+def binary_name() -> str:
+    return os.environ.get("EPROVER_BINARY", DEFAULT_BINARY)
+
+
+def print_version(binary: str = "") -> int:
+    binary = binary or binary_name()
     print(f"{Path(sys.argv[0]).name} {WRAPPER_VERSION}")
     ok = True
     try:
@@ -452,7 +465,7 @@ def main() -> int:
             raise ValueError("cutoff must be positive")
         parameters = parse_parameters(sys.argv[3:])
         strategy = build_strategy(parameters)
-        solver = E(limit_string(cutoff, memory_limit_giga()))
+        solver = E(limit_string(cutoff, memory_limit_giga()), binary=binary_name())
         result = solver.solve(instance, strategy)
     except (KeyError, OSError, ValueError) as error:
         print(f"eprover wrapper error: {error}", file=sys.stderr)
