@@ -36,7 +36,7 @@
 # tuning of a memory/incompleteness knob like this one is out of scope for a
 # runtime-tuned proof-search space.
 
-sel {SelectMaxLComplexAvoidAppVar,SelectComplexExceptUniqMaxHorn,PSelectComplexExceptUniqMaxHorn,SelectMaxLComplexAPPNTNp,SelectMaxLComplexAvoidPosPred,SelectNewComplexAHP,SelectComplexG,SelectCQIPrecWNTNp,SelectNoLiterals} [SelectMaxLComplexAvoidPosPred]
+sel {SelectMaxLComplexAvoidAppVar,SelectComplexExceptUniqMaxHorn,PSelectComplexExceptUniqMaxHorn,SelectMaxLComplexAPPNTNp,SelectMaxLComplexAvoidPosPred,SelectNewComplexAHP,SelectComplexG,SelectCQIPrecWNTNp} [SelectMaxLComplexAvoidPosPred]
 simparamod {none,normal,oriented} [none]
 der {none,std,strong,agg,stragg} [none]
 forwardcntxtsr {0,1} [0]
@@ -67,7 +67,7 @@ replace_inj_defs {false,true} [false]
 ho_order_kind {lfho,lambda} [lfho]
 
 tord {LPO4,KBO6} [LPO4]
-tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq,invfreqrank} [arity]
+tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq} [arity]
 tord_weight {invfreqrank,precrank10,precrank20,arity,aritymax0} [arity] | tord in {KBO6}
 tord_const {0,1} [0] | tord in {KBO6}
 
