@@ -6,8 +6,9 @@ Sibling of `eprover_wrapper.py`, for `params-eprover-ho.txt` instead of
 parameters into an E command line, run through `solverpy.solver.atp.eprover.E`
 -- but over the superset domain: everything `eprover_wrapper.py` supports,
 plus HO extension rules and lambda/injectivity handling, more
-preprocessing/SAT-checking switches, and 5 heuristic slots (was 4) drawing
-from 20 named CEFs (was 5). See `params-eprover-ho.txt`'s header comment for
+preprocessing/SAT-checking switches, and 5 heuristic slots (was 4), each a
+single index into a fixed (freq, CEF) pair table (see HEURISTIC_PAIRS below).
+See `params-eprover-ho.txt`'s header comment for
 what is genuinely new versus carried over unchanged, and its E-source
 citations for where each flag is verified
 (`/home/yan/repos/cbboyan/eprover`, checked out locally).
@@ -122,23 +123,46 @@ HO_ORDER_KIND_DEFAULT = "lfho"
 SATCHECK_DEFAULT = "none"
 SATCHECK_PROC_INTERVAL = 5000
 
-# Clause-selection heuristic: up to 5 slots, each an independent (heurN,
-# freqN) pair -- freq tuned separately from the CEF it multiplies. Reduced
-# 2026-09-02 (user) from all 20 named CEFs in
-# solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS back down to just
-# the 5 that e-nb7 itself uses (indices 0-4, its "nb7/new_bool family") --
-# the wider 20-CEF/6-freq space made the domain enormous (1.7e23
-# configurations) without buying anything for a run seeded at e-nb7, since
-# nothing steers the search toward the other 15 over that first pass. The
-# other 15 names/CEFs and the fuller freq domain are recoverable from git
-# history (see the commit that reduced this) if a later run wants them back.
-HEURISTIC_CEFS = {
-    "nb7": "ConjectureRelativeSymbolWeight(PreferGround,0.5,100,100,100,100,1.5,1.5,1)",  # 0
-    "nb7dd": "ConjectureRelativeSymbolWeight(ByDerivationDepth,0.1,100,100,100,100,1.5,1.5,1.5)",  # 1
-    "fifo": "FIFOWeight(PreferProcessed)",  # 2
-    "nb7ng": "ConjectureRelativeSymbolWeight(PreferNonGoals,0.5,100,100,100,100,1.5,1.5,1)",  # 3
-    "refgoals": "Refinedweight(PreferGoals,3,2,2,1.5,2)",  # 4
+# Clause-selection heuristic: up to 5 slots. RUN 01 (random-restart, 446
+# evals, one BLS descent, see ../../../DIARY.md 2026-09-03) found that varying
+# WHICH CEF a slot uses bought nothing -- the descent's every change to a
+# `heurN`/`freqN` pair kept the same CEF and only moved its freq -- while
+# `heurN`/`freqN` as independent parameters still multiplied out to 5*3=15
+# raw choices per slot. Refit here (user, 2026-09-08) as a single fixed
+# (freq, CEF) pair per slot, `heurN {0..10}`, same style as the un-extended
+# domain's `heur0..3 {0..19}` (solverpy_grackle.trainer.eprover.heuristic.
+# HEURISTIC_CEFS: an index into a fixed table supplies both freq and CEF).
+#
+# The 11 pairs are the 5 CEFs each at freq in {1,2} -- the two values e-nb7
+# and every descent step actually used -- plus one exception, `nb7dd` at
+# freq 6, needed only because e-nb7 itself uses it in slot 2 and this table
+# must still be able to express e-nb7 exactly. Freq 6 is not offered for any
+# other CEF: nothing in RUN 01 or e-nb7 ever used it elsewhere, and offering
+# it everywhere would undo the whole point of cutting this space down.
+# Verified this table can express both configurations that matter:
+#   e-nb7            (work/eprover-ho-random.yaml initial_config): idx 1, 4, 5, 7, 10
+#   RUN 01 incumbent (ram-f0365a4bf46689e4, DIARY.md 2026-09-03):   idx 1, 3, 10, 8, 1
+CEF_FORMULAS = {
+    "nb7": "ConjectureRelativeSymbolWeight(PreferGround,0.5,100,100,100,100,1.5,1.5,1)",
+    "nb7dd": "ConjectureRelativeSymbolWeight(ByDerivationDepth,0.1,100,100,100,100,1.5,1.5,1.5)",
+    "fifo": "FIFOWeight(PreferProcessed)",
+    "nb7ng": "ConjectureRelativeSymbolWeight(PreferNonGoals,0.5,100,100,100,100,1.5,1.5,1)",
+    "refgoals": "Refinedweight(PreferGoals,3,2,2,1.5,2)",
 }
+
+HEURISTIC_PAIRS = [
+    ("1", "nb7"),       # 0
+    ("2", "nb7"),       # 1  -- e-nb7 slot1, RUN01-incumbent slot1 & slot5
+    ("1", "nb7dd"),     # 2
+    ("2", "nb7dd"),     # 3  -- RUN01-incumbent slot2
+    ("6", "nb7dd"),     # 4  -- e-nb7 slot2
+    ("1", "fifo"),      # 5  -- e-nb7 slot3
+    ("2", "fifo"),      # 6
+    ("1", "nb7ng"),     # 7  -- e-nb7 slot4
+    ("2", "nb7ng"),     # 8  -- RUN01-incumbent slot4
+    ("1", "refgoals"),  # 9
+    ("2", "refgoals"),  # 10 -- e-nb7 slot5, RUN01-incumbent slot3
+]
 
 MAX_SLOTS = 5
 
@@ -173,25 +197,20 @@ PARAM_DEFAULTS = {
     "tord_weight": "arity",
     "tord_const": "0",
     "slots": "0",
-    "heur1": "nb7",
-    "freq1": "1",
-    "heur2": "nb7dd",
-    "freq2": "1",
-    "heur3": "fifo",
-    "freq3": "1",
-    "heur4": "nb7ng",
-    "freq4": "1",
-    "heur5": "refgoals",
-    "freq5": "1",
+    "heur1": "1",
+    "heur2": "4",
+    "heur3": "5",
+    "heur4": "7",
+    "heur5": "10",
 }
 
 HEURISTIC_PARAM_ORDER = [
     "slots",
-    "heur1", "freq1",
-    "heur2", "freq2",
-    "heur3", "freq3",
-    "heur4", "freq4",
-    "heur5", "freq5",
+    "heur1",
+    "heur2",
+    "heur3",
+    "heur4",
+    "heur5",
 ]
 
 
@@ -314,13 +333,14 @@ def build_strategy(parameters: dict[str, str]) -> str:
         if n_slots > 0:
             cefs: list[str] = []
             for i in range(1, n_slots + 1):
-                heur_name, freq_name = f"heur{i}", f"freq{i}"
-                if heur_name not in parameters or freq_name not in parameters:
-                    raise ValueError(f"slots={n_slots} requires {heur_name} and {freq_name}")
-                name = parameters[heur_name]
-                if name not in HEURISTIC_CEFS:
-                    raise ValueError(f"unknown heuristic in {heur_name}: {name!r}")
-                cefs.append(f"{parameters[freq_name]}*{HEURISTIC_CEFS[name]}")
+                heur_name = f"heur{i}"
+                if heur_name not in parameters:
+                    raise ValueError(f"slots={n_slots} requires {heur_name}")
+                index = int(parameters[heur_name])
+                if not 0 <= index < len(HEURISTIC_PAIRS):
+                    raise ValueError(f"{heur_name} out of range: {index!r}")
+                freq, name = HEURISTIC_PAIRS[index]
+                cefs.append(f"{freq}*{CEF_FORMULAS[name]}")
             cefs.append("1*FIFOWeight(ConstPrio)")
             cef = "(" + ",".join(cefs) + ")"
             options.append(f"--define-heuristic='{cef}'")
@@ -382,8 +402,8 @@ def print_params(arguments: list[str]) -> int:
 def is_active(name: str, parameters: dict[str, str]) -> bool:
     if name in ("tord_weight", "tord_const"):
         return parameters.get("tord") == "KBO6"
-    if name.startswith("heur") or name.startswith("freq"):
-        slot = int(name[len("heur"):] if name.startswith("heur") else name[len("freq"):])
+    if name.startswith("heur"):
+        slot = int(name[len("heur"):])
         try:
             n_slots = int(parameters.get("slots", "0"))
         except ValueError:

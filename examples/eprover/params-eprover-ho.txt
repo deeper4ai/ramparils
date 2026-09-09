@@ -5,14 +5,18 @@
 # space still means the same thing here, plus every option `e-nb7`'s own
 # strategy line uses that the small domain could not express (HO extension
 # rules, lambda handling, more preprocessing/SAT-checking switches), plus the
-# heuristic clause-selection slots grow from 4 to 5 (e-nb7 uses 5). The named
-# CEF set (`heur1`..`heur5`) and freq set (`freq1`..`freq5`) are e-nb7's own
-# 5 CEFs and 3 distinct freqs -- nb7/nb7dd/fifo/nb7ng/refgoals at
-# {1,2,6} -- not the full 20-CEF/6-freq
+# heuristic clause-selection slots grow from 4 to 5 (e-nb7 uses 5). Each slot
+# (`heur1`..`heur5`) is a single index into a fixed (freq, CEF) pair table --
+# 11 pairs, e-nb7's own 5 CEFs (nb7/nb7dd/fifo/nb7ng/refgoals) each at freq
+# in {1,2} plus one freq-6 exception -- not the full 20-CEF/6-freq
 # solverpy_grackle.trainer.eprover.heuristic.HEURISTIC_CEFS space this file
 # started from (reduced 2026-09-02, user: the wider space made the domain
 # 1.7e23 configurations without buying anything for a run seeded at e-nb7;
-# recoverable from git history if a later run wants it back).
+# recoverable from git history if a later run wants it back). Refit again
+# 2026-09-08 (user) from independent `heurN`/`freqN` parameters to this fixed
+# pair-per-slot form, in params-eprover.txt's own style, after RUN 01 showed
+# varying which CEF a slot uses bought nothing (see the heuristic block below
+# for detail and the exact pair table).
 #
 # Domains and E defaults verified against solverpy_grackle's
 # trainer/eprover/{core,ho,ordering,heuristic}.py and cross-checked directly
@@ -71,27 +75,30 @@ tord_prec {invfreq,invfreqconjmax,invfreqconstmin,arity,invarity,const_max,freq}
 tord_weight {invfreqrank,precrank10,precrank20,arity,aritymax0} [arity] | tord in {KBO6}
 tord_const {0,1} [0] | tord in {KBO6}
 
-# Up to 5 clause-selection heuristic slots, each an independent (heurN,
-# freqN) pair -- freq tuned separately from which CEF it multiplies, same
-# design choice params-eprover.txt's README documents, not solverpy_grackle's
-# fixed (freq, CEF) index pairs. Reduced 2026-09-02 (user) from the full
-# 20-CEF/6-freq HEURISTIC_CEFS set (see eprover_ho_wrapper.py's git history)
-# down to just the 5 CEFs and 3 freqs e-nb7 itself uses -- the wider space
-# made this domain's configuration count 1.7e23 without buying anything for
-# a run seeded at e-nb7. `heur1..5`'s defaults are e-nb7's own slot order
-# (nb7, nb7dd, fifo, nb7ng, refgoals), so `slots: 5` at every heurN/freqN
-# default reproduces e-nb7's heuristic exactly (mod the wrapper's own trailing
+# Up to 5 clause-selection heuristic slots. RUN 01 (random-restart, 446
+# evals, one BLS descent, concluded 2026-09-03 -- see ../../../DIARY.md) ran
+# heurN and freqN as independent parameters (5 CEFs x 3 freqs = 15 choices
+# per slot); every change the descent actually made to a slot kept the same
+# CEF and only moved its freq, so which CEF a slot uses bought nothing while
+# still multiplying out the space. Refit here (user, 2026-09-08) in
+# params-eprover.txt's style instead: `heurN {0..10}` is a single index into
+# a fixed (freq, CEF) pair table hardcoded in eprover_ho_wrapper.py's
+# HEURISTIC_PAIRS (params-eprover.txt's heur0..3{0..19} does the same thing
+# via solverpy_grackle's own HEURISTIC_CEFS). The 11 pairs are the 5 CEFs
+# each at freq in {1,2} -- the two values e-nb7 and RUN 01 actually used --
+# plus one exception, index 4 (nb7dd @ freq 6), needed only so this table can
+# still express e-nb7's own slot 2 exactly.
+#
+# `heur1..5`'s defaults (1, 4, 5, 7, 10) are e-nb7's own slot order (nb7@2,
+# nb7dd@6, fifo@1, nb7ng@1, refgoals@2), so `slots: 5` at every heurN default
+# reproduces e-nb7's heuristic exactly (mod the wrapper's own trailing
 # completeness term -- see eprover-ho-random.yaml's initial_config comment).
-# `slots 0` emits no `-H`/`--define-heuristic` at all, matching
-# params-eprover.txt.
+# The RUN 01 incumbent (ram-f0365a4bf46689e4) is also exactly expressible
+# here, as heur1..5 = 1, 3, 10, 8, 1. `slots 0` emits no
+# `-H`/`--define-heuristic` at all, matching params-eprover.txt.
 slots {0,1,2,3,4,5} [0]
-heur1 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7] | slots in {1,2,3,4,5}
-freq1 {1,2,6} [1] | slots in {1,2,3,4,5}
-heur2 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7dd] | slots in {2,3,4,5}
-freq2 {1,2,6} [1] | slots in {2,3,4,5}
-heur3 {nb7,nb7dd,fifo,nb7ng,refgoals} [fifo] | slots in {3,4,5}
-freq3 {1,2,6} [1] | slots in {3,4,5}
-heur4 {nb7,nb7dd,fifo,nb7ng,refgoals} [nb7ng] | slots in {4,5}
-freq4 {1,2,6} [1] | slots in {4,5}
-heur5 {nb7,nb7dd,fifo,nb7ng,refgoals} [refgoals] | slots in {5}
-freq5 {1,2,6} [1] | slots in {5}
+heur1 {0,1,2,3,4,5,6,7,8,9,10} [1] | slots in {1,2,3,4,5}
+heur2 {0,1,2,3,4,5,6,7,8,9,10} [4] | slots in {2,3,4,5}
+heur3 {0,1,2,3,4,5,6,7,8,9,10} [5] | slots in {3,4,5}
+heur4 {0,1,2,3,4,5,6,7,8,9,10} [7] | slots in {4,5}
+heur5 {0,1,2,3,4,5,6,7,8,9,10} [10] | slots in {5}
