@@ -498,6 +498,61 @@ the final median is above it too. Otherwise disable capping for `median`.
 
 ---
 
+# Proposed — `run_obj: solved` (2026-09-12)
+
+Raised while designing the future-telling checkpoint feature (`FUTURETELL.md`):
+a `RunObjective` that scores a configuration by how many instances it solves,
+rather than by runtime or quality.
+
+## ⬜ Wire the existing `SOLVED_STATUSES` classification into live scoring
+
+`src/db.rs` already has exactly the classification this needs —
+`SOLVED_STATUSES`/`is_solved()`, the union of TPTP's and SMT-LIB's success
+tokens, matching solverpy's `TPTP_OK | SMT_OK` — but it's used only by the
+offline `ramparils db solved` export, not by `ils.rs` at evaluation time.
+Cheapest path to `run_obj: solved`: reuse that same function live, no
+protocol change needed, no existing wrapper touched.
+
+**Two, not three, buckets.** A three-way `solved`/`failed`/`timeout` split
+was considered (discussed while designing future-telling) and rejected for
+this purpose: `failed` and `timeout` would score identically under any
+solved-count objective, so a third bucket adds no scoring information —
+only reporting granularity, which the raw `status` string (preserved
+verbatim already) already provides better than a collapsed generic label
+would (`ResourceOut` vs `GaveUp` vs `Timeout` all becoming the same
+`timeout` is a net loss of information for anyone reading `ramparils db
+status`). Two buckets — solved / not-solved — are enough.
+
+**This also has a free-standing use beyond `run_obj: solved` itself**:
+future-telling's own checkpoint metric (`FUTURETELL.md`) independently needs
+a cheap "is this solved" signal, and settled on deriving it from the
+existing PAR1 wrapper contract (`runtime < cutoff_time`) rather than
+`is_solved()`'s status-string matching, specifically so it works for *any*
+domain without a closed vocabulary list. Worth keeping in mind if these two
+efforts converge — they arrived at the "solved" concept from different
+directions (offline export vs. live heuristic) and might end up wanting the
+same underlying primitive.
+
+## ⬜ Idea: generic wrapper-reported `solved`/`unsolved` status, for domains outside TPTP/SMT
+
+`SOLVED_STATUSES` is a closed, hardcoded list — it only covers the two
+domains this project ships example wrappers for. A wrapper for some future
+domain outside TPTP/SMT-LIB would need a RamParILS source change (adding its
+success tokens to the hardcoded list) before `run_obj: solved` could work
+for it at all.
+
+The more general fix, not yet needed but worth recording: let a wrapper
+*optionally* report a generic `solved`/`unsolved` classification directly —
+a new, small addition to the protocol alongside the existing free-text
+`status` field (which stays exactly as it is, solver-specific and
+unconstrained) — so a user with a wrapper for a domain this project has
+never heard of can use `run_obj: solved` (and future-telling) without
+touching RamParILS's source at all. Only worth building when a concrete
+domain outside TPTP/SMT-LIB actually needs it — the closed-list approach
+above is simpler and covers everything this project ships today.
+
+---
+
 **The wrapper failure-reporting contract (UNKNOWN sentinel + PAR1 for crashes),
 established 2026-08-21, has moved to `DONE.md`** — it's a settled convention
 now followed by both example wrappers, not an open task.
