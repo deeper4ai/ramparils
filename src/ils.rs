@@ -32,12 +32,12 @@ use crossbeam::channel::RecvTimeoutError;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cache::{Cache, hash_config};
-use crate::eval::{EvalTask, Scheduler};
+use crate::eval::{EvalTask, Scheduler, SchedulerEvent};
 use crate::params::{Config, ParamSpace, config_to_yaml};
 use crate::scenario::{OverallObjective, RunObjective};
 
@@ -905,30 +905,65 @@ fn accepted_within_tolerance(new_score: f64, incumbent_score: f64, options: &Ils
 // Future-telling: checkpoint-based early rejection (FUTURETELL.md)
 // ---------------------------------------------------------------------------
 
-/// Replays `n_total` instances across `n_virtual` identical virtual workers,
-/// fed real per-instance runtimes **as they actually arrive** — list
-/// scheduling: each arriving result goes to whichever virtual worker is
-/// currently least busy. Superseded from an earlier, fixed-instance-order
-/// design (FUTURETELL.md D4/D5, kept there as the record of why it was
-/// tried and dropped): requiring a strictly contiguous fixed-order prefix
-/// meant the tracker could sit blocked on one straggling early position
-/// while hundreds of later, already-arrived results sat unused in a
-/// buffer — measured directly against `ramparils-eprover` RUN 06
-/// (2026-09-13): a checkpoint that only needed 149 (fixed-order) instances
-/// took ~20s of wall clock to mature because of exactly this. Arrival order
-/// removes the buffering and the stall, at the cost of the arrival-order
-/// invariance the fixed-order design had — this tracker's exact maturity
-/// point and score can now depend on real completion timing, which is the
-/// same sensitivity the real evaluation it's approximating already has.
+/// Replays `n_total` instances across `n_virtual` identical virtual workers.
+/// Two feeds, both routing into the same `virtual_busy` buckets
+/// (FUTURETELL.md D11):
 ///
-/// Needs only `runtime` (compared against `cutoff_time`, FUTURETELL.md D6)
-/// — no `quality`, no `run_obj`/`overall_obj` dependency, and no instance
-/// identity at all now that position no longer matters.
+/// - **Dispatch-tracked** (`record_dispatch` then `record`, correlated by
+///   `instance_id`): for a real solver invocation, busy-time is claimed the
+///   instant a worker *starts* the instance, not when its result arrives —
+///   so a still-running instance can be known to be busy past the horizon
+///   without waiting for its result to physically arrive. Superseded from
+///   the pure arrival-based design (kept here as the record of why it
+///   changed): measured against `ramparils-eprover` RUN 06 (2026-09-13),
+///   accounting for busy-time only retrospectively from completions made a
+///   64%-timeout config's checkpoint take ~10.6s of real wall clock against
+///   a nominal 5s horizon, needing ~164 arrivals to fill all 64 buckets
+///   instead of one wave's worth.
+/// - **Fallback** (`record` alone, no matching `record_dispatch`): a cache
+///   hit, or any dispatch this tracker never saw (e.g. more concurrently
+///   in-flight real dispatches than `n_virtual` buckets — not yet designed
+///   for, see FUTURETELL.md D11's "not yet decided" note). Assigns to
+///   whichever bucket is currently least busy and chains onto its existing
+///   relative-time total — exactly the old, purely arrival-order-driven
+///   behaviour, so a tracker fed only through `record` (never
+///   `record_dispatch`) is unchanged from before.
+///
+/// **Why dispatch times are relative to this neighbour's own first dispatch,
+/// never to the round's `submit()` call**: `basic_local_search` submits every
+/// neighbour's `WorkBatch` in one call, but the shared worker pool drains
+/// them one neighbour at a time (confirmed empirically, `eval.rs`'s
+/// `submit()`+worker-loop mechanics) — a neighbour queued behind others sees
+/// its first real dispatch well after `submit()` returns, through no fault
+/// of its own. Anchoring to `submit()` would count that queue-wait against
+/// its checkpoint budget, exactly the cross-neighbour contamination D1
+/// rejected reading real wall-clock time over in the first place. Anchoring
+/// to each neighbour's *own* first `Dispatched` event avoids that — at the
+/// known cost that this neighbour's own first few dispatches still trickle
+/// in one at a time (as each real worker frees from the *previous*
+/// neighbour's tail) rather than bursting in simultaneously, so the clean
+/// bound `collect_one` gets (one dedicated config, true t≈0 for every
+/// worker) doesn't fully carry over here — a smaller, accepted version of
+/// the same effect, not a bug.
 struct CheckpointTracker {
     n_total: usize,
     checkpoint_time: f64,
     cutoff_time: f64,
+    /// This neighbour's own relative-time origin: `crate::t()` at its first
+    /// `record_dispatch` call. Never set from a cache hit or any other
+    /// `record`-only arrival. `None` until that first dispatch.
+    t0: Option<f64>,
+    /// Per virtual bucket: busy-until, in this neighbour's own relative
+    /// time (`0.0` initially). Meaningful only for a bucket with no entry
+    /// in `pending` below.
     virtual_busy: Vec<f64>,
+    /// Buckets currently occupied by a dispatched-but-not-yet-completed
+    /// instance: bucket -> (instance_id, its own relative dispatch time).
+    /// Absence of a bucket here means it is free for the next assignment.
+    pending: HashMap<usize, (i64, f64)>,
+    /// instance_id -> bucket, so the matching `record` can settle the same
+    /// bucket its `record_dispatch` claimed instead of picking a fresh one.
+    assigned: HashMap<i64, usize>,
     /// Count of results virtually finished by `checkpoint_time` with
     /// `runtime < cutoff_time` — an exact "solved" count for any wrapper
     /// following the PAR1 contract (`docs/reference/protocol.md`), not an
@@ -936,11 +971,12 @@ struct CheckpointTracker {
     solved_count: usize,
     /// How many real results this tracker has seen so far.
     n_seen: usize,
-    /// True once every virtual worker's busy time exceeds `checkpoint_time`
-    /// — mirrors the assignment rule: it always goes to the least-busy
-    /// worker, so once the least-busy one is past the horizon, nothing still
-    /// arriving can land at or before it. Deliberately never set once
-    /// `n_seen == n_total` — see `score()`.
+    /// True once every virtual bucket is known to be busy past
+    /// `checkpoint_time` — either a confirmed `virtual_busy` value past it,
+    /// or a still-pending dispatch where relative "now" has already passed
+    /// it (so its eventual finish, whatever it turns out to be, must be
+    /// later still). Deliberately never set once `n_seen == n_total` — see
+    /// `score()`.
     ready: bool,
 }
 
@@ -950,27 +986,64 @@ impl CheckpointTracker {
             n_total,
             checkpoint_time,
             cutoff_time,
+            t0: None,
             virtual_busy: vec![0.0; n_virtual.max(1)],
+            pending: HashMap::new(),
+            assigned: HashMap::new(),
             solved_count: 0,
             n_seen: 0,
             ready: false,
         }
     }
 
-    /// Feed one more real result, in the order it actually arrived. No-op
-    /// once `ready`.
-    fn record(&mut self, runtime: f64) {
+    fn least_busy_free_bucket(&self) -> Option<usize> {
+        self.virtual_busy
+            .iter()
+            .enumerate()
+            .filter(|(w, _)| !self.pending.contains_key(w))
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(w, _)| w)
+    }
+
+    /// A real worker has just claimed `instance_id` (`eval.rs`'s
+    /// `SchedulerEvent::Dispatched`). No-op once `ready`. If every bucket is
+    /// currently occupied (more concurrently in-flight real dispatches than
+    /// `n_virtual` — see the struct doc), this dispatch simply isn't
+    /// tracked; its eventual `record` falls back to the least-busy path.
+    fn record_dispatch(&mut self, instance_id: i64, dispatch_time_abs: f64) {
         if self.ready {
             return;
         }
-        let w = self
-            .virtual_busy
-            .iter()
-            .enumerate()
-            .min_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, _)| i)
-            .expect("virtual_busy is never empty");
-        let finish = self.virtual_busy[w] + runtime;
+        let t0 = *self.t0.get_or_insert(dispatch_time_abs);
+        let rel = dispatch_time_abs - t0;
+        if let Some(w) = self.least_busy_free_bucket() {
+            self.pending.insert(w, (instance_id, rel));
+            self.assigned.insert(instance_id, w);
+        }
+        self.refresh(rel);
+    }
+
+    /// Feed one more real (or cached) result. No-op once `ready`.
+    fn record(&mut self, instance_id: i64, runtime: f64) {
+        if self.ready {
+            return;
+        }
+        let (w, finish) = if let Some(w) = self.assigned.remove(&instance_id) {
+            let (_, dispatch_rel) = self
+                .pending
+                .remove(&w)
+                .expect("a bucket in `assigned` always has a matching `pending` entry");
+            (w, dispatch_rel + runtime)
+        } else {
+            let w = self
+                .virtual_busy
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(w, _)| w)
+                .expect("virtual_busy is never empty");
+            (w, self.virtual_busy[w] + runtime)
+        };
         if finish <= self.checkpoint_time && runtime < self.cutoff_time {
             self.solved_count += 1;
         }
@@ -985,7 +1058,45 @@ impl CheckpointTracker {
             // ever produce a usable answer.
             return;
         }
-        if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
+        // `finish` is a valid lower bound on this neighbour's own relative
+        // "now": a completion can only be observed after its own relative
+        // finish time has actually elapsed. Using it here means `record`
+        // never needs a separately-threaded "current time" parameter.
+        self.refresh(finish);
+    }
+
+    /// Re-check readiness using the current real clock, for when no new
+    /// dispatch/completion has arrived to trigger it on its own (e.g. every
+    /// virtual bucket is occupied by a real instance still running, with
+    /// nothing else queued to report progress in the meantime) — called
+    /// from the consumer loop's recv-timeout branch. No-op if this
+    /// neighbour hasn't seen its first real dispatch yet (`t0` unset),
+    /// since there is nothing pending to reassess in that case.
+    fn poll(&mut self, now_abs: f64) {
+        if let Some(t0) = self.t0 {
+            self.refresh(now_abs - t0);
+        }
+    }
+
+    /// `now_rel` must be a valid lower bound on this neighbour's own current
+    /// relative time (never an overestimate) — both call sites above
+    /// guarantee that.
+    fn refresh(&mut self, now_rel: f64) {
+        if self.ready || self.n_seen >= self.n_total {
+            return;
+        }
+        let all_past_horizon = (0..self.virtual_busy.len()).all(|w| {
+            if self.pending.contains_key(&w) {
+                // Still running: hasn't finished as of `now_rel`, and
+                // `now_rel` already exceeds the horizon, so its eventual
+                // finish (>= now_rel) must too -- regardless of its
+                // eventual runtime.
+                now_rel > self.checkpoint_time
+            } else {
+                self.virtual_busy[w] > self.checkpoint_time
+            }
+        });
+        if all_past_horizon {
             self.ready = true;
         }
     }
@@ -1024,6 +1135,21 @@ fn future_telling_rejects(challenger_ckpt: f64, incumbent_ckpt: f64, options: &I
     challenger_ckpt.is_finite()
         && incumbent_ckpt.is_finite()
         && challenger_ckpt > incumbent_ckpt + options.future_telling_tolerance * incumbent_ckpt.abs()
+}
+
+/// Drains any events already queued after a `scheduler.reset()`, writing
+/// back whatever `Completed` results were in flight before cancellation.
+/// `Dispatched` events (FUTURETELL.md D11) carry nothing to cache and are
+/// simply discarded here -- the round is over, nothing more consults their
+/// tracker.
+fn drain_and_cache_writeback(scheduler: &Scheduler, cache: &mut Cache) -> Result<()> {
+    while let Ok(event) = scheduler.events().try_recv() {
+        let SchedulerEvent::Completed(r) = event else { continue };
+        if r.cacheable && r.status != "UNKNOWN" {
+            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,13 +1391,40 @@ fn basic_local_search(
                 break;
             }
 
-            let result = match scheduler
-                .results()
+            let event = match scheduler
+                .events()
                 .recv_timeout(remaining.min(Duration::from_millis(500)))
             {
-                Ok(r) => r,
-                Err(RecvTimeoutError::Timeout) => continue,
+                Ok(e) => e,
+                Err(RecvTimeoutError::Timeout) => {
+                    // No new event, but real time has still passed -- give
+                    // every tracker a chance to notice a still-running
+                    // instance has aged past its checkpoint horizon on its
+                    // own (FUTURETELL.md D11's `poll`).
+                    if let Some(trackers) = trackers.as_mut() {
+                        let now = crate::t();
+                        for tracker in trackers.iter_mut() {
+                            tracker.poll(now);
+                        }
+                    }
+                    continue;
+                }
                 Err(RecvTimeoutError::Disconnected) => break,
+            };
+
+            let result = match event {
+                SchedulerEvent::Dispatched(d) => {
+                    if d.batch_id == batch_id {
+                        let nid = d.neighbor_id;
+                        if nid < n && !done[nid] {
+                            if let Some(trackers) = trackers.as_mut() {
+                                trackers[nid].record_dispatch(d.instance_id, d.dispatch_time);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                SchedulerEvent::Completed(r) => r,
             };
 
             if result.cacheable && result.status != "UNKNOWN" {
@@ -1308,7 +1461,7 @@ fn basic_local_search(
             };
             partial[nid] += val;
             if let Some(trackers) = trackers.as_mut() {
-                trackers[nid].record(result.runtime);
+                trackers[nid].record(result.instance_id, result.runtime);
             }
 
             // Adaptive capping: prune this neighbour once it has spent the whole
@@ -1349,11 +1502,7 @@ fn basic_local_search(
                 if dominates(score, n_instances, current_eval.score, n_instances, options) {
                     // Accept — stop evaluating the rest
                     scheduler.reset();
-                    while let Ok(r) = scheduler.results().try_recv() {
-                        if r.cacheable && r.status != "UNKNOWN" {
-                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
-                        }
-                    }
+                    drain_and_cache_writeback(scheduler, cache)?;
                     crate::debug_line(
                         options.debug.main,
                         &format!(
@@ -1424,11 +1573,7 @@ fn basic_local_search(
 
         if !changed {
             scheduler.reset();
-            while let Ok(r) = scheduler.results().try_recv() {
-                if r.cacheable && r.status != "UNKNOWN" {
-                    cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
-                }
-            }
+            drain_and_cache_writeback(scheduler, cache)?;
             crate::debug_line(
                 options.debug.main,
                 &format!(
@@ -1487,13 +1632,30 @@ fn collect_one(
             break;
         }
 
-        let result = match scheduler
-            .results()
+        let event = match scheduler
+            .events()
             .recv_timeout(remaining.min(Duration::from_millis(500)))
         {
-            Ok(r) => r,
-            Err(RecvTimeoutError::Timeout) => continue,
+            Ok(e) => e,
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(tracker) = tracker.as_mut() {
+                    tracker.poll(crate::t());
+                }
+                continue;
+            }
             Err(RecvTimeoutError::Disconnected) => break,
+        };
+
+        let result = match event {
+            SchedulerEvent::Dispatched(d) => {
+                if d.batch_id == batch_id && d.neighbor_id == expected_nid {
+                    if let Some(tracker) = tracker.as_mut() {
+                        tracker.record_dispatch(d.instance_id, d.dispatch_time);
+                    }
+                }
+                continue;
+            }
+            SchedulerEvent::Completed(r) => r,
         };
 
         if result.cacheable && result.status != "UNKNOWN" {
@@ -1526,7 +1688,7 @@ fn collect_one(
             runhash_n += 1;
         }
         if let Some(tracker) = tracker.as_mut() {
-            tracker.record(result.runtime);
+            tracker.record(result.instance_id, result.runtime);
         }
 
         if options.pruning {
@@ -1534,11 +1696,7 @@ fn collect_one(
                 // Same budget test as the neighbour loop above; see there.
                 if partial_sum > options.bound_multiplier * inc * n_instances as f64 {
                     scheduler.reset();
-                    while let Ok(r) = scheduler.results().try_recv() {
-                        if r.cacheable && r.status != "UNKNOWN" {
-                            cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
-                        }
-                    }
+                    drain_and_cache_writeback(scheduler, cache)?;
                     break;
                 }
             }
@@ -1575,11 +1733,7 @@ fn collect_one(
                         );
                         counters::future_telling_rejected();
                         scheduler.reset();
-                        while let Ok(r) = scheduler.results().try_recv() {
-                            if r.cacheable && r.status != "UNKNOWN" {
-                                cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
-                            }
-                        }
+                        drain_and_cache_writeback(scheduler, cache)?;
                         break;
                     }
                 }
@@ -2531,8 +2685,8 @@ mod tests {
     /// `(solved_count, ready)`.
     fn run_tracker(n_virtual: usize, checkpoint_time: f64, cutoff_time: f64, n_total: usize, runtimes: &[f64]) -> (usize, bool) {
         let mut tracker = CheckpointTracker::new(n_virtual, checkpoint_time, cutoff_time, n_total);
-        for &runtime in runtimes {
-            tracker.record(runtime);
+        for (i, &runtime) in runtimes.iter().enumerate() {
+            tracker.record(i as i64, runtime);
         }
         (tracker.solved_count, tracker.ready)
     }
@@ -2552,15 +2706,15 @@ mod tests {
         assert_ne!(values, reversed, "the reorder must actually change something");
 
         let mut a = CheckpointTracker::new(2, 1.0, 1.5, 10);
-        for &runtime in &values {
-            a.record(runtime);
+        for (i, &runtime) in values.iter().enumerate() {
+            a.record(i as i64, runtime);
             if a.ready {
                 break;
             }
         }
         let mut b = CheckpointTracker::new(2, 1.0, 1.5, 10);
-        for &runtime in &reversed {
-            b.record(runtime);
+        for (i, &runtime) in reversed.iter().enumerate() {
+            b.record(i as i64, runtime);
             if b.ready {
                 break;
             }
@@ -2584,12 +2738,12 @@ mod tests {
         // runtime == cutoff exactly: must count as "done by the horizon"
         // (finish <= checkpoint) but NOT as solved (runtime < cutoff is
         // strict).
-        tracker.record(5.0);
+        tracker.record(0, 5.0);
         assert_eq!(tracker.solved_count, 0);
         // A second, genuinely fast instance on its own idle worker, to
         // confirm the strict `<` is the only thing suppressing the count
         // above, not something broader.
-        tracker.record(1.0);
+        tracker.record(1, 1.0);
         assert_eq!(tracker.solved_count, 1);
     }
 
@@ -2600,9 +2754,9 @@ mod tests {
         // be reached via full completion, per D3 -- `ready` must stay false
         // and `score()` must stay `None` even though every result is known.
         let mut tracker = CheckpointTracker::new(8, 1.0, 10.0, 3);
-        tracker.record(0.1);
-        tracker.record(0.2);
-        tracker.record(0.3);
+        tracker.record(0, 0.1);
+        tracker.record(1, 0.2);
+        tracker.record(2, 0.3);
         assert!(!tracker.ready);
         assert_eq!(tracker.score(), None);
     }
@@ -2913,20 +3067,28 @@ mod tests {
     /// The mirror case: an obviously-good config, evaluated under the exact
     /// same future-telling settings, is never checkpoint-rejected -- its own
     /// tracker structurally never matures at this horizon (D3/D7's "config
-    /// finished before maturing" case: `runtime=0.02` keeps every virtual
-    /// worker's cumulative busy time under `checkpoint_time=0.15` for all 20
-    /// instances), so it runs to full, real completion regardless of how
-    /// strict the reference is.
+    /// finished before maturing" case: real dispatch (FUTURETELL.md D11)
+    /// keeps every real worker's own busy time under `checkpoint_time=1.0`
+    /// for all 20 instances), so it runs to full, real completion regardless
+    /// of how strict the reference is.
+    ///
+    /// Uses `n_workers == future_telling_cores` deliberately -- D11's clean
+    /// bound (and this test's premise) only holds without oversubscription;
+    /// `n_workers=1` (as the sibling `bad`-config test above uses, for
+    /// deterministic ordering) would make each real worker's own cumulative
+    /// dispatch delay reach the horizon almost immediately regardless of how
+    /// fast any individual instance solves, maturing the checkpoint for the
+    /// wrong reason (worker starvation, not the config being good or bad).
     #[test]
     fn future_telling_never_rejects_a_config_whose_checkpoint_never_matures() {
         let n_instances = 20;
         let cutoff_time = 1.0;
         let (scheduler, mut cache, space, instances, _log, _dir) =
-            future_telling_fixture(n_instances, cutoff_time, 1, &["start", "bad", "good"]);
+            future_telling_fixture(n_instances, cutoff_time, 4, &["start", "bad", "good"]);
 
         let mut options = focused_options();
         options.future_telling = true;
-        options.future_telling_checkpoint = 0.15;
+        options.future_telling_checkpoint = 1.0;
         options.future_telling_cores = 4;
         // Deliberately impossible to satisfy, to prove the absence of
         // rejection is structural (the tracker never matures), not merely a

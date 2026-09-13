@@ -489,7 +489,166 @@ warning (D5) is now stale specifically *for future-telling's own sake* and
 could be dropped from that rationale — left in place since it costs nothing
 and instance_shuffle is still recommended on general grounds.
 
+**D11 — Virtual busy-time from dispatch events, not arrival; `future_telling_cores`
+defaults to and is capped in spirit at real `cores`, never enforced above it
+(2026-09-13).** Resolves the "under research, not implemented" open question
+below, worked out against a small hand-simulated example
+(`work26/expericon/ramparils-eprover` conversation, 2026-09-13) before
+touching any code, same as D10's real-bug-first method.
+
+**Problem restated**: D10's `record()` only learns a real worker was busy
+*after* its result arrives, so it reconstructs busy-time retrospectively
+from summed completed runtimes. On a timeout-heavy config this
+systematically overstates how long maturity should take: a real worker
+that has been running a doomed instance for 4.9s is, for every practical
+purpose, already "spent" for this checkpoint — but the tracker doesn't
+know that until the full 5s elapses *and* the result is delivered. Measured
+consequence (`ramparils-eprover` RUN 06 v2, `DIARY.md` 2026-09-13): 64%
+timeout rate, nominal 5s horizon, actual maturity 10.6s — filling all 64
+virtual buckets took ~164 arrivals (~2.6 "waves") instead of one.
+
+**Fix: a real worker's busy-time should count from when it *starts* an
+instance, not from when the result comes back.** Requires a new signal from
+`eval.rs`: the worker loop already knows the exact moment it's about to run
+an instance (`eval.rs`, right after `batch.next_index.fetch_add(1, ...)`,
+before calling `run_solver_inner`) — emit a lightweight dispatch event there
+(`batch_id`, `neighbor_id`, `instance_id`, the real worker's own index, and
+`crate::t()` at that moment).
+
+**Same channel as `TaskResult`, not a second one — the existing
+`Sender<TaskResult>`/`Receiver<TaskResult>` pair becomes
+`Sender<SchedulerEvent>`/`Receiver<SchedulerEvent>`, where**
+
+```rust
+enum SchedulerEvent {
+    Dispatched { batch_id: u64, neighbor_id: usize, instance_id: i64, dispatch_time: f64 },
+    Completed(TaskResult),
+}
+```
+
+Considered and rejected: a parallel dispatch channel consumed via
+`crossbeam::select!` in `ils.rs`. Not needed — the reason a *new signal* is
+needed at all is that a dispatch event has none of `TaskResult`'s fields
+(`runtime`/`quality`/`status`/`runhash`/`cacheable` only exist once a solver
+has actually finished), not that it needs a separate transport. A dispatch
+notice smuggled through as a fake `TaskResult` (placeholder runtime) would
+be misread by the existing consumer logic in `collect_one`/
+`basic_local_search` as a genuine completion — wrongly advancing
+`runtimes[nid]`/`n_seen`, tripping the full-completion check early, and
+corrupting adaptive capping's cost sum. The enum keeps one channel, one
+receive loop, and makes the two cases impossible to conflate: the consumer
+matches `Dispatched` to `CheckpointTracker::record_dispatch` and routes
+`Completed(result)` through the existing pipeline (capping →
+full-completion → `record`/checkpoint) exactly as today, no `select!`
+anywhere. Per-sender ordering on the shared channel also guarantees a
+worker's `Dispatched` for an instance is always seen before its matching
+`Completed`, so the tracker never has to reconcile timestamps across two
+independent streams. `CheckpointTracker` gains a
+`record_dispatch(real_worker_id, dispatch_time)` used to seed/advance that
+worker's virtual busy-time immediately; `record(runtime)` (unchanged
+signature) settles it exactly once the real result lands — whichever
+happens to update `ready` first, a worker whose `now - dispatch_time >=
+checkpoint_time` is already known-timed-out before its result physically
+arrives, and should not block maturity.
+
+**This only produces a clean bound when there's a 1:1 mapping between
+virtual buckets and real workers — i.e. `future_telling_cores == cores`,
+chunk size 1 in the sense worked out in conversation.** Every real worker's
+*first* dispatch happens at (approximately) the same instant, so the
+slowest of them settles by `checkpoint_time` at the latest — that's what
+makes "5s + a few ms of signal overhead" achievable at all. The moment
+`future_telling_cores > cores`, there physically aren't enough real workers
+to give every virtual bucket a dispatch at t≈0: the excess buckets can only
+be filled once a real worker frees up from its *first* instance, which, in
+the worst case (every first-wave instance a timeout), doesn't happen until
+`checkpoint_time` has already elapsed once — so those buckets' own deadlines
+land at `2 * checkpoint_time`, not `checkpoint_time`. In general the bound
+degrades to `ceil(future_telling_cores / cores) * checkpoint_time`, the same
+shape as the original queue-contention problem, just re-introduced through
+oversubscription instead of unlucky ordering.
+
+**Decision: `future_telling_cores` defaults to `cores` (already true, D3/
+"New scenario options" — `null` resolves to `options.n_workers`) and setting
+it explicitly higher than `cores` is allowed, not rejected or capped.** A
+user chasing the diary's "more virtual workers, sharper signal" finding gets
+exactly that signal, at the cost of slower maturity in proportion to the
+oversubscription ratio — a real, known trade-off, not a bug to guard
+against. What changes here is only that this trade-off must be stated
+explicitly (in this doc and in the scenario option's own doc comment) rather
+than left implicit: raising `future_telling_cores` above `cores` does not
+make the checkpoint arrive sooner or the signal free — it can only make
+maturity slower, in the multiples-of-`checkpoint_time` sense above. No
+startup warning is proposed for this (unlike D5's `instance_shuffle`
+warning) — the effect is monotonic and self-correcting (a user who sees
+maturity taking noticeably longer than expected has an immediate, legible
+explanation), not a silent correctness risk.
+
+**Scope check against D3's existing gate**: D3 already requires
+`n_runs > future_telling_cores` for the mechanism to activate at all: raising
+`future_telling_cores` for a sharper signal also raises this bar, on top of
+the new slower-maturity cost above — both costs of the same knob, worth
+restating together rather than only in the older "Open questions" note.
+
+Bucket assignment when `future_telling_cores < cores` (more real workers than
+virtual buckets): `record_dispatch`'s "least-busy free virtual bucket"
+assignment (same rule as D10's arrival-time version) handles this correctly
+as a many-to-one mapping without any special-casing — several real workers'
+dispatches simply land on the same bucket over time, same as today.
+
+**Resolved during implementation, 2026-09-13: what is `dispatch_time`
+relative to?** `checkpoint_time` is an absolute duration, but real dispatch
+times live on the run's global clock (`crate::t()`), which climbs across the
+whole tuning run — so a reference point is needed. Two candidates, both
+worked through against `basic_local_search`'s *actual* dispatch mechanics,
+not assumed in the abstract:
+
+- **Anchor to the round's `submit()` call** — one shared zero for every
+  neighbour in the round. Rejected: `submit()` pushes each neighbour's
+  `WorkBatch` tokens onto the *same* shared channel one neighbour at a time
+  (`eval.rs`'s `for task in tasks` loop, `worker_slots` copies per
+  neighbour) — confirmed empirically with a throwaway test (4 real workers,
+  2 neighbours, 8 instances each at 0.3s): neighbour 1 got **zero** workers
+  until neighbour 0's batch was completely drained. Anchoring to `submit()`
+  would count that queue-wait as if it were spent against a *later*
+  neighbour's own checkpoint budget — exactly the cross-neighbour
+  contamination D1 rejected reading real wall-clock time over in the first
+  place, reintroduced one layer down. It would also make the anchor
+  meaningless for every neighbour but whichever happens to drain first —
+  not a partial degradation, a broken comparison for all the rest.
+- **Anchor to each neighbour's own first `Dispatched` event (adopted)** —
+  `t0` is set once, lazily, the first time `record_dispatch` is called for
+  that neighbour's own `CheckpointTracker`; every subsequent dispatch/finish
+  time is measured relative to it. This avoids counting real queue-wait
+  against a neighbour's budget. **Known, accepted residual cost**: even
+  from its own `t0`, a neighbour's `worker_slots` don't all fill
+  simultaneously either — they trickle in one at a time as each real worker
+  finishes the *previous* neighbour's tail instances and only then claims
+  this neighbour's next token. So `basic_local_search` doesn't get
+  `collect_one`'s fully clean "every worker's first dispatch at t≈0" bound —
+  a smaller-scale version of the same ramp-up effect, inherited from
+  whichever neighbour ran before it rather than from this neighbour's own
+  queue. Not fixed now; flagged here for whoever revisits this.
+
+**Cache hits and any dispatch this tracker never saw compose correctly with
+the above without special-casing**, because they route through a genuinely
+separate fallback that never touches `t0` at all: `record` with no matching
+`record_dispatch` assigns to the currently-least-busy bucket and chains
+`runtime` onto its existing relative-time total — exactly D10's old
+arrival-based bookkeeping, operating in a purely relative frame that was
+never tied to absolute time to begin with. A neighbour whose entire
+evaluation is served from cache (no real dispatch ever happens, `t0` stays
+`None`) still works correctly through this path alone.
+
 ## The `CheckpointTracker`
+
+**Superseded by D11 (2026-09-13) — kept below as the historical record of
+D6/D10, same treatment D4 got.** The struct and `record`/`score` shown here
+are the pre-D11 (arrival-only) design; the real, current implementation adds
+`t0`, `pending`, `assigned`, `record_dispatch`, `poll` and `refresh` per
+D11's own section above — read the doc comments on `CheckpointTracker`
+itself in `src/ils.rs` for the exact, current behaviour rather than this
+snapshot. What's unchanged from here: `n_total`/`checkpoint_time`/
+`cutoff_time`, the D6 solved-count definition, and `score()`'s contract.
 
 One small piece of shared state, one per config being evaluated (i.e. one
 per neighbour in `basic_local_search`'s `Vec`, one for the single config in
@@ -599,10 +758,11 @@ whether `runtime < cutoff_time` ships as-is.
 **Where this lives**: gated by D3 — the whole block below is skipped for a
 round where `n_runs <= options.future_telling_cores`, no trackers built
 at all. When active: `basic_local_search` gets a `Vec<CheckpointTracker>`
-sized `n` (one per neighbour); `.record(result.runtime)` is called in the
-same spot the existing `runtimes[nid]`/`qualities[nid]` vectors are updated
-(`quality` isn't needed at all under D6's redesign, and neither is
-`result.instance_id` since D10 dropped position). **Ordering matters at
+sized `n` (one per neighbour); `.record(result.instance_id, result.runtime)`
+is called in the same spot the existing `runtimes[nid]`/`qualities[nid]`
+vectors are updated (`quality` isn't needed at all under D6's redesign;
+`instance_id` came back under D11 to correlate a `Completed` with its own
+`Dispatched`, after D10 had dropped it). **Ordering matters at
 this point**: the existing full-completion check (`runtimes[nid].len() ==
 n_instances`) must be evaluated — and, if true, handled by the existing
 accept/dominate path — *before* consulting `tracker.score()` for a possible
@@ -941,6 +1101,15 @@ trust this until it's checked against real data, twice.
 
 ## Open questions for the user
 
+- **Resolved by D11 (2026-09-13): assign virtual busy-time at dispatch, not
+  at arrival.** See D11 above for the design (`eval.rs`'s result channel
+  becomes `Sender<SchedulerEvent>` carrying `Dispatched`/`Completed`
+  variants instead of a bare `TaskResult`, `record_dispatch()` on
+  `CheckpointTracker`, and the `future_telling_cores <= cores` requirement
+  for a clean `checkpoint_time + ε` bound) and `ramparils-eprover/DIARY.md`,
+  2026-09-13, for the RUN 06 measurement that raised it. **Not yet
+  implemented in code** — D11 is the design only; see the staged
+  implementation checklist.
 - **`future_telling_checkpoint` default**: `1.0` (checkpoint horizon equal to
   the scenario's own `cutoff_time`) is chosen to be self-scaling and
   conservative rather than to reproduce the diary's exact numbers — the
@@ -1065,6 +1234,42 @@ trust this until it's checked against real data, twice.
 - [ ] Real tuning comparison before flipping any default (validation
       item 6), holding `instance_shuffle` fixed across both sides — still
       not done; explicitly out of scope for this implementation pass
+- [x] **D11 — dispatch-time-based `CheckpointTracker`.** `eval.rs`'s event
+      channel is now `Sender<SchedulerEvent>`/`Receiver<SchedulerEvent>`
+      (`Dispatched(DispatchEvent) | Completed(TaskResult)`, method renamed
+      `results()` → `events()`), emitting `Dispatched` right after
+      `next_index.fetch_add`, before `run_solver_inner` — one channel, no
+      `select!`. `CheckpointTracker` gained `t0` (per-neighbour relative-time
+      origin, seeded from its own first `record_dispatch`, never from
+      `submit()` or a cache hit — see D11's "Resolved during implementation"
+      note on why), `pending`/`assigned` (instance_id-correlated, so a
+      `record_dispatch` and its matching `record` settle the same virtual
+      bucket), `record_dispatch`, `poll` (real-time re-check when no event
+      arrives to trigger `refresh` on its own) and `refresh`. A completion
+      with no matching dispatch (a cache hit, or more concurrently in-flight
+      real dispatches than `future_telling_cores` — the `<` case) falls back
+      to D10's original least-busy-bucket assignment unchanged. Both
+      `collect_one` and `basic_local_search`'s consumer loops now match on
+      the enum and call `tracker.poll(crate::t())` on every recv-timeout,
+      not just on a new event. All prior `CheckpointTracker` unit/replay
+      tests pass unmodified in behaviour (just an added `instance_id`
+      argument, since a bare `record()` with no prior `record_dispatch`
+      reproduces D10 exactly); one integration test's fixture
+      (`future_telling_never_rejects_a_config_whose_checkpoint_never_matures`)
+      needed updating — it used `n_workers=1` with `future_telling_cores=4`,
+      an oversubscribed setup where D11's own documented degraded bound
+      (`ceil(4/1)*checkpoint_time`) legitimately matures the checkpoint
+      where D10's fully-virtual model never would have; fixed by matching
+      `n_workers` to `future_telling_cores` and raising the checkpoint
+      multiplier, per D11's own "no oversubscription" requirement for the
+      clean bound. `cargo test`/`clippy`/`fmt --check` all clean (the
+      `fmt --check` diffs present are pre-existing rustfmt-version drift,
+      confirmed via `git stash`, not introduced here). **Not done**: the
+      replay-fixture re-check against real RUN 06-shaped data (still
+      simulated/unit-level so far, not re-run against real solver logs), and
+      D11's own flagged residual (`basic_local_search`'s per-neighbour
+      ramp-up skew, inherited from whichever neighbour drained before it) is
+      accepted, not fixed.
 
 ## What the integration tests actually show
 
