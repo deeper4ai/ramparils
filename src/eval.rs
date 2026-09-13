@@ -372,9 +372,9 @@ impl Scheduler {
     /// only: worker threads kept draining that neighbour's own `WorkBatch`
     /// via its shared `next_index` regardless, since nothing but a full
     /// `reset()` (which would also cancel every *other* neighbour still
-    /// legitimately in flight) told them to stop. Confirmed in production
-    /// (`ramparils-eprover` RUN 06, 2026-09-13): two future-telling-rejected
-    /// neighbours each still accumulated all 2000 real solver invocations.
+    /// legitimately in flight) told them to stop. Confirmed in production:
+    /// two future-telling-rejected neighbours each still accumulated all
+    /// 2000 real solver invocations.
     ///
     /// Terminates any currently-running process for `(batch_id, neighbor_id)`
     /// immediately (best effort) and marks the pair cancelled so workers stop
@@ -873,9 +873,9 @@ mod tests {
     /// future-telling both mark a neighbour "done" from the ILS's side, but
     /// until this existed nothing told the scheduler to stop running *that
     /// specific neighbour's* remaining, already-dispatched instances --
-    /// confirmed happening for real in `ramparils-eprover` RUN 06
-    /// (2026-09-13: two future-telling-rejected neighbours each still
-    /// accumulated all 2000 real solver invocations). Two neighbours, one
+    /// confirmed happening for real in production (two future-telling-
+    /// rejected neighbours each still accumulated all 2000 real solver
+    /// invocations). Two neighbours, one
     /// instance each, both given their own dedicated worker so both start
     /// immediately; cancelling neighbour 0 must kill its solver process
     /// while neighbour 1's keeps running untouched.

@@ -15,8 +15,8 @@ use super::IlsOptions;
 ///   so a still-running instance can be known to be busy past the horizon
 ///   without waiting for its result to physically arrive. Superseded from
 ///   the pure arrival-based design (kept here as the record of why it
-///   changed): measured against `ramparils-eprover` RUN 06 (2026-09-13),
-///   accounting for busy-time only retrospectively from completions made a
+///   changed): measured in a production run, accounting for busy-time only
+///   retrospectively from completions made a
 ///   64%-timeout config's checkpoint take ~10.6s of real wall clock against
 ///   a nominal 5s horizon, needing ~164 arrivals to fill all 64 buckets
 ///   instead of one wave's worth.
