@@ -1542,9 +1542,10 @@ fn basic_local_search(
                         crate::debug_line(
                             options.debug.main,
                             &format!(
-                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} ckpt={chal_ckpt:.0} ref={} after {}/{n_instances}",
+                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
                                 crate::t(),
-                                incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.0}")),
+                                n_instances - chal_ckpt as usize,
+                                incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
                                 runtimes[nid].len(),
                             ),
                         );
@@ -1554,8 +1555,10 @@ fn basic_local_search(
                             crate::debug_line(
                                 options.debug.main,
                                 &format!(
-                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.0} ref={inc_ckpt:.0} after {}/{n_instances}",
+                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
                                     crate::t(),
+                                    n_instances - chal_ckpt as usize,
+                                    n_instances - inc_ckpt as usize,
                                     runtimes[nid].len(),
                                 ),
                             );
@@ -1714,9 +1717,10 @@ fn collect_one(
                     crate::debug_line(
                         options.debug.main,
                         &format!(
-                            "[{:8.2}s] ils: future-telling-checkpoint config ckpt={chal_ckpt:.0} ref={} after {}/{n_instances}",
+                            "[{:8.2}s] ils: future-telling-checkpoint config solved={} ref={} after {}/{n_instances}",
                             crate::t(),
-                            incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.0}")),
+                            n_instances - chal_ckpt as usize,
+                            incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
                             runtimes.len(),
                         ),
                     );
@@ -1726,8 +1730,10 @@ fn collect_one(
                         crate::debug_line(
                             options.debug.main,
                             &format!(
-                                "[{:8.2}s] ils: future-telling-rejected config ckpt={chal_ckpt:.0} ref={inc_ckpt:.0} after {}/{n_instances}",
+                                "[{:8.2}s] ils: future-telling-rejected config solved={} ref={} after {}/{n_instances}",
                                 crate::t(),
+                                n_instances - chal_ckpt as usize,
+                                n_instances - inc_ckpt as usize,
                                 runtimes.len(),
                             ),
                         );
