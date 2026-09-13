@@ -26,7 +26,7 @@
 //! `cache.put()`.  The ILS writes back each result as it reads it from the
 //! result channel — keeps cache access single-threaded in the ILS.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -126,7 +126,16 @@ pub struct Scheduler {
     submitted_work_batches: AtomicUsize,
     cutoff_time: f64,
     debug: crate::DebugOptions,
-    active_process_groups: Arc<Mutex<HashMap<libc::pid_t, u64>>>,
+    active_process_groups: Arc<Mutex<HashMap<libc::pid_t, (u64, usize)>>>,
+    /// `(batch_id, neighbor_id)` pairs cancelled via `cancel_neighbor()`
+    /// (adaptive capping / future-telling rejecting one neighbour without
+    /// ending the round for the rest) — checked alongside the batch-wide
+    /// staleness check everywhere that already looks at `batch_id`, so a
+    /// rejected neighbour's still-queued and in-flight work actually stops
+    /// rather than merely being ignored on the ILS consumer side. Cleared on
+    /// every `submit()`, since `neighbor_id`s are reused round to round and
+    /// a new `batch_id` already makes any earlier entry moot.
+    cancelled_neighbors: Arc<Mutex<HashSet<(u64, usize)>>>,
     _workers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -138,6 +147,7 @@ impl Scheduler {
         let (result_tx, result_rx) = unbounded::<TaskResult>();
         let batch_id = Arc::new(AtomicU64::new(0));
         let active_process_groups = Arc::new(Mutex::new(HashMap::new()));
+        let cancelled_neighbors: Arc<Mutex<HashSet<(u64, usize)>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let workers = (0..n_workers)
             .map(|_| {
@@ -145,6 +155,7 @@ impl Scheduler {
                 let result_tx: Sender<TaskResult> = result_tx.clone();
                 let current_batch = Arc::clone(&batch_id);
                 let active_process_groups = Arc::clone(&active_process_groups);
+                let cancelled_neighbors = Arc::clone(&cancelled_neighbors);
                 let algo = algo.clone();
 
                 std::thread::spawn(move || {
@@ -157,7 +168,9 @@ impl Scheduler {
                             let Some(&instance_index) = batch.missing_indices.get(index) else {
                                 break;
                             };
-                            if batch.batch_id != current_batch.load(Ordering::Relaxed) {
+                            let cancelled = batch.batch_id != current_batch.load(Ordering::Relaxed)
+                                || cancelled_neighbors.lock().unwrap().contains(&(batch.batch_id, batch.neighbor_id));
+                            if cancelled {
                                 break;
                             }
                             let (instance_id, instance_path) = &batch.instances[instance_index];
@@ -165,12 +178,14 @@ impl Scheduler {
                                 &algo,
                                 &batch.config,
                                 batch.hash,
+                                batch.neighbor_id,
                                 instance_path,
                                 batch.cutoff_time,
                                 batch.batch_id,
                                 &current_batch,
                                 debug,
                                 &active_process_groups,
+                                &cancelled_neighbors,
                             ) else {
                                 break;
                             };
@@ -207,6 +222,7 @@ impl Scheduler {
             cutoff_time,
             debug,
             active_process_groups,
+            cancelled_neighbors,
             _workers: workers,
         }
     }
@@ -219,6 +235,7 @@ impl Scheduler {
     /// Returns an id that identifies all results from this submission.
     pub fn submit(&self, tasks: Vec<EvalTask>, cache: &Cache) -> Result<u64> {
         let batch_id = self.batch_id.fetch_add(1, Ordering::Relaxed) + 1;
+        self.cancelled_neighbors.lock().unwrap().clear();
 
         let (mut n_hits, mut n_misses) = (0usize, 0usize);
         #[cfg(test)]
@@ -307,6 +324,31 @@ impl Scheduler {
         terminate_batch_process_groups(&self.active_process_groups, invalidated_batch);
         crate::debug_line(self.debug.main, &format!("[{:8.2}s] eval: reset", crate::t()));
     }
+
+    /// Cancel one neighbour within the current batch, without ending the
+    /// round for the others — the fine-grained counterpart to `reset()`.
+    ///
+    /// Adaptive capping and future-telling both mark a neighbour "done" on
+    /// the ILS consumer side, but until this existed that was bookkeeping
+    /// only: worker threads kept draining that neighbour's own `WorkBatch`
+    /// via its shared `next_index` regardless, since nothing but a full
+    /// `reset()` (which would also cancel every *other* neighbour still
+    /// legitimately in flight) told them to stop. Confirmed in production
+    /// (`ramparils-eprover` RUN 06, 2026-09-13): two future-telling-rejected
+    /// neighbours each still accumulated all 2000 real solver invocations.
+    ///
+    /// Terminates any currently-running process for `(batch_id, neighbor_id)`
+    /// immediately (best effort) and marks the pair cancelled so workers stop
+    /// picking up its remaining queued instances — same two-pronged approach
+    /// `reset()` uses for the whole batch, just scoped to one neighbour.
+    pub fn cancel_neighbor(&self, batch_id: u64, neighbor_id: usize) {
+        self.cancelled_neighbors.lock().unwrap().insert((batch_id, neighbor_id));
+        terminate_neighbor_process_groups(&self.active_process_groups, batch_id, neighbor_id);
+        crate::debug_line(
+            self.debug.main,
+            &format!("[{:8.2}s] eval: cancel neighbor={neighbor_id}", crate::t()),
+        );
+    }
 }
 
 impl Drop for Scheduler {
@@ -349,12 +391,14 @@ fn run_solver_inner(
     algo: &str,
     config: &Config,
     hash: u64,
+    neighbor_id: usize,
     instance: &str,
     cutoff_time: f64,
     batch_id: u64,
     current_batch: &AtomicU64,
     debug: crate::DebugOptions,
-    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, u64>>>,
+    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, (u64, usize)>>>,
+    cancelled_neighbors: &Arc<Mutex<HashSet<(u64, usize)>>>,
 ) -> Option<(f64, f64, String, Option<u64>)> {
     let mut pairs: Vec<(&String, &String)> = config.iter().collect();
     pairs.sort_unstable_by_key(|(k, _)| *k);
@@ -367,7 +411,14 @@ fn run_solver_inner(
     let cmd = format!("{algo} {instance} {cutoff_time} {paramstring}");
     crate::debug_line(debug.wrapper, &format!("[{:8.2}s] wrapper: {cmd}", crate::t()));
 
-    let output = run_wrapper_process(&cmd, batch_id, current_batch, active_process_groups);
+    let output = run_wrapper_process(
+        &cmd,
+        batch_id,
+        neighbor_id,
+        current_batch,
+        active_process_groups,
+        cancelled_neighbors,
+    );
 
     let (runtime, quality, status, runhash, result_line) = match output {
         Ok(Some(out)) => {
@@ -405,8 +456,10 @@ fn run_solver_inner(
 fn run_wrapper_process(
     cmd: &str,
     batch_id: u64,
+    neighbor_id: usize,
     current_batch: &AtomicU64,
-    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, u64>>>,
+    active_process_groups: &Arc<Mutex<HashMap<libc::pid_t, (u64, usize)>>>,
+    cancelled_neighbors: &Arc<Mutex<HashSet<(u64, usize)>>>,
 ) -> std::io::Result<Option<std::process::Output>> {
     let mut child = Command::new("sh")
         .args(["-c", cmd])
@@ -416,7 +469,10 @@ fn run_wrapper_process(
         .spawn()?;
     let process_group = child.id() as libc::pid_t;
     crate::register_process_group(process_group);
-    active_process_groups.lock().unwrap().insert(process_group, batch_id);
+    active_process_groups
+        .lock()
+        .unwrap()
+        .insert(process_group, (batch_id, neighbor_id));
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
     let stdout_reader = std::thread::spawn(move || {
@@ -429,7 +485,9 @@ fn run_wrapper_process(
     });
 
     let status = loop {
-        let canceled = crate::interrupted() || batch_id != current_batch.load(Ordering::Relaxed);
+        let canceled = crate::interrupted()
+            || batch_id != current_batch.load(Ordering::Relaxed)
+            || cancelled_neighbors.lock().unwrap().contains(&(batch_id, neighbor_id));
         if canceled {
             terminate_child_process_group(&mut child, process_group)?;
             break None;
@@ -464,17 +522,34 @@ fn terminate_child_process_group(child: &mut std::process::Child, process_group:
     Ok(())
 }
 
-fn terminate_batch_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>, batch_id: u64) {
+fn terminate_batch_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, (u64, usize)>>, batch_id: u64) {
     let groups: Vec<libc::pid_t> = active_process_groups
         .lock()
         .unwrap()
         .iter()
-        .filter_map(|(&process_group, &active_batch)| (active_batch == batch_id).then_some(process_group))
+        .filter_map(|(&process_group, &(active_batch, _))| (active_batch == batch_id).then_some(process_group))
         .collect();
     terminate_groups(&groups);
 }
 
-fn terminate_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, u64>>) {
+/// The per-neighbour counterpart to `terminate_batch_process_groups` —
+/// kills only processes matching `(batch_id, neighbor_id)` exactly, leaving
+/// every other neighbour's still-legitimate work untouched.
+fn terminate_neighbor_process_groups(
+    active_process_groups: &Mutex<HashMap<libc::pid_t, (u64, usize)>>,
+    batch_id: u64,
+    neighbor_id: usize,
+) {
+    let groups: Vec<libc::pid_t> = active_process_groups
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(&process_group, &active)| (active == (batch_id, neighbor_id)).then_some(process_group))
+        .collect();
+    terminate_groups(&groups);
+}
+
+fn terminate_process_groups(active_process_groups: &Mutex<HashMap<libc::pid_t, (u64, usize)>>) {
     let groups: Vec<libc::pid_t> = active_process_groups.lock().unwrap().keys().copied().collect();
     terminate_groups(&groups);
 }
@@ -734,6 +809,88 @@ mod tests {
             sched.results().recv_timeout(Duration::from_millis(200)).is_err(),
             "canceled solver produced a result"
         );
+    }
+
+    /// `cancel_neighbor`'s whole reason for existing: adaptive capping and
+    /// future-telling both mark a neighbour "done" from the ILS's side, but
+    /// until this existed nothing told the scheduler to stop running *that
+    /// specific neighbour's* remaining, already-dispatched instances --
+    /// confirmed happening for real in `ramparils-eprover` RUN 06
+    /// (2026-09-13: two future-telling-rejected neighbours each still
+    /// accumulated all 2000 real solver invocations). Two neighbours, one
+    /// instance each, both given their own dedicated worker so both start
+    /// immediately; cancelling neighbour 0 must kill its solver process
+    /// while neighbour 1's keeps running untouched.
+    #[test]
+    fn cancel_neighbor_terminates_only_that_neighbors_solver() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("wrapper.sh");
+        fs::write(
+            &wrapper,
+            "#!/bin/sh\necho \"$$\" > \"$1.pid\"\ntrap 'exit 143' TERM\nsleep 300\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper, permissions).unwrap();
+
+        let cache = Cache::open(":memory:", false).unwrap();
+        let instance0 = dir.path().join("n0").display().to_string();
+        let instance1 = dir.path().join("n1").display().to_string();
+        let ids = cache.load_instances(&[instance0.clone(), instance1.clone()]).unwrap();
+        let config0: Config = [("alpha".to_string(), "0".to_string())].into();
+        let config1: Config = [("alpha".to_string(), "1".to_string())].into();
+        // Two workers, one instance each -- both dispatch immediately, no
+        // queueing behind one another.
+        let sched = Scheduler::new(2, wrapper.display().to_string(), 300.0, crate::DebugOptions::default());
+        let batch_id = sched
+            .submit(
+                vec![
+                    EvalTask {
+                        neighbor_id: 0,
+                        hash: hash_config(&config0),
+                        config: config0,
+                        instances: Arc::new(vec![(ids[&instance0], instance0.clone())]),
+                    },
+                    EvalTask {
+                        neighbor_id: 1,
+                        hash: hash_config(&config1),
+                        config: config1,
+                        instances: Arc::new(vec![(ids[&instance1], instance1.clone())]),
+                    },
+                ],
+                &cache,
+            )
+            .unwrap();
+
+        let pid_of = |instance: &str| -> libc::pid_t {
+            let pid_file = format!("{instance}.pid");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !std::path::Path::new(&pid_file).exists() {
+                assert!(Instant::now() < deadline, "solver process for {instance} did not start");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap()
+        };
+        let pid0 = pid_of(&instance0);
+        let pid1 = pid_of(&instance1);
+
+        sched.cancel_neighbor(batch_id, 0);
+
+        let alive = |pid: libc::pid_t| unsafe {
+            libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        };
+        let exit_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if !alive(pid0) {
+                break;
+            }
+            assert!(Instant::now() < exit_deadline, "neighbour 0's solver process survived cancel_neighbor");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(alive(pid1), "cancel_neighbor(0) must not touch neighbour 1's still-legitimate process");
+
+        sched.reset();
     }
 
     #[test]

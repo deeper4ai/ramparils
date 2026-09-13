@@ -1257,6 +1257,13 @@ fn basic_local_search(
         let mut runhash_ns: Vec<usize> = vec![0; n];
         let mut done = vec![false; n];
         let mut n_done = 0usize;
+        // Logged once per neighbour, the moment its own checkpoint first
+        // matures — independent of whether it ends up rejected, so the
+        // checkpoint value itself is visible for every neighbour that
+        // reaches one, not just the rejected ones. Temporary, kept on
+        // purpose while future-telling is still being validated against
+        // real data.
+        let mut checkpoint_logged = vec![false; n];
 
         // Future-telling (D3/D4): one tracker per neighbour, one shared
         // position map for the round — every neighbour this round is
@@ -1347,6 +1354,10 @@ fn basic_local_search(
                     done[nid] = true;
                     n_done += 1;
                     counters::eval(true);
+                    // Stop this neighbour's own dispatch, not just the ILS's
+                    // bookkeeping about it — see `cancel_neighbor`'s own doc
+                    // comment for why this used to be a no-op in practice.
+                    scheduler.cancel_neighbor(batch_id, nid);
                     continue;
                 }
             }
@@ -1395,25 +1406,40 @@ fn basic_local_search(
                     changed = true;
                     break 'collect;
                 }
-            } else if let (Some(inc_ckpt), Some(trackers)) = (incumbent_checkpoint, trackers.as_ref()) {
+            } else if let Some(trackers) = trackers.as_ref() {
                 // Full completion (above) always wins over a checkpoint
                 // verdict — this branch is only reached when the neighbour
                 // is still incomplete (FUTURETELL.md "Where this lives").
                 if let Some(chal_ckpt) = trackers[nid].score() {
-                    if future_telling_rejects(chal_ckpt, inc_ckpt, options) {
+                    if !checkpoint_logged[nid] {
+                        checkpoint_logged[nid] = true;
                         crate::debug_line(
                             options.debug.main,
                             &format!(
-                                "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} ckpt={chal_ckpt:.6} ref={} after {}/{n_instances}",
                                 crate::t(),
+                                incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.6}")),
                                 runtimes[nid].len(),
                             ),
                         );
-                        done[nid] = true;
-                        n_done += 1;
-                        counters::eval(true);
-                        counters::future_telling_rejected();
-                        continue;
+                    }
+                    if let Some(inc_ckpt) = incumbent_checkpoint {
+                        if future_telling_rejects(chal_ckpt, inc_ckpt, options) {
+                            crate::debug_line(
+                                options.debug.main,
+                                &format!(
+                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                    crate::t(),
+                                    runtimes[nid].len(),
+                                ),
+                            );
+                            done[nid] = true;
+                            n_done += 1;
+                            counters::eval(true);
+                            counters::future_telling_rejected();
+                            scheduler.cancel_neighbor(batch_id, nid);
+                            continue;
+                        }
                     }
                 }
             }
@@ -1472,6 +1498,12 @@ fn collect_one(
     let mut tracker = future_telling_active(options, n_instances)
         .then(|| CheckpointTracker::new(options.future_telling_cores, future_telling_time, cutoff_time, n_instances));
     let positions = tracker.is_some().then(|| instance_positions(instances));
+    // Logged once, the moment this evaluation's own checkpoint first
+    // matures — independent of whether a reference exists to compare it
+    // against, so the checkpoint value itself is visible even when nothing
+    // gets rejected. Temporary, kept on purpose while future-telling is
+    // still being validated against real data.
+    let mut checkpoint_logged = false;
 
     while runtimes.len() < n_instances {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1544,8 +1576,20 @@ fn collect_one(
         // arriving result both completes this evaluation and matures its
         // checkpoint.
         if runtimes.len() < n_instances {
-            if let (Some(inc_ckpt), Some(tracker)) = (incumbent_checkpoint, tracker.as_ref()) {
-                if let Some(chal_ckpt) = tracker.score() {
+            if let Some(chal_ckpt) = tracker.as_ref().and_then(CheckpointTracker::score) {
+                if !checkpoint_logged {
+                    checkpoint_logged = true;
+                    crate::debug_line(
+                        options.debug.main,
+                        &format!(
+                            "[{:8.2}s] ils: future-telling-checkpoint config ckpt={chal_ckpt:.6} ref={} after {}/{n_instances}",
+                            crate::t(),
+                            incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.6}")),
+                            runtimes.len(),
+                        ),
+                    );
+                }
+                if let Some(inc_ckpt) = incumbent_checkpoint {
                     if future_telling_rejects(chal_ckpt, inc_ckpt, options) {
                         crate::debug_line(
                             options.debug.main,

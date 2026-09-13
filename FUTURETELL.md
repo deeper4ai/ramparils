@@ -1037,15 +1037,29 @@ trust this until it's checked against real data, twice.
 Validation item 5's original wording ("a neighbour engineered to be
 obviously worse gets rejected with fewer than `n_instances` real solver
 invocations") assumed marking a neighbour `done[nid] = true` on the ILS
-consumer side also stops its solver dispatch. It doesn't: `Scheduler`'s
-worker threads keep pulling from a rejected neighbour's own `WorkBatch` via
-its shared `next_index` atomic regardless of what the consumer decided,
-until a `scheduler.reset()` — fired only on an accept or at round end —
-actually cancels it. Whether a rejection ends up saving real subprocess
-calls therefore depends on scheduler-level dispatch timing (how many workers
-are assigned to which neighbour's ticket queue, in what order), not on the
-checkpoint decision alone — discovered while trying to write a deterministic
-version of this test, not assumed in advance.
+consumer side also stops its solver dispatch. **At the time this was
+written, it didn't** — `Scheduler`'s worker threads kept pulling from a
+rejected neighbour's own `WorkBatch` via its shared `next_index` atomic
+regardless of what the consumer decided, until a `scheduler.reset()` (fired
+only on an accept or at round end) actually cancelled it. Confirmed for
+real, not just in a test, on `ramparils-eprover` RUN 06 (2026-09-13): two
+future-telling-rejected neighbours each still accumulated all 2000 real
+solver invocations, confirmed directly against the run's own `dbcache`
+(`SELECT strategy_hash, COUNT(*) FROM results GROUP BY strategy_hash`).
+
+**Fixed the same day**: `Scheduler::cancel_neighbor(batch_id, neighbor_id)`
+(`src/eval.rs`) is the fine-grained counterpart to `reset()` — it terminates
+any currently-running process for that one `(batch_id, neighbor_id)` and
+marks the pair cancelled so workers stop picking up its remaining queued
+instances, without touching any other neighbour still legitimately in
+flight. Both `basic_local_search`'s capping-reject and checkpoint-reject
+branches call it now. Tested directly at the scheduler level
+(`cancel_neighbor_terminates_only_that_neighbors_solver`, `src/eval.rs`) —
+two neighbours each on their own worker, cancelling one kills its process
+while the other's keeps running untouched. The paragraphs below (and the
+"real solver invocations" framing they moved away from) describe the state
+*before* this fix; kept as the record of how the gap was found, not
+because it's still open.
 
 What's actually tested instead, all in `src/ils.rs`'s test module:
 

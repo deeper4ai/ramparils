@@ -20,7 +20,12 @@ they describe what changed rather than what was announced at the time.
   worse than the incumbent's own (`future_telling_tolerance`). Unlike capping
   this is a heuristic, not a proof — it can reject a configuration that would
   have gone on to win — so it defaults to off; a rejection is counted
-  separately in the run summary's new `future_telling_rejected`. See
+  separately in the run summary's new `future_telling_rejected`. A rejection
+  (capping's or future-telling's) now also actually stops that neighbour's
+  own solver dispatch via the new `Scheduler::cancel_neighbor` — without it,
+  a rejected neighbour's already-queued instances kept running to completion
+  in the background regardless, so early rejection bought no real wall-clock
+  savings. See
   [docs/reference/algorithm.md#future-telling](docs/reference/algorithm.md#future-telling).
 - **`instance_shuffle` (default `true`) shuffles the instance list once,
   deterministically, before dispatch** (`instance_shuffle_seed` for
