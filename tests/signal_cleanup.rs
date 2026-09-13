@@ -18,7 +18,7 @@ fn sigint_terminates_active_solver_process_tree() {
     fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nsleep 300 &\nchild=$!\necho \"$child\" > '{}'\ntrap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 143' INT TERM\nwait \"$child\"\n",
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then\necho wrapper 1.0.0\necho 'supports: version'\nexit 0\nfi\nsleep 300 &\nchild=$!\necho \"$child\" > '{}'\ntrap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 143' INT TERM\nwait \"$child\"\n",
             solver_pid.display()
         ),
     )
