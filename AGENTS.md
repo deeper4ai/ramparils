@@ -27,8 +27,11 @@ include a random seed.
 - `src/scenario.rs`: YAML/Python scenario model and instance loading.
 - `src/cache.rs`: persistent SQLite result cache.
 - `src/eval.rs`: parallel solver execution and result parsing.
-- `src/ils.rs`: BasicILS, FocusedILS, perturbation, local search, capping, and
-  iterative deepening.
+- `src/ils/`: BasicILS, FocusedILS, perturbation, local search, capping, and
+  iterative deepening, split into `mod.rs` (the `run()` orchestration loop),
+  `bls.rs` (parallel first-improvement descent + single-config evaluation),
+  `futell.rs` (checkpoint-based early rejection, FUTURETELL.md),
+  `logging.rs`, `counters.rs` and `deepening.rs`.
 - `src/main.rs`: the CLI — `run` and `db` sub-commands, and all of the clap
   structure; tuning options come from the scenario.
 - `src/db.rs`: read-only export of a `.dbcache` (`solved`, `status`, `confs`).
@@ -111,6 +114,54 @@ another scenario — e.g. `eprover-basic.yaml`, `eprover-random.yaml` and
 instances, all sharing `eprover.dbcache`). `params-`/`instances-` files keep
 their existing prefixes, named after the benchmark/domain rather than the
 scenario. Default naming — deviate only when asked.
+
+## Function Structure
+
+For a function that's the entry point to a nontrivial algorithm (the kind
+worth calling out as "the main algorithm" in review), follow
+`work26/plots/cactus/AGENTS.md`'s Python convention, carried over into Rust:
+the function holds only the pipeline itself — one call per stage, no inline
+logic — with each block factored into its own named function or method.
+Applies to new code from here on; existing functions get this treatment
+opportunistically when they're touched for another reason, not as a standing
+mass-refactor mandate. `src/ils/bls.rs`'s `basic_local_search`/`collect_one`
+and `src/ils/mod.rs`'s `run` are the worked examples to copy from (refactored
+to this shape 2026-09-13 — read them alongside this section, not instead of
+it).
+
+**Folding many arguments — the Rust analog of Python's `*state` tuple
+threading.** Rust has no positional splat, but the same underlying problem
+(a stage needs to hand many related values to the next one, or a callee
+needs many values from its caller) has two cleaner idioms, both already used
+in this codebase:
+
+- **A bundle passed by `&mut` reference**, when a group of values is
+  constant across many calls in the same scope. `EvalContext<'a>` in
+  `src/ils/bls.rs` bundles `scheduler`, `cache`, `options`, `space`,
+  `cutoff_time` and `deadline` so `evaluate_config_outcome`/`collect_one`/
+  `basic_local_search` take 5–7 arguments instead of 10+. Build it once at
+  the top of the caller and thread `&mut ctx` through; the caller keeps its
+  own `options`/`space` bindings for anything it still needs directly,
+  rather than routing every access through `ctx.*` too.
+- **A named struct with methods, for state carried across iterations.**
+  `RunState` in `src/ils/mod.rs` replaces a ~10-variable loop (`incumbent`,
+  `incumbent_score`, `last_lm`, `rejections`, `n_rounds`, ...) with one
+  struct and named methods (`try_promote_incumbent`, `set_home_base`,
+  `accept_or_reject_home_base`, `record_round`, `restart_reason`). This is
+  the direct analog of a Python stage returning `state` for the next call as
+  `next_stage(*state)` — except each field has a name instead of a
+  position, and each transition is a method whose `&mut self` signature
+  documents exactly which fields it touches, instead of one opaque tuple
+  passed everywhere.
+- Prefer the named-struct-with-methods form over a plain tuple once a group
+  of values outlives a single call: a `(Config, ConfigEvaluation, usize)`
+  return type is fine when it's consumed once at the call site, but a value
+  group that survives more than one function call, or gets destructured in
+  more than one place, is worth naming.
+
+Don't retrofit this onto something that's already simple — a function with
+one clear job and few branches doesn't need splitting just to have more
+functions.
 
 ## Engineering Conventions
 
