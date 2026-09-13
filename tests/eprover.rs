@@ -24,7 +24,7 @@ fn eprover_dir() -> PathBuf {
 fn parse_eprover_params_count() {
     let dir = eprover_dir();
     let space = ParamSpace::from_file(dir.join("params-eprover.txt").to_str().unwrap()).unwrap();
-    assert_eq!(space.params.len(), 34, "expected 34 parameters");
+    assert_eq!(space.params.len(), 21, "expected 21 parameters");
 }
 
 #[test]
@@ -32,9 +32,10 @@ fn parse_eprover_params_conditionals() {
     let dir = eprover_dir();
     let space = ParamSpace::from_file(dir.join("params-eprover.txt").to_str().unwrap()).unwrap();
 
-    // 5 params carry conditions (tord_weight, tord_const, heur1, heur2, heur3)
+    // 10 params carry conditions: tord_weight, tord_const (on tord=KBO6), and
+    // heur1..4/freq1..4 (on slots ∈ {1,2,3,4}/{2,3,4}/{3,4}/{4} respectively)
     let n_cond = space.params.iter().filter(|p| p.condition.is_some()).count();
-    assert_eq!(n_cond, 5);
+    assert_eq!(n_cond, 10);
 
     // tord_weight depends on tord=KBO6
     let tw = space.params.iter().find(|p| p.name == "tord_weight").unwrap();
@@ -42,11 +43,17 @@ fn parse_eprover_params_conditionals() {
     assert_eq!(c.parent, "tord");
     assert_eq!(c.allowed_values, vec!["KBO6"]);
 
-    // heur1 depends on slots ∈ {2,3,4}
+    // heur1/freq1 depend on slots ∈ {1,2,3,4}
     let h1 = space.params.iter().find(|p| p.name == "heur1").unwrap();
     let c1 = h1.condition.as_ref().unwrap();
     assert_eq!(c1.parent, "slots");
-    assert_eq!(c1.allowed_values, vec!["2", "3", "4"]);
+    assert_eq!(c1.allowed_values, vec!["1", "2", "3", "4"]);
+
+    // heur4/freq4 depend on slots ∈ {4} only
+    let h4 = space.params.iter().find(|p| p.name == "heur4").unwrap();
+    let c4 = h4.condition.as_ref().unwrap();
+    assert_eq!(c4.parent, "slots");
+    assert_eq!(c4.allowed_values, vec!["4"]);
 }
 
 #[test]
@@ -55,7 +62,7 @@ fn parse_eprover_params_sel_domain() {
     let space = ParamSpace::from_file(dir.join("params-eprover.txt").to_str().unwrap()).unwrap();
 
     let sel = space.params.iter().find(|p| p.name == "sel").unwrap();
-    assert_eq!(sel.domain.len(), 9);
+    assert_eq!(sel.domain.len(), 8);
     assert_eq!(sel.default, "SelectMaxLComplexAvoidPosPred");
     assert!(sel.condition.is_none());
 }
@@ -86,10 +93,22 @@ fn parse_eprover_params_default_active() {
         "tord_const should be inactive with tord=LPO4"
     );
 
-    // slots default = 4 → heur1 (slots∈{2,3,4}), heur2 (slots∈{3,4}), heur3 (slots∈{4}) all active
-    assert!(active.contains(&"heur1"), "heur1 should be active with slots=4");
-    assert!(active.contains(&"heur2"), "heur2 should be active with slots=4");
-    assert!(active.contains(&"heur3"), "heur3 should be active with slots=4");
+    // slots default = 0 → every heurN/freqN slot (all guarded by slots >= 1)
+    // is inactive at the default configuration.
+    for name in ["heur1", "freq1", "heur2", "freq2", "heur3", "freq3", "heur4", "freq4"] {
+        assert!(!active.contains(&name), "{name} should be inactive with slots=0");
+    }
+
+    // Raising slots to 4 must activate exactly the slots the file's own
+    // conditions promise: heur1/freq1 (slots∈{1,2,3,4}), heur2/freq2
+    // (slots∈{2,3,4}), heur3/freq3 (slots∈{3,4}), heur4/freq4 (slots∈{4}).
+    let mut four_slots = default.clone();
+    four_slots.insert("slots".to_string(), "4".to_string());
+    assert!(!space.is_forbidden(&four_slots));
+    let active_at_4: Vec<&str> = space.active_params(&four_slots).iter().map(|p| p.name.as_str()).collect();
+    for name in ["heur1", "freq1", "heur2", "freq2", "heur3", "freq3", "heur4", "freq4"] {
+        assert!(active_at_4.contains(&name), "{name} should be active with slots=4");
+    }
 }
 
 // ── ILS integration test ─────────────────────────────────────────────────────
