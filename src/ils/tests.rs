@@ -797,6 +797,31 @@ fn checkpoint_tracker_runtime_equal_to_cutoff_is_not_solved() {
     assert_eq!(tracker.solved_count, 1);
 }
 
+/// `par1()` is `score()`'s "treat what hasn't been seen yet as a timeout"
+/// convention carried through as a mean runtime instead of an unsolved
+/// count: an instance whose real result already arrived but whose virtual
+/// bucket-finish landed *past* the horizon is penalized at `cutoff_time`
+/// exactly like one that hasn't arrived at all, not counted at its own
+/// (later-than-the-horizon) runtime.
+#[test]
+fn checkpoint_tracker_par1_matches_score_on_the_same_horizon() {
+    // One virtual worker so both records land in the same bucket: the
+    // second pushes the bucket's cumulative finish past the checkpoint.
+    let mut tracker = CheckpointTracker::new(1, 5.0, 5.0, 3);
+    tracker.record(0, 2.0); // finish=2.0 <= 5.0: solved, counted
+    assert!(!tracker.ready);
+    tracker.record(1, 4.0); // finish=6.0 > 5.0: matures the checkpoint, itself uncounted
+    assert!(
+        tracker.ready,
+        "single bucket must mature once its cumulative finish exceeds the horizon"
+    );
+    assert_eq!(tracker.n_seen, 2);
+
+    assert_eq!(tracker.score(), Some(2.0), "n_total(3) - solved_count(1)");
+    // time_sum(2.0, from instance 0 alone) + uncounted(2, instances 1 and 2) * cutoff_time(5.0), / n_total(3)
+    assert!((tracker.par1().unwrap() - 4.0).abs() < 1e-9);
+}
+
 #[test]
 fn checkpoint_tracker_finishing_before_maturing_never_reports_ready() {
     // n_total <= n_virtual: every instance gets its own idle worker, so

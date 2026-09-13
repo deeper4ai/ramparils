@@ -69,6 +69,17 @@ pub(super) struct CheckpointTracker {
     /// following the PAR1 contract (`docs/reference/protocol.md`), not an
     /// approximation of one.
     pub(super) solved_count: usize,
+    /// Sum of `runtime` over every result virtually finished by
+    /// `checkpoint_time`, solved or not — the numerator of [`par1`](Self::par1),
+    /// logged alongside `score()` purely for comparison (D6 still decides
+    /// on `solved_count`). Under the PAR1 contract a non-solved result's own
+    /// `runtime` already reports `cutoff_time`, so summing it raw (not
+    /// re-clamping) is correct.
+    pub(super) time_sum: f64,
+    /// How many results contributed to `time_sum` — always `<= n_seen`,
+    /// counted separately from `solved_count` because it includes
+    /// non-solved results that still finished within the horizon.
+    pub(super) n_counted: usize,
     /// How many real results this tracker has seen so far.
     pub(super) n_seen: usize,
     /// True once every virtual bucket is known to be busy past
@@ -91,6 +102,8 @@ impl CheckpointTracker {
             pending: HashMap::new(),
             assigned: HashMap::new(),
             solved_count: 0,
+            time_sum: 0.0,
+            n_counted: 0,
             n_seen: 0,
             ready: false,
         }
@@ -144,8 +157,12 @@ impl CheckpointTracker {
                 .expect("virtual_busy is never empty");
             (w, self.virtual_busy[w] + runtime)
         };
-        if finish <= self.checkpoint_time && runtime < self.cutoff_time {
-            self.solved_count += 1;
+        if finish <= self.checkpoint_time {
+            self.time_sum += runtime;
+            self.n_counted += 1;
+            if runtime < self.cutoff_time {
+                self.solved_count += 1;
+            }
         }
         self.virtual_busy[w] = finish;
         self.n_seen += 1;
@@ -213,6 +230,22 @@ impl CheckpointTracker {
             return None;
         }
         Some((self.n_total - self.solved_count) as f64)
+    }
+
+    /// PAR1 estimate at the checkpoint: `time_sum` (real, PAR1-contract
+    /// runtimes for every result that virtually finished by
+    /// `checkpoint_time`) plus `cutoff_time` for each of the remaining
+    /// `n_total - n_counted` instances -- the same "treat what hasn't been
+    /// seen yet as a timeout" assumption `score()` makes for solved_count,
+    /// just carried through as a mean runtime instead of a count. Same
+    /// guard as `score()`; logged alongside it purely for comparison, not
+    /// yet consulted by D8's reject rule.
+    pub(super) fn par1(&self) -> Option<f64> {
+        if !self.ready || self.n_seen >= self.n_total {
+            return None;
+        }
+        let uncounted = self.n_total - self.n_counted;
+        Some((self.time_sum + uncounted as f64 * self.cutoff_time) / self.n_total as f64)
     }
 }
 

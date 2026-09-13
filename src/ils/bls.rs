@@ -520,6 +520,13 @@ impl NeighbourRound {
         self.trackers.as_ref().and_then(|t| t[nid].score())
     }
 
+    /// PAR1 companion to `tracker_score` -- observational only (D6/D8 still
+    /// decide on `score()`), logged alongside it to see whether it would
+    /// make a usable alternative to the solved-count checkpoint.
+    fn tracker_par1(&self, nid: usize) -> Option<f64> {
+        self.trackers.as_ref().and_then(|t| t[nid].par1())
+    }
+
     fn mark_done(&mut self, nid: usize) {
         self.done[nid] = true;
         self.n_done += 1;
@@ -632,12 +639,14 @@ impl NeighbourRound {
             return;
         };
 
+        let par1 = self.tracker_par1(nid).unwrap_or(f64::NAN);
+
         if !self.checkpoint_logged[nid] {
             self.checkpoint_logged[nid] = true;
             crate::debug_line(
                 ctx.options.debug.main,
                 &format!(
-                    "[{:8.2}s] futell: checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                    "[{:8.2}s] futell: checkpoint neighbor={nid} solved={} ref={} par1={par1:.6} after {}/{n_instances}",
                     crate::t(),
                     n_instances - chal_ckpt as usize,
                     incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
@@ -653,7 +662,7 @@ impl NeighbourRound {
         crate::debug_line(
             ctx.options.debug.main,
             &format!(
-                "[{:8.2}s] futell: rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                "[{:8.2}s] futell: rejected neighbor={nid} solved={} ref={} par1={par1:.6} after {}/{n_instances}",
                 crate::t(),
                 n_instances - chal_ckpt as usize,
                 n_instances - inc_ckpt as usize,
@@ -915,6 +924,14 @@ impl SingleConfigCollector {
         let Some(chal_ckpt) = self.tracker.as_ref().and_then(CheckpointTracker::score) else {
             return Ok(false);
         };
+        // Observational only (D6/D8 still decide on `chal_ckpt`), logged
+        // alongside it to see whether it would make a usable alternative to
+        // the solved-count checkpoint.
+        let par1 = self
+            .tracker
+            .as_ref()
+            .and_then(CheckpointTracker::par1)
+            .unwrap_or(f64::NAN);
         let n_instances = self.n_instances;
 
         if !self.checkpoint_logged {
@@ -922,7 +939,7 @@ impl SingleConfigCollector {
             crate::debug_line(
                 ctx.options.debug.main,
                 &format!(
-                    "[{:8.2}s] futell: checkpoint config solved={} ref={} after {}/{n_instances}",
+                    "[{:8.2}s] futell: checkpoint config solved={} ref={} par1={par1:.6} after {}/{n_instances}",
                     crate::t(),
                     n_instances - chal_ckpt as usize,
                     incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
@@ -940,7 +957,7 @@ impl SingleConfigCollector {
         crate::debug_line(
             ctx.options.debug.main,
             &format!(
-                "[{:8.2}s] futell: rejected config solved={} ref={} after {}/{n_instances}",
+                "[{:8.2}s] futell: rejected config solved={} ref={} par1={par1:.6} after {}/{n_instances}",
                 crate::t(),
                 n_instances - chal_ckpt as usize,
                 n_instances - inc_ckpt as usize,
