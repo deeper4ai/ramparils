@@ -136,9 +136,8 @@ generalisation performance.
 A one-time, deterministic reordering of the instance list, applied right after instance IDs are
 assigned and before anything else runs. On (`true`) by default, which changes real evaluation
 order for every scenario that doesn't opt out — not just ones using *future-telling*. Decorrelates
-a fixed evaluation-order prefix (FocusedILS fidelity growth, a *checkpoint*'s simulated replay)
-from any difficulty ordering already present in the instance file; never affects which instance ID
-a path is assigned.
+FocusedILS's fidelity-growth prefix from any difficulty ordering already present in the instance
+file; never affects which instance ID a path is assigned.
 
 ---
 

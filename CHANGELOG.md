@@ -25,13 +25,15 @@ they describe what changed rather than what was announced at the time.
   own solver dispatch via the new `Scheduler::cancel_neighbor` — without it,
   a rejected neighbour's already-queued instances kept running to completion
   in the background regardless, so early rejection bought no real wall-clock
-  savings. See
+  savings. The simulated replay assigns each real result to a virtual worker
+  in the order results actually arrive, not a fixed instance order — an
+  earlier fixed-order design could stall for a long time waiting on one slow
+  straggler while much newer data sat unused. See
   [docs/reference/algorithm.md#future-telling](docs/reference/algorithm.md#future-telling).
 - **`instance_shuffle` (default `true`) shuffles the instance list once,
   deterministically, before dispatch** (`instance_shuffle_seed` for
-  reproducibility) — decorrelates a fixed evaluation-order prefix
-  (FocusedILS's fidelity growth, `future_telling`'s checkpoint simulation)
-  from any difficulty ordering already present in the instance file. **This
+  reproducibility) — decorrelates FocusedILS's fidelity-growth prefix from
+  any difficulty ordering already present in the instance file. **This
   changes real evaluation order for every scenario that doesn't explicitly
   set `instance_shuffle: false`**, including ones that never touch
   `future_telling` — a deliberate default-behavior change, not only new

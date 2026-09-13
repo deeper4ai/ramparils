@@ -199,13 +199,14 @@ rejected outright once that checkpoint is significantly worse than the incumbent
 | Typically fires | once enough real cost has accrued | potentially very early, as soon as enough *fast* results have streamed in |
 
 The simulation is deliberately decoupled from real wall-clock time and real `cores:` — it replays
-per-instance results against `future_telling_cores` *virtual* workers (list-scheduling: each idle
-worker takes the next instance, in the run's fixed instance order), so the checkpoint's sharpness is
-a free parameter independent of how many real workers this run happens to use. The fixed order this
-relies on is `instance_shuffle`'s (above): a difficulty-correlated instance file would otherwise
-delay maturity until nearly the whole evaluation is already done, defeating the point of an *early*
-reject — `future_telling: true` with `instance_shuffle: false` prints a startup warning for exactly
-this reason.
+per-instance results against `future_telling_cores` *virtual* workers (list-scheduling: each result
+goes to whichever virtual worker is currently least busy, in the order real results actually arrive),
+so the checkpoint's sharpness is a free parameter independent of how many real workers this run
+happens to use. Note that a *sharper* signal (a larger `future_telling_cores`) is not free in wall
+time: every virtual worker has to individually accumulate `future_telling_checkpoint × cutoff_time`
+of assigned work before the checkpoint matures, and the supply of real results feeding that is capped
+by real `cores:` — doubling `future_telling_cores` roughly doubles how many real results are needed,
+and so how long maturity actually takes.
 
 A checkpoint rejection is counted in the run summary's `future_telling_rejected`, separate from
 `capped` (above) — unlike a capped score, a rejected neighbour leaves no "the good one might have

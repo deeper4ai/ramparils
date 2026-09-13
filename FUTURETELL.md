@@ -145,7 +145,9 @@ finding) but also raise the bar for how far into `Focused`'s fidelity growth
 the feature has to reach before it activates at all. See "Open questions."
 
 **D4 — Fixed instance-index order for the virtual schedule, not arrival
-order.** Superseded from an earlier draft of this document after checking
+order.** **Superseded again, 2026-09-13, by D10 below — kept here as the
+record of why fixed order was tried first, not as the current design.**
+Superseded from an earlier draft of this document after checking
 `expericon/ramparils-eprover/DIARY.md` 2026-09-11 ("alphabetical-order
 confound found; `train2k.rnd` and `shuffle: false` fix"): solverpy was found
 to reshuffle task-launch order independently *per strategy*, unseeded,
@@ -207,7 +209,13 @@ an acceptable one.
 
 **D5 — The fixed order (D4) must also be decorrelated from difficulty, or
 the checkpoint fires too late to help; solved with a global, once-only
-instance shuffle in `run()`, not a future-telling-internal one.** Caught
+instance shuffle in `run()`, not a future-telling-internal one.** **Future-
+telling itself no longer depends on this as of D10 (2026-09-13) — arrival
+order has no "difficulty-correlated position" to decorrelate. `instance_shuffle`
+is kept regardless, default `true`, for the reason D10 restates: it still
+decorrelates FocusedILS's own fidelity-prefix growth from any difficulty
+ordering in the instance file, entirely independent of future-telling.**
+Caught
 during review of this document, and it invalidated an earlier version of
 this same decision: initially proposed a shuffle *scoped to future-telling's
 own internal position bookkeeping*, leaving real dispatch untouched. That
@@ -369,13 +377,13 @@ reassignment must happen anyway, every time, even when the new value is
 (`n_runs <= future_telling_cores` that round, e.g. `Focused`'s early
 fidelity), and the "config finished before its checkpoint matured" case (a
 per-config outcome — a fast-solving config's own tracker never crosses the
-horizon before `cursor` reaches `n_total`, `CheckpointTracker::score()`
+horizon before `n_seen` reaches `n_total`, `CheckpointTracker::score()`
 below). The second case is *structurally* likely to hit the incumbent
 specifically: whatever neighbour wins and becomes the new incumbent, by
 construction, **fully completed** its evaluation — a capped or
 checkpoint-rejected neighbour never reaches the "compare and maybe replace"
 branch at all — so every incumbent replacement is a config whose own
-`cursor` reached `n_total`, which is exactly the condition under which
+`n_seen` reached `n_total`, which is exactly the condition under which
 `score()` returns `None`. A cache-heavy re-evaluation (e.g. the fidelity
 re-measurement in `ils.rs:596-605`) makes this more likely still: the
 scheduler delivers cache hits into the result stream synchronously, all at
@@ -392,8 +400,8 @@ tracker unconditionally, every time `incumbent_score` is — **including
 overwriting a previous `Some` with a fresh `None`.** Keeping the old value
 when the new one is absent would compare a future challenger against a
 stale reference describing a config that is no longer the incumbent, which
-is exactly the kind of quiet incorrectness D4's fixed-order fix was about
-avoiding. The feature simply goes quiet (never rejects) for stretches where
+is exactly the kind of quiet incorrectness this design guards against
+elsewhere too. The feature simply goes quiet (never rejects) for stretches where
 `incumbent_checkpoint` is `None`, and resumes the moment some future
 incumbent's own checkpoint happens to mature — self-healing, not a bug to
 catch.
@@ -427,6 +435,60 @@ a future cheap-reject on `acceptance_criterion`'s "not worth a full
 re-evaluation against the home base" case) — but nothing in this design
 depends on it yet. Flagged as an open question below rather than assumed.
 
+**D10 — Arrival order, not fixed order; supersedes D4/D5's fixed-order
+requirement (2026-09-13).** Found by tracing down a real, measured problem,
+not by re-deriving the design in the abstract: `ramparils-eprover` RUN 06
+(2026-09-13, `future_telling_checkpoint: 1.0`, `cutoff_time: 5.0`, `cores:
+64`) showed a checkpoint taking **~20s of wall clock to mature when direct
+replay of the actual recorded runtimes showed it only ever needed 149
+(fixed-order) instances**. Root cause: D4's design requires the cursor to
+advance through a *strictly contiguous* fixed-order prefix, buffering
+anything that arrives out of order. Real dispatch pulls from the same
+shared index D4 assumed it would track, but per-instance runtime variance
+means completion order drifts from index order — a handful of slow
+instances sitting early in the fixed order can leave the cursor blocked
+while hundreds of *later*, already-arrived results sit unused in the
+buffer. The tracker was, in effect, refusing to look at information it
+already had.
+
+**Fix: drop position and the fixed order entirely. `CheckpointTracker::record`
+now takes only `runtime`, and assigns each result, as it actually arrives,
+to whichever virtual worker is currently least busy** — the same list-
+scheduling assignment rule as before, just driven by real arrival order
+instead of a buffered replay of a hypothetical fixed schedule. No `pending`
+buffer, no `cursor`, no instance identity or position map needed anywhere
+(the `(instance_id -> position)` map D4 required, and the code that built
+it in `basic_local_search`/`collect_one`, are gone). This directly
+addresses the RUN 06 delay: the tracker now advances the moment each real
+result lands, never blocked on a specific straggler while other data sits
+idle.
+
+**Cost, stated plainly: this is no longer arrival-order invariant.** D4's
+fixed-order design guaranteed the same multiset of runtimes produced the
+same maturity point and score regardless of delivery order — useful for
+testing, and for exactly reproducing the diary's own published reference
+numbers under any simulated delivery order. That property is gone
+(`checkpoint_tracker_now_depends_on_arrival_order_by_design` in
+`src/ils.rs`'s test module demonstrates it directly, replacing the old
+arrival-order-invariance test). What replaces it: the tracker's maturity
+point and score now depend on real completion timing, the same sensitivity
+the real evaluation it approximates already has — which is the more
+honest trade for a mechanism whose whole job is reading that real timing
+as early as possible. The replay tests against the diary's fixtures
+(`checkpoint_tracker_replay_*`) still pass unchanged, since they replay the
+fixture's own one recorded order rather than testing invariance across
+several.
+
+**D5's decorrelation concern (difficulty correlated with fixed position)
+no longer applies to future-telling itself** — there is no fixed position
+left to correlate with anything. `instance_shuffle` stays on by default
+regardless, for the independent reason D5 already flagged as a bonus:
+decorrelating FocusedILS's own fidelity-prefix growth from instance-file
+ordering. The `future_telling: true` + `instance_shuffle: false` startup
+warning (D5) is now stale specifically *for future-telling's own sake* and
+could be dropped from that rationale — left in place since it costs nothing
+and instance_shuffle is still recommended on general grounds.
+
 ## The `CheckpointTracker`
 
 One small piece of shared state, one per config being evaluated (i.e. one
@@ -434,111 +496,70 @@ per neighbour in `basic_local_search`'s `Vec`, one for the single config in
 `collect_one`):
 
 ```rust
-/// Replays `n_total` instances (the same fixed-order prefix
-/// `eval_instances`/`instances[..n_runs]` every config in this run is
-/// evaluated against — see FUTURETELL.md D4) across `n_virtual` identical
-/// virtual workers, fed real per-instance runtimes as they stream back in
-/// whatever order the actual solver processes finish. Reproduces the
-/// `expericon` list-scheduling replay exactly: workers become free and take
-/// the next instance in *fixed* order, not arrival order — arrivals are
-/// only how the data gets to this tracker, not the order the simulation
-/// processes it in. Only needs `runtime` (compared against `cutoff_time`,
-/// D6) — no `quality`, no `run_obj`/`overall_obj` dependency at all.
+/// Replays `n_total` instances across `n_virtual` identical virtual
+/// workers, fed real per-instance runtimes **as they actually arrive**
+/// (D10, 2026-09-13) — list scheduling: each arriving result goes to
+/// whichever virtual worker is currently least busy. Only needs `runtime`
+/// (compared against `cutoff_time`, D6) — no `quality`, no
+/// `run_obj`/`overall_obj` dependency, and no instance identity at all now
+/// that position no longer matters.
 struct CheckpointTracker {
     n_total: usize,
     checkpoint_time: f64,
     cutoff_time: f64,
     virtual_busy: Vec<f64>,
-    /// Results that have arrived but are still waiting on an earlier
-    /// fixed-order position to unblock them.
-    pending: HashMap<usize, f64>,
-    /// Next fixed-order position the simulation needs before it can advance.
-    cursor: usize,
-    /// Count of positions virtually finished by `checkpoint_time` with
+    /// Count of results virtually finished by `checkpoint_time` with
     /// `runtime < cutoff_time` — see D6 for why this is an exact "solved"
     /// count, not an approximation.
     solved_count: usize,
+    /// How many real results this tracker has seen so far.
+    n_seen: usize,
     /// True once every virtual worker's busy time exceeds `checkpoint_time`
     /// — mirrors the expericon stopping rule: assignment always goes to the
-    /// least-busy worker, so once the least-busy one is past the horizon,
-    /// nothing still-pending can land at or before it. **Deliberately not**
-    /// triggered by `cursor == n_total` — see the note on `score()` below.
+    /// least-busy worker. **Deliberately not** triggered by `n_seen ==
+    /// n_total` — see the note on `score()` below.
     ready: bool,
 }
 
 impl CheckpointTracker {
     fn new(n_virtual: usize, checkpoint_time: f64, cutoff_time: f64, n_total: usize) -> Self { .. }
 
-    /// Feed one more real result at its *fixed* position (looked up by the
-    /// caller from `instance_id` via a `HashMap<i64, usize>` built once per
-    /// evaluation from `eval_instances` — no `eval.rs`/`TaskResult` changes
-    /// needed). Advances the simulation through as many now-contiguous
-    /// buffered positions as this arrival unblocks. No-op once `ready`.
-    ///
-    /// **`ready` is checked after *every single* position, not once per
-    /// call after exhausting a whole run of buffered positions.** An earlier
-    /// version of this method checked it only once, after the `while` loop
-    /// exited — which is correct when arrivals unblock one position at a
-    /// time, but silently wrong when several unblock in the same call
-    /// (only possible with out-of-order arrival): the loop could run
-    /// straight past the exact position maturity should have been detected
-    /// at, because nothing looked until the whole buffered run was drained.
-    /// This was an actual bug in the first implementation, caught
-    /// immediately by the arrival-order-invariance test this validation
-    /// plan called for (item 1) — not found by reasoning about the code in
-    /// advance. Left here as the concrete example the Background's "the
-    /// feature must be wrong slowly" framing and this project's general
-    /// skepticism of untested reasoning are really about.
-    fn record(&mut self, position: usize, runtime: f64) {
+    /// Feed one more real result, in the order it actually arrived. No-op
+    /// once `ready`.
+    fn record(&mut self, runtime: f64) {
         if self.ready { return; }
-        debug_assert!(position < self.n_total);
-        self.pending.insert(position, runtime);
-        while let Some(runtime) = self.pending.remove(&self.cursor) {
-            let w = self.virtual_busy.iter()
-                .enumerate()
-                .min_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(i, _)| i)
-                .unwrap();
-            let finish = self.virtual_busy[w] + runtime;
-            if finish <= self.checkpoint_time && runtime < self.cutoff_time {
-                self.solved_count += 1;
-            }
-            self.virtual_busy[w] = finish;
-            self.cursor += 1;
-            if self.cursor == self.n_total {
-                // Every instance is real-accounted-for now. Return before
-                // computing `ready` at all — even if every virtual worker
-                // happens to already be past the horizon at this exact
-                // instant, `score()` treats `cursor == n_total` as "already
-                // exact" (see below), so there is no case where setting
-                // `ready` here would ever produce a usable answer. Leaving
-                // `ready` unset (rather than computing and discarding it)
-                // keeps the field's own invariant — "true only for a config
-                // still in flight" — enforced at the single place state
-                // changes, not just at the place it's read.
-                return;
-            }
-            if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
-                self.ready = true;
-                return;
-            }
+        let w = self.virtual_busy.iter()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap();
+        let finish = self.virtual_busy[w] + runtime;
+        if finish <= self.checkpoint_time && runtime < self.cutoff_time {
+            self.solved_count += 1;
+        }
+        self.virtual_busy[w] = finish;
+        self.n_seen += 1;
+        if self.n_seen == self.n_total {
+            // Every instance is real-accounted-for now. Return before
+            // computing `ready` at all — see `score()`'s own note on why
+            // this must never produce a usable answer at this point.
+            return;
+        }
+        if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
+            self.ready = true;
         }
     }
 
     /// `Some(n_total - solved_count)` only for a config that is **still in
-    /// flight** when the virtual horizon matures (`ready` with `cursor <
+    /// flight** when the virtual horizon matures (`ready` with `n_seen <
     /// n_total`) — a genuine early read; lower is better, per D6. `None` in
-    /// every other case, including when `cursor` reaches `n_total` *before*
+    /// every other case, including when `n_seen` reaches `n_total` *before*
     /// `ready` — that means the real evaluation already finished, so its
     /// exact score is already available through the normal
     /// `runtimes.len() == n_instances` path the caller checks anyway (see
-    /// "Where this lives"), and the checkpoint has nothing to add: reporting
-    /// a heuristic estimate in place of an exact, already-known answer would
-    /// be strictly worse information, not a bonus one. This is why `ready`
-    /// is never set by `cursor == n_total` above — there is no case where
-    /// that should produce a usable score.
+    /// "Where this lives"), and the checkpoint has nothing to add.
     fn score(&self) -> Option<f64> {
-        if !self.ready || self.cursor >= self.n_total {
+        if !self.ready || self.n_seen >= self.n_total {
             return None;
         }
         Some((self.n_total - self.solved_count) as f64)
@@ -547,15 +568,16 @@ impl CheckpointTracker {
 ```
 
 **Implemented and tested**: `src/ils.rs`, right before the "Evaluation
-helpers" section, with its own tests appended to the existing `mod tests`
-block (arrival-order invariance, the `runtime == cutoff_time` boundary case,
-the "finishes before maturing → `None`" case, the rejected-mean/median
-regression case, and three replay tests against
+helpers" section, with its own tests in the existing `mod tests` block
+(arrival-order *dependence*, now demonstrated rather than disproved — see
+D10 — plus the `runtime == cutoff_time` boundary case, the "finishes before
+maturing → `None`" case, the rejected-mean/median regression case, and
+three replay tests against
 `tests/fixtures/checkpoint-replay/{auto,e-pre_casc_10,ram-2b65a8274485a1ea}.txt`
 — real per-instance runtimes, fixed benchmark order, from the already-analyzed
-`expericon` batch behind the diary's published reference counts). Not yet
-called from `run()`/`basic_local_search`/`collect_one` — `cargo build` shows
-the expected `dead_code` warnings until that wiring lands.
+`expericon` batch behind the diary's published reference counts, replayed in
+that one recorded order). Wired into `run()`/`basic_local_search`/
+`collect_one`; see "Where this lives" below.
 
 **The replay tests confirm two things, one clean and one not**:
 `e-pre_casc_10` and `ram-2b65a8274485a1ea` reproduce the diary's published
@@ -577,26 +599,35 @@ whether `runtime < cutoff_time` ships as-is.
 **Where this lives**: gated by D3 — the whole block below is skipped for a
 round where `n_runs <= options.future_telling_cores`, no trackers built
 at all. When active: `basic_local_search` gets a `Vec<CheckpointTracker>`
-sized `n` (one per neighbour) plus one shared `HashMap<i64, usize>` built
-once per round from `eval_instances` (identical for every neighbour that
-round, per D4); `.record()` is called in the same spot the existing
-`runtimes[nid]`/`qualities[nid]` vectors are updated, passing the position
-looked up for `result.instance_id` and `result.runtime` (`quality` isn't
-needed at all under D6's redesign). **Ordering matters at this point**: the
-existing full-completion check (`runtimes[nid].len() == n_instances`) must
-be evaluated — and, if true, handled by the existing accept/dominate path —
-*before* consulting `tracker.score()` for a possible checkpoint rejection,
-never after. This isn't just belt-and-suspenders around `score()`'s own
-guard: it's what guarantees an exact, already-complete answer is never
-second-guessed by a heuristic one, even in the edge case where the same
-incoming result both completes the neighbour *and* would have matured its
-checkpoint. Order for the per-result handling in both `collect_one` and the
-`basic_local_search` loop: append result → full-completion check (existing,
-unchanged, always wins) → adaptive-capping check (existing) → checkpoint
-check (new, only reached if the neighbour is still incomplete after the
-first check). `collect_one` gets a single `CheckpointTracker` and its own
-(`instance_id` → position) map built from its own `instances` slice, same
-treatment.
+sized `n` (one per neighbour); `.record(result.runtime)` is called in the
+same spot the existing `runtimes[nid]`/`qualities[nid]` vectors are updated
+(`quality` isn't needed at all under D6's redesign, and neither is
+`result.instance_id` since D10 dropped position). **Ordering matters at
+this point**: the existing full-completion check (`runtimes[nid].len() ==
+n_instances`) must be evaluated — and, if true, handled by the existing
+accept/dominate path — *before* consulting `tracker.score()` for a possible
+checkpoint rejection, never after. This isn't just belt-and-suspenders
+around `score()`'s own guard: it's what guarantees an exact, already-complete
+answer is never second-guessed by a heuristic one, even in the edge case
+where the same incoming result both completes the neighbour *and* would
+have matured its checkpoint. Order for the per-result handling in both
+`collect_one` and the `basic_local_search` loop: append result →
+adaptive-capping check (existing) → full-completion check (existing,
+unchanged, always wins) → checkpoint check (new, only reached if the
+neighbour is still incomplete after the first check). `collect_one` gets a
+single `CheckpointTracker`, same treatment.
+
+A config that reaches its own checkpoint — matured or not, rejected or not
+— is logged once as `ils: future-telling-checkpoint`, separately from
+`ils: future-telling-rejected`; both are temporary, kept deliberately
+verbose while this feature is still being validated against real data.
+`Scheduler::cancel_neighbor(batch_id, neighbor_id)` (`src/eval.rs`) is
+called at the point a neighbour is rejected (both capping's and
+future-telling's branches) — the fine-grained counterpart to `reset()`
+that actually stops that one neighbour's own solver dispatch, added
+2026-09-13 after RUN 06 showed rejected neighbours still accumulating
+every real invocation regardless of being marked "done" on the consumer
+side.
 
 ## New scenario options
 
@@ -997,8 +1028,11 @@ trust this until it's checked against real data, twice.
 - [x] Wire `CheckpointTracker` into `collect_one`, with the full-completion
       check strictly before the checkpoint check (D3/`score()` ordering)
 - [x] Wire `CheckpointTracker` into `basic_local_search`'s neighbour loop,
-      same ordering — one tracker per neighbour, one shared position map
-      built once per round
+      same ordering — one tracker per neighbour
+- [x] Dropped fixed instance order for arrival order (D10, 2026-09-13),
+      after RUN 06 showed the fixed-order design stalling on stragglers
+      while newer data sat unused; `Scheduler::cancel_neighbor` added the
+      same day so a rejected neighbour's own dispatch actually stops
 - [x] `incumbent_checkpoint` and `home_base_checkpoint` threaded through
       `run()` at every incumbent/home-base update site — **reassigned
       unconditionally at each one, including to `None`** (D7), read off a

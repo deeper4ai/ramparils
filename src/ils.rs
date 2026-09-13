@@ -32,7 +32,7 @@ use crossbeam::channel::RecvTimeoutError;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -905,36 +905,42 @@ fn accepted_within_tolerance(new_score: f64, incumbent_score: f64, options: &Ils
 // Future-telling: checkpoint-based early rejection (FUTURETELL.md)
 // ---------------------------------------------------------------------------
 
-/// Replays `n_total` instances (the same fixed-order prefix every config in
-/// a run is evaluated against, see FUTURETELL.md D4) across `n_virtual`
-/// identical virtual workers, fed real per-instance runtimes as they stream
-/// back in whatever order the actual solver processes finish. Workers become
-/// free and take the next instance in *fixed* order, not arrival order —
-/// arrivals are only how the data gets to this tracker, not the order the
-/// simulation processes it in.
+/// Replays `n_total` instances across `n_virtual` identical virtual workers,
+/// fed real per-instance runtimes **as they actually arrive** — list
+/// scheduling: each arriving result goes to whichever virtual worker is
+/// currently least busy. Superseded from an earlier, fixed-instance-order
+/// design (FUTURETELL.md D4/D5, kept there as the record of why it was
+/// tried and dropped): requiring a strictly contiguous fixed-order prefix
+/// meant the tracker could sit blocked on one straggling early position
+/// while hundreds of later, already-arrived results sat unused in a
+/// buffer — measured directly against `ramparils-eprover` RUN 06
+/// (2026-09-13): a checkpoint that only needed 149 (fixed-order) instances
+/// took ~20s of wall clock to mature because of exactly this. Arrival order
+/// removes the buffering and the stall, at the cost of the arrival-order
+/// invariance the fixed-order design had — this tracker's exact maturity
+/// point and score can now depend on real completion timing, which is the
+/// same sensitivity the real evaluation it's approximating already has.
 ///
 /// Needs only `runtime` (compared against `cutoff_time`, FUTURETELL.md D6)
-/// — no `quality`, no `run_obj`/`overall_obj` dependency.
+/// — no `quality`, no `run_obj`/`overall_obj` dependency, and no instance
+/// identity at all now that position no longer matters.
 struct CheckpointTracker {
     n_total: usize,
     checkpoint_time: f64,
     cutoff_time: f64,
     virtual_busy: Vec<f64>,
-    /// Results that have arrived but are still waiting on an earlier
-    /// fixed-order position to unblock them.
-    pending: HashMap<usize, f64>,
-    /// Next fixed-order position the simulation needs before it can advance.
-    cursor: usize,
-    /// Count of positions virtually finished by `checkpoint_time` with
+    /// Count of results virtually finished by `checkpoint_time` with
     /// `runtime < cutoff_time` — an exact "solved" count for any wrapper
     /// following the PAR1 contract (`docs/reference/protocol.md`), not an
     /// approximation of one.
     solved_count: usize,
+    /// How many real results this tracker has seen so far.
+    n_seen: usize,
     /// True once every virtual worker's busy time exceeds `checkpoint_time`
     /// — mirrors the assignment rule: it always goes to the least-busy
-    /// worker, so once the least-busy one is past the horizon, nothing
-    /// still-pending can land at or before it. Deliberately never set once
-    /// `cursor == n_total` — see `score()`.
+    /// worker, so once the least-busy one is past the horizon, nothing still
+    /// arriving can land at or before it. Deliberately never set once
+    /// `n_seen == n_total` — see `score()`.
     ready: bool,
 }
 
@@ -945,71 +951,54 @@ impl CheckpointTracker {
             checkpoint_time,
             cutoff_time,
             virtual_busy: vec![0.0; n_virtual.max(1)],
-            pending: HashMap::new(),
-            cursor: 0,
             solved_count: 0,
+            n_seen: 0,
             ready: false,
         }
     }
 
-    /// Feed one more real result at its *fixed* position (looked up by the
-    /// caller from `instance_id` via a position map built once per
-    /// evaluation — no `eval.rs`/`TaskResult` changes needed). Advances the
-    /// simulation through as many now-contiguous buffered positions as this
-    /// arrival unblocks. No-op once `ready`.
-    ///
-    /// `ready` is checked after *every single* position processed, not once
-    /// per call after exhausting a whole run of buffered positions -- when
-    /// several positions unblock at once (only possible with out-of-order
-    /// arrival), checking once per call would let the loop run straight
-    /// past the exact point maturity should have been detected, silently
-    /// depending on how arrivals happened to be batched. Caught by testing
-    /// arrival-order invariance, not by reasoning about it in advance.
-    fn record(&mut self, position: usize, runtime: f64) {
+    /// Feed one more real result, in the order it actually arrived. No-op
+    /// once `ready`.
+    fn record(&mut self, runtime: f64) {
         if self.ready {
             return;
         }
-        debug_assert!(position < self.n_total);
-        self.pending.insert(position, runtime);
-        while let Some(runtime) = self.pending.remove(&self.cursor) {
-            let w = self
-                .virtual_busy
-                .iter()
-                .enumerate()
-                .min_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(i, _)| i)
-                .expect("virtual_busy is never empty");
-            let finish = self.virtual_busy[w] + runtime;
-            if finish <= self.checkpoint_time && runtime < self.cutoff_time {
-                self.solved_count += 1;
-            }
-            self.virtual_busy[w] = finish;
-            self.cursor += 1;
-            if self.cursor == self.n_total {
-                // Every instance is real-accounted-for now. Return before
-                // computing `ready` at all -- even if every virtual worker
-                // happens to already be past the horizon at this exact
-                // instant, `score()` treats `cursor == n_total` as "already
-                // exact" (see below), so there is no case where setting
-                // `ready` here would ever produce a usable answer.
-                return;
-            }
-            if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
-                self.ready = true;
-                return;
-            }
+        let w = self
+            .virtual_busy
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .expect("virtual_busy is never empty");
+        let finish = self.virtual_busy[w] + runtime;
+        if finish <= self.checkpoint_time && runtime < self.cutoff_time {
+            self.solved_count += 1;
+        }
+        self.virtual_busy[w] = finish;
+        self.n_seen += 1;
+        if self.n_seen == self.n_total {
+            // Every instance is real-accounted-for now. Return before
+            // computing `ready` at all -- even if every virtual worker
+            // happens to already be past the horizon at this exact instant,
+            // `score()` treats `n_seen == n_total` as "already exact" (see
+            // below), so there is no case where setting `ready` here would
+            // ever produce a usable answer.
+            return;
+        }
+        if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
+            self.ready = true;
         }
     }
 
     /// `Some(n_total - solved_count)` only for a config that is **still in
-    /// flight** when the virtual horizon matures (`ready` with `cursor <
+    /// flight** when the virtual horizon matures (`ready` with `n_seen <
     /// n_total`) -- a genuine early read; lower is better. `None` in every
-    /// other case, including when `cursor` reaches `n_total` *before*
+    /// other case, including when `n_seen` reaches `n_total` *before*
     /// `ready` -- that means the real evaluation already finished, so its
     /// exact score is already available through the normal completion path,
     /// and the checkpoint has nothing to add.
     fn score(&self) -> Option<f64> {
-        if !self.ready || self.cursor >= self.n_total {
+        if !self.ready || self.n_seen >= self.n_total {
             return None;
         }
         Some((self.n_total - self.solved_count) as f64)
@@ -1035,13 +1024,6 @@ fn future_telling_rejects(challenger_ckpt: f64, incumbent_ckpt: f64, options: &I
     challenger_ckpt.is_finite()
         && incumbent_ckpt.is_finite()
         && challenger_ckpt > incumbent_ckpt + options.future_telling_tolerance * incumbent_ckpt.abs()
-}
-
-/// Build the shared `(instance_id -> fixed position)` map for one round's
-/// worth of `CheckpointTracker`s (D4) — identical for every neighbour
-/// evaluated against the same `eval_instances` slice this round.
-fn instance_positions(instances: &[(i64, String)]) -> HashMap<i64, usize> {
-    instances.iter().enumerate().map(|(pos, (id, _))| (*id, pos)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,17 +1247,14 @@ fn basic_local_search(
         // real data.
         let mut checkpoint_logged = vec![false; n];
 
-        // Future-telling (D3/D4): one tracker per neighbour, one shared
-        // position map for the round — every neighbour this round is
-        // evaluated against the identical `eval_instances` slice. Gated by
-        // D3: when inactive, no trackers are built at all, not just unused.
+        // Future-telling (D3): one tracker per neighbour. Gated by D3: when
+        // inactive, no trackers are built at all, not just unused.
         let future_telling_time = cutoff_time * options.future_telling_checkpoint;
         let mut trackers: Option<Vec<CheckpointTracker>> = future_telling_active(options, n_instances).then(|| {
             (0..n)
                 .map(|_| CheckpointTracker::new(options.future_telling_cores, future_telling_time, cutoff_time, n_instances))
                 .collect()
         });
-        let positions = trackers.is_some().then(|| instance_positions(eval_instances));
 
         'collect: loop {
             if n_done >= n {
@@ -1328,10 +1307,8 @@ fn basic_local_search(
                 RunObjective::Quality => result.quality,
             };
             partial[nid] += val;
-            if let (Some(trackers), Some(positions)) = (trackers.as_mut(), positions.as_ref()) {
-                if let Some(&position) = positions.get(&result.instance_id) {
-                    trackers[nid].record(position, result.runtime);
-                }
+            if let Some(trackers) = trackers.as_mut() {
+                trackers[nid].record(result.runtime);
             }
 
             // Adaptive capping: prune this neighbour once it has spent the whole
@@ -1416,9 +1393,9 @@ fn basic_local_search(
                         crate::debug_line(
                             options.debug.main,
                             &format!(
-                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} ckpt={chal_ckpt:.6} ref={} after {}/{n_instances}",
+                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} ckpt={chal_ckpt:.0} ref={} after {}/{n_instances}",
                                 crate::t(),
-                                incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.6}")),
+                                incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.0}")),
                                 runtimes[nid].len(),
                             ),
                         );
@@ -1428,7 +1405,7 @@ fn basic_local_search(
                             crate::debug_line(
                                 options.debug.main,
                                 &format!(
-                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.0} ref={inc_ckpt:.0} after {}/{n_instances}",
                                     crate::t(),
                                     runtimes[nid].len(),
                                 ),
@@ -1497,7 +1474,6 @@ fn collect_one(
     let future_telling_time = cutoff_time * options.future_telling_checkpoint;
     let mut tracker = future_telling_active(options, n_instances)
         .then(|| CheckpointTracker::new(options.future_telling_cores, future_telling_time, cutoff_time, n_instances));
-    let positions = tracker.is_some().then(|| instance_positions(instances));
     // Logged once, the moment this evaluation's own checkpoint first
     // matures — independent of whether a reference exists to compare it
     // against, so the checkpoint value itself is visible even when nothing
@@ -1549,10 +1525,8 @@ fn collect_one(
             runhash ^= h;
             runhash_n += 1;
         }
-        if let (Some(tracker), Some(positions)) = (tracker.as_mut(), positions.as_ref()) {
-            if let Some(&position) = positions.get(&result.instance_id) {
-                tracker.record(position, result.runtime);
-            }
+        if let Some(tracker) = tracker.as_mut() {
+            tracker.record(result.runtime);
         }
 
         if options.pruning {
@@ -1582,9 +1556,9 @@ fn collect_one(
                     crate::debug_line(
                         options.debug.main,
                         &format!(
-                            "[{:8.2}s] ils: future-telling-checkpoint config ckpt={chal_ckpt:.6} ref={} after {}/{n_instances}",
+                            "[{:8.2}s] ils: future-telling-checkpoint config ckpt={chal_ckpt:.0} ref={} after {}/{n_instances}",
                             crate::t(),
-                            incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.6}")),
+                            incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| format!("{v:.0}")),
                             runtimes.len(),
                         ),
                     );
@@ -1594,7 +1568,7 @@ fn collect_one(
                         crate::debug_line(
                             options.debug.main,
                             &format!(
-                                "[{:8.2}s] ils: future-telling-rejected config ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                "[{:8.2}s] ils: future-telling-rejected config ckpt={chal_ckpt:.0} ref={inc_ckpt:.0} after {}/{n_instances}",
                                 crate::t(),
                                 runtimes.len(),
                             ),
@@ -2553,46 +2527,51 @@ mod tests {
     // Future-telling: CheckpointTracker (FUTURETELL.md)
     // -----------------------------------------------------------------
 
-    /// Feeds `(position, runtime)` pairs into a tracker in the given
-    /// arrival order and returns `(solved_count, ready)`.
-    fn run_tracker(
-        n_virtual: usize,
-        checkpoint_time: f64,
-        cutoff_time: f64,
-        n_total: usize,
-        arrivals: &[(usize, f64)],
-    ) -> (usize, bool) {
+    /// Feeds `runtimes` into a tracker in the given order and returns
+    /// `(solved_count, ready)`.
+    fn run_tracker(n_virtual: usize, checkpoint_time: f64, cutoff_time: f64, n_total: usize, runtimes: &[f64]) -> (usize, bool) {
         let mut tracker = CheckpointTracker::new(n_virtual, checkpoint_time, cutoff_time, n_total);
-        for &(position, runtime) in arrivals {
-            tracker.record(position, runtime);
+        for &runtime in runtimes {
+            tracker.record(runtime);
         }
         (tracker.solved_count, tracker.ready)
     }
 
+    /// The property the earlier, fixed-instance-order design had and this
+    /// one deliberately doesn't (see `CheckpointTracker`'s own doc comment
+    /// for why it was traded away): the same multiset of runtimes, delivered
+    /// in a different order, can now mature at a different point and with a
+    /// different solved count, because assignment to "whichever virtual
+    /// worker is least busy" depends on what's already been assigned when
+    /// each result arrives.
     #[test]
-    fn checkpoint_tracker_arrival_order_is_irrelevant_to_the_final_count() {
-        // 8 instances, 2 virtual workers, checkpoint at t=1.0, cutoff=1.0.
-        // Fixed order: [0.2, 0.9, 0.3, 0.05, 0.7, 0.4, 0.6, 0.1]
-        let fixed: Vec<(usize, f64)> =
-            vec![0.2, 0.9, 0.3, 0.05, 0.7, 0.4, 0.6, 0.1].into_iter().enumerate().collect();
+    fn checkpoint_tracker_now_depends_on_arrival_order_by_design() {
+        let values = [0.9, 0.9, 0.9, 0.1, 0.1, 0.1];
+        let mut reversed = values;
+        reversed.reverse();
+        assert_ne!(values, reversed, "the reorder must actually change something");
 
-        let (in_order_count, in_order_ready) = run_tracker(2, 1.0, 1.0, 8, &fixed);
-
-        // Same data, scrambled delivery order -- the tracker must buffer by
-        // fixed position and only advance the simulation through a
-        // contiguous prefix, so the result must not depend on this.
-        let mut scrambled = fixed.clone();
-        {
-            use rand::SeedableRng;
-            use rand::seq::SliceRandom;
-            let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-            scrambled.shuffle(&mut rng);
+        let mut a = CheckpointTracker::new(2, 1.0, 1.5, 10);
+        for &runtime in &values {
+            a.record(runtime);
+            if a.ready {
+                break;
+            }
         }
-        assert_ne!(scrambled, fixed, "the scramble must actually reorder something");
-        let (scrambled_count, scrambled_ready) = run_tracker(2, 1.0, 1.0, 8, &scrambled);
+        let mut b = CheckpointTracker::new(2, 1.0, 1.5, 10);
+        for &runtime in &reversed {
+            b.record(runtime);
+            if b.ready {
+                break;
+            }
+        }
 
-        assert_eq!(in_order_count, scrambled_count);
-        assert_eq!(in_order_ready, scrambled_ready);
+        assert!(a.ready && b.ready, "both orders should mature well before all 10 (n_total) arrive");
+        assert_ne!(
+            (a.n_seen, a.solved_count),
+            (b.n_seen, b.solved_count),
+            "the same multiset in a different arrival order matured differently"
+        );
     }
 
     #[test]
@@ -2605,12 +2584,12 @@ mod tests {
         // runtime == cutoff exactly: must count as "done by the horizon"
         // (finish <= checkpoint) but NOT as solved (runtime < cutoff is
         // strict).
-        tracker.record(0, 5.0);
+        tracker.record(5.0);
         assert_eq!(tracker.solved_count, 0);
         // A second, genuinely fast instance on its own idle worker, to
         // confirm the strict `<` is the only thing suppressing the count
         // above, not something broader.
-        tracker.record(1, 1.0);
+        tracker.record(1.0);
         assert_eq!(tracker.solved_count, 1);
     }
 
@@ -2621,9 +2600,9 @@ mod tests {
         // be reached via full completion, per D3 -- `ready` must stay false
         // and `score()` must stay `None` even though every result is known.
         let mut tracker = CheckpointTracker::new(8, 1.0, 10.0, 3);
-        tracker.record(0, 0.1);
-        tracker.record(1, 0.2);
-        tracker.record(2, 0.3);
+        tracker.record(0.1);
+        tracker.record(0.2);
+        tracker.record(0.3);
         assert!(!tracker.ready);
         assert_eq!(tracker.score(), None);
     }
@@ -2635,16 +2614,13 @@ mod tests {
         // with a handful of great completions could look better than one
         // with hundreds of decent ones. Confirm the actual (count-based)
         // design does not reproduce that inversion.
-        let few_great: Vec<(usize, f64)> = vec![0.01, 0.01, 0.01].into_iter().enumerate().collect();
-        let many_decent: Vec<(usize, f64)> =
-            (0..60).map(|i| (i, 0.4)).collect::<Vec<(usize, f64)>>();
+        let few_great = [0.01, 0.01, 0.01];
+        let many_decent = [0.4; 60];
 
         // Rejected design: mean of completed-subset runtimes.
         let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
-        let few_great_mean = mean(&few_great.iter().map(|&(_, rt)| rt).collect::<Vec<_>>());
-        let many_decent_mean = mean(&many_decent.iter().map(|&(_, rt)| rt).collect::<Vec<_>>());
         assert!(
-            few_great_mean < many_decent_mean,
+            mean(&few_great) < mean(&many_decent),
             "the rejected mean-based design would call the 3-instance config better"
         );
 
@@ -2675,27 +2651,18 @@ mod tests {
         text.lines().filter(|l| !l.is_empty()).map(|l| l.parse().unwrap()).collect()
     }
 
-    /// Replays a strategy's real runtimes at the same settings the diary's
-    /// own reference numbers were measured under (n_virtual=64,
-    /// checkpoint_time=5.0, cutoff_time=5.0), twice -- once in fixed order,
-    /// once in a scrambled delivery order -- and returns the (equal, by the
-    /// arrival-order-invariance property) solved count.
+    /// Replays a strategy's real runtimes, in the fixed benchmark order the
+    /// fixture stores them in, at the same settings the diary's own
+    /// reference numbers were measured under (n_virtual=64,
+    /// checkpoint_time=5.0, cutoff_time=5.0). The tracker is now
+    /// arrival-order dependent by design, so this is the one order the
+    /// fixture actually documents (the diary's own real dispatch order),
+    /// not a claim that any other order would agree.
     fn replay_solved_count(runtimes: &[f64]) -> usize {
         let n_total = runtimes.len();
-        let fixed: Vec<(usize, f64)> = runtimes.iter().copied().enumerate().collect();
-
-        let (in_order, in_order_ready) = run_tracker(64, 5.0, 5.0, n_total, &fixed);
-        assert!(in_order_ready, "expected the checkpoint to mature well before full completion");
-
-        let mut scrambled = fixed.clone();
-        // Fixed, deterministic scramble -- not a real RNG, just enough to
-        // decorrelate delivery order from fixed position for this check.
-        scrambled.sort_by_key(|&(pos, _)| (pos.wrapping_mul(2654435761)) % n_total);
-        let (scrambled_count, scrambled_ready) = run_tracker(64, 5.0, 5.0, n_total, &scrambled);
-        assert_eq!(in_order, scrambled_count, "solved count must not depend on arrival order");
-        assert_eq!(in_order_ready, scrambled_ready);
-
-        in_order
+        let (solved, ready) = run_tracker(64, 5.0, 5.0, n_total, runtimes);
+        assert!(ready, "expected the checkpoint to mature well before full completion");
+        solved
     }
 
     #[test]
