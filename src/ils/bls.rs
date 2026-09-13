@@ -295,7 +295,7 @@ pub(super) fn evaluate_config_outcome(
         ctx.cache,
     )?;
 
-    collect_one(ctx, batch_id, instances, 0, incumbent_score, incumbent_checkpoint)
+    collect_one(ctx, batch_id, instances.len(), 0, incumbent_score, incumbent_checkpoint)
 }
 
 /// `neighbourhood(config, space)`, reordered for random first-improvement:
@@ -736,171 +736,241 @@ pub(super) fn basic_local_search(
     Ok((current, current_eval, steps))
 }
 
-/// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
-/// Used by `evaluate_config` for single-config evaluation.
-///
-/// `instances` is the exact slice this evaluation was submitted against —
-/// needed (beyond just its length) to build the `(instance_id -> fixed
-/// position)` map a `CheckpointTracker` buffers on (FUTURETELL.md D4).
+/// Collect exactly `n_instances` results for one config (neighbor_id =
+/// `expected_nid`). Used by `evaluate_config_outcome` for single-config
+/// evaluation.
 pub(super) fn collect_one(
     ctx: &mut EvalContext,
     batch_id: u64,
-    instances: &[(i64, String)],
+    n_instances: usize,
     expected_nid: usize,
     incumbent_score: Option<f64>,
     incumbent_checkpoint: Option<f64>,
 ) -> Result<ConfigEvaluation> {
-    let n_instances = instances.len();
-    let mut runtimes = Vec::with_capacity(n_instances);
-    let mut qualities = Vec::with_capacity(n_instances);
-    let mut partial_sum = 0.0f64;
-    let mut runhash = 0u64;
-    let mut runhash_n = 0usize;
+    let mut collector = SingleConfigCollector::new(ctx, n_instances);
+    collector.run(ctx, batch_id, expected_nid, incumbent_score, incumbent_checkpoint)?;
+    Ok(collector.finish(ctx))
+}
 
-    // Future-telling (D3): only built when the mechanism can possibly mature
-    // before real completion anyway.
-    let future_telling_time = ctx.cutoff_time * ctx.options.future_telling_checkpoint;
-    let mut tracker = future_telling_active(ctx.options, n_instances).then(|| {
-        CheckpointTracker::new(
-            ctx.options.future_telling_cores,
-            future_telling_time,
-            ctx.cutoff_time,
+/// Bookkeeping for [`collect_one`] — the same shape as [`NeighbourRound`]
+/// but for a single config, so most methods mirror it 1:1 with the
+/// per-neighbour `Vec` indexing dropped.
+struct SingleConfigCollector {
+    n_instances: usize,
+    runtimes: Vec<f64>,
+    qualities: Vec<f64>,
+    partial_sum: f64,
+    runhash: u64,
+    runhash_n: usize,
+    /// Logged once, the moment this evaluation's own checkpoint first
+    /// matures — independent of whether a reference exists to compare it
+    /// against, so the checkpoint value itself is visible even when nothing
+    /// gets rejected. Temporary, kept on purpose while future-telling is
+    /// still being validated against real data.
+    checkpoint_logged: bool,
+    /// Future-telling (D3): only built when the mechanism can possibly
+    /// mature before real completion anyway.
+    tracker: Option<CheckpointTracker>,
+}
+
+impl SingleConfigCollector {
+    fn new(ctx: &mut EvalContext, n_instances: usize) -> Self {
+        let future_telling_time = ctx.cutoff_time * ctx.options.future_telling_checkpoint;
+        let tracker = future_telling_active(ctx.options, n_instances).then(|| {
+            CheckpointTracker::new(
+                ctx.options.future_telling_cores,
+                future_telling_time,
+                ctx.cutoff_time,
+                n_instances,
+            )
+        });
+        Self {
             n_instances,
-        )
-    });
-    // Logged once, the moment this evaluation's own checkpoint first
-    // matures — independent of whether a reference exists to compare it
-    // against, so the checkpoint value itself is visible even when nothing
-    // gets rejected. Temporary, kept on purpose while future-telling is
-    // still being validated against real data.
-    let mut checkpoint_logged = false;
-
-    while runtimes.len() < n_instances {
-        let remaining = ctx.deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || crate::interrupted() {
-            break;
-        }
-
-        let event = match ctx
-            .scheduler
-            .events()
-            .recv_timeout(remaining.min(Duration::from_millis(500)))
-        {
-            Ok(e) => e,
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some(tracker) = tracker.as_mut() {
-                    tracker.poll(crate::t());
-                }
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
-
-        let result = match event {
-            SchedulerEvent::Dispatched(d) => {
-                if d.batch_id == batch_id && d.neighbor_id == expected_nid {
-                    if let Some(tracker) = tracker.as_mut() {
-                        tracker.record_dispatch(d.instance_id, d.dispatch_time);
-                    }
-                }
-                continue;
-            }
-            SchedulerEvent::Completed(r) => r,
-        };
-
-        cache_result(ctx.cache, &result)?;
-        if result.batch_id != batch_id {
-            continue;
-        }
-        if result.neighbor_id != expected_nid {
-            continue;
-        }
-
-        let val = match ctx.options.run_obj {
-            RunObjective::Runtime => result.runtime,
-            RunObjective::Quality => result.quality,
-        };
-        partial_sum += val;
-        runtimes.push(result.runtime);
-        qualities.push(result.quality);
-        if let Some(h) = result.runhash {
-            runhash ^= h;
-            runhash_n += 1;
-        }
-        if let Some(tracker) = tracker.as_mut() {
-            tracker.record(result.instance_id, result.runtime);
-        }
-
-        if ctx.options.pruning {
-            if let Some(inc) = incumbent_score {
-                // Same budget test as the neighbour loop above; see there.
-                if partial_sum > ctx.options.bound_multiplier * inc * n_instances as f64 {
-                    ctx.scheduler.reset();
-                    drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
-                    break;
-                }
-            }
-        }
-
-        // Full completion always wins over a checkpoint verdict (FUTURETELL.md
-        // "Where this lives") — only consult the tracker while genuinely
-        // still incomplete, never after, even in the edge case where the same
-        // arriving result both completes this evaluation and matures its
-        // checkpoint.
-        if runtimes.len() < n_instances {
-            if let Some(chal_ckpt) = tracker.as_ref().and_then(CheckpointTracker::score) {
-                if !checkpoint_logged {
-                    checkpoint_logged = true;
-                    crate::debug_line(
-                        ctx.options.debug.main,
-                        &format!(
-                            "[{:8.2}s] ils: future-telling-checkpoint config solved={} ref={} after {}/{n_instances}",
-                            crate::t(),
-                            n_instances - chal_ckpt as usize,
-                            incumbent_checkpoint
-                                .map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
-                            runtimes.len(),
-                        ),
-                    );
-                }
-                if let Some(inc_ckpt) = incumbent_checkpoint {
-                    if future_telling_rejects(chal_ckpt, inc_ckpt, ctx.options) {
-                        crate::debug_line(
-                            ctx.options.debug.main,
-                            &format!(
-                                "[{:8.2}s] ils: future-telling-rejected config solved={} ref={} after {}/{n_instances}",
-                                crate::t(),
-                                n_instances - chal_ckpt as usize,
-                                n_instances - inc_ckpt as usize,
-                                runtimes.len(),
-                            ),
-                        );
-                        counters::future_telling_rejected();
-                        ctx.scheduler.reset();
-                        drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
-                        break;
-                    }
-                }
-            }
+            runtimes: Vec::with_capacity(n_instances),
+            qualities: Vec::with_capacity(n_instances),
+            partial_sum: 0.0,
+            runhash: 0,
+            runhash_n: 0,
+            checkpoint_logged: false,
+            tracker,
         }
     }
 
-    let complete = runtimes.len() == n_instances;
-    let score = if runtimes.is_empty() {
-        f64::INFINITY
-    } else {
-        compute_score(&runtimes, &qualities, ctx.options)
-    };
-    counters::eval(!complete);
-    let checkpoint = tracker.as_ref().and_then(CheckpointTracker::score);
-    Ok(ConfigEvaluation {
-        score,
-        complete,
-        n_done: runtimes.len(),
-        runhash,
-        runhash_n,
-        checkpoint,
-    })
+    fn complete(&self) -> bool {
+        self.runtimes.len() >= self.n_instances
+    }
+
+    /// Run the collection loop until `n_instances` real results arrive, the
+    /// evaluation gets capped, its checkpoint gets rejected, or the
+    /// deadline passes.
+    fn run(
+        &mut self,
+        ctx: &mut EvalContext,
+        batch_id: u64,
+        expected_nid: usize,
+        incumbent_score: Option<f64>,
+        incumbent_checkpoint: Option<f64>,
+    ) -> Result<()> {
+        while !self.complete() {
+            let remaining = ctx.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || crate::interrupted() {
+                return Ok(());
+            }
+
+            let event = match ctx
+                .scheduler
+                .events()
+                .recv_timeout(remaining.min(Duration::from_millis(500)))
+            {
+                Ok(e) => e,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.poll_tracker();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            };
+
+            let result = match event {
+                SchedulerEvent::Dispatched(d) => {
+                    self.record_dispatch(batch_id, expected_nid, d);
+                    continue;
+                }
+                SchedulerEvent::Completed(r) => r,
+            };
+
+            cache_result(ctx.cache, &result)?;
+            if result.batch_id != batch_id || result.neighbor_id != expected_nid {
+                continue;
+            }
+
+            self.accumulate(ctx.options, &result);
+
+            if self.check_capping(ctx, incumbent_score)? {
+                return Ok(());
+            }
+            // Full completion always wins over a checkpoint verdict
+            // (FUTURETELL.md "Where this lives") — only consult the tracker
+            // while genuinely still incomplete, never after, even in the
+            // edge case where the same arriving result both completes this
+            // evaluation and matures its checkpoint.
+            if !self.complete() && self.check_future_telling(ctx, incumbent_checkpoint)? {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_tracker(&mut self) {
+        if let Some(tracker) = self.tracker.as_mut() {
+            tracker.poll(crate::t());
+        }
+    }
+
+    fn record_dispatch(&mut self, batch_id: u64, expected_nid: usize, d: DispatchEvent) {
+        if d.batch_id != batch_id || d.neighbor_id != expected_nid {
+            return;
+        }
+        if let Some(tracker) = self.tracker.as_mut() {
+            tracker.record_dispatch(d.instance_id, d.dispatch_time);
+        }
+    }
+
+    fn accumulate(&mut self, options: &IlsOptions, result: &TaskResult) {
+        let val = match options.run_obj {
+            RunObjective::Runtime => result.runtime,
+            RunObjective::Quality => result.quality,
+        };
+        self.partial_sum += val;
+        self.runtimes.push(result.runtime);
+        self.qualities.push(result.quality);
+        if let Some(h) = result.runhash {
+            self.runhash ^= h;
+            self.runhash_n += 1;
+        }
+        if let Some(tracker) = self.tracker.as_mut() {
+            tracker.record(result.instance_id, result.runtime);
+        }
+    }
+
+    /// Same budget test as `NeighbourRound::check_capping`; see there.
+    /// Returns whether it fired, in which case the scheduler is already
+    /// reset and drained.
+    fn check_capping(&mut self, ctx: &mut EvalContext, incumbent_score: Option<f64>) -> Result<bool> {
+        let Some(inc) = incumbent_score.filter(|_| ctx.options.pruning) else {
+            return Ok(false);
+        };
+        if self.partial_sum <= ctx.options.bound_multiplier * inc * self.n_instances as f64 {
+            return Ok(false);
+        }
+        ctx.scheduler.reset();
+        drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
+        Ok(true)
+    }
+
+    /// Consult the checkpoint tracker while still incomplete: log once when
+    /// it first matures, then reject (reset + drain) it if it's
+    /// significantly worse than the incumbent's own checkpoint (D8).
+    /// Returns whether it fired.
+    fn check_future_telling(&mut self, ctx: &mut EvalContext, incumbent_checkpoint: Option<f64>) -> Result<bool> {
+        let Some(chal_ckpt) = self.tracker.as_ref().and_then(CheckpointTracker::score) else {
+            return Ok(false);
+        };
+        let n_instances = self.n_instances;
+
+        if !self.checkpoint_logged {
+            self.checkpoint_logged = true;
+            crate::debug_line(
+                ctx.options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: future-telling-checkpoint config solved={} ref={} after {}/{n_instances}",
+                    crate::t(),
+                    n_instances - chal_ckpt as usize,
+                    incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
+                    self.runtimes.len(),
+                ),
+            );
+        }
+
+        let Some(inc_ckpt) = incumbent_checkpoint else {
+            return Ok(false);
+        };
+        if !future_telling_rejects(chal_ckpt, inc_ckpt, ctx.options) {
+            return Ok(false);
+        }
+        crate::debug_line(
+            ctx.options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: future-telling-rejected config solved={} ref={} after {}/{n_instances}",
+                crate::t(),
+                n_instances - chal_ckpt as usize,
+                n_instances - inc_ckpt as usize,
+                self.runtimes.len(),
+            ),
+        );
+        counters::future_telling_rejected();
+        ctx.scheduler.reset();
+        drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
+        Ok(true)
+    }
+
+    fn finish(self, ctx: &mut EvalContext) -> ConfigEvaluation {
+        let complete = self.complete();
+        let score = if self.runtimes.is_empty() {
+            f64::INFINITY
+        } else {
+            compute_score(&self.runtimes, &self.qualities, ctx.options)
+        };
+        counters::eval(!complete);
+        let checkpoint = self.tracker.as_ref().and_then(CheckpointTracker::score);
+        ConfigEvaluation {
+            score,
+            complete,
+            n_done: self.runtimes.len(),
+            runhash: self.runhash,
+            runhash_n: self.runhash_n,
+            checkpoint,
+        }
+    }
 }
 
 /// Compute a scalar score from per-instance results.
