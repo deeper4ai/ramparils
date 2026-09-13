@@ -275,12 +275,12 @@ fn print_debug_scenario(s: &Scenario, options: &ils::IlsOptions, n_instances: us
         ramparils::debug_line(
             d,
             &format!(
-                "[{t:8.2}s] future_telling: true checkpoint={} cores={} tolerance={}",
+                "[{t:8.2}s] futell:     true checkpoint={} cores={} tolerance={}",
                 options.future_telling_checkpoint, options.future_telling_cores, options.future_telling_tolerance,
             ),
         );
     } else {
-        ramparils::debug_line(d, &format!("[{t:8.2}s] future_telling: false"));
+        ramparils::debug_line(d, &format!("[{t:8.2}s] futell:     false"));
     }
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));

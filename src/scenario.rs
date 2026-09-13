@@ -38,10 +38,11 @@
 //! num_run: 0
 //! instance_shuffle: true       # shuffle instances once before dispatch (see docs)
 //! instance_shuffle_seed: 0     # deterministic given a fixed seed
-//! future_telling: false        # checkpoint-based early rejection of BLS neighbours
-//! future_telling_checkpoint: 1.0  # horizon, as a multiple of cutoff_time
-//! future_telling_cores: ~      # virtual worker count; null = same as `cores`
-//! future_telling_tolerance: 0.0   # relative rejection margin
+//! futell: false               # checkpoint-based early rejection of BLS neighbours
+//! futell_checkpoint: 1.0      # horizon, as a multiple of cutoff_time
+//! futell_cores: ~             # virtual worker count; null = same as `cores`
+//! futell_tolerance: 0.0       # relative rejection margin
+//! # future_telling*: accepted as an alias of futell* for existing scenarios
 //! cache_db: ":memory:"          # use a file path to persist across runs
 //! debug: false
 //! debug_wrapper: false
@@ -258,25 +259,35 @@ pub struct Scenario {
 
     /// Opt-in: reject a BLS neighbour early once a simulated N-worker replay
     /// of its real per-instance results, checkpointed at
-    /// `future_telling_checkpoint * cutoff_time`, is significantly worse than
+    /// `futell_checkpoint * cutoff_time`, is significantly worse than
     /// the incumbent's own checkpoint. A heuristic prune, off by default —
     /// see FUTURETELL.md.
-    #[serde(default)]
+    ///
+    /// Scenario key is `futell` (`future_telling` accepted as an alias, for
+    /// scenarios written before this rename).
+    #[serde(default, rename = "futell", alias = "future_telling")]
     pub future_telling: bool,
 
-    /// Checkpoint horizon, as a multiple of `cutoff_time`.
-    #[serde(default = "default_future_telling_checkpoint")]
+    /// Checkpoint horizon, as a multiple of `cutoff_time`. Scenario key
+    /// `futell_checkpoint` (`future_telling_checkpoint` aliased).
+    #[serde(
+        default = "default_future_telling_checkpoint",
+        rename = "futell_checkpoint",
+        alias = "future_telling_checkpoint"
+    )]
     pub future_telling_checkpoint: f64,
 
     /// Virtual worker count for the checkpoint simulation; `None` resolves to
-    /// whatever `cores:` resolved to for this run.
-    #[serde(default)]
+    /// whatever `cores:` resolved to for this run. Scenario key
+    /// `futell_cores` (`future_telling_cores` aliased).
+    #[serde(default, rename = "futell_cores", alias = "future_telling_cores")]
     pub future_telling_cores: Option<usize>,
 
     /// Relative margin, same shape as `acceptance_tolerance`, within which a
     /// challenger's checkpoint is still tolerated despite being worse than
-    /// the incumbent's.
-    #[serde(default)]
+    /// the incumbent's. Scenario key `futell_tolerance`
+    /// (`future_telling_tolerance` aliased).
+    #[serde(default, rename = "futell_tolerance", alias = "future_telling_tolerance")]
     pub future_telling_tolerance: f64,
 
     /// Path to the SQLite result cache.
@@ -338,18 +349,18 @@ impl Scenario {
         );
         anyhow::ensure!(
             self.future_telling_checkpoint > 0.0,
-            "scenario: future_telling_checkpoint must be positive, got {}",
+            "scenario: futell_checkpoint must be positive, got {}",
             self.future_telling_checkpoint
         );
         anyhow::ensure!(
             self.future_telling_tolerance >= 0.0,
-            "scenario: future_telling_tolerance must not be negative, got {}",
+            "scenario: futell_tolerance must not be negative, got {}",
             self.future_telling_tolerance
         );
 
         if future_telling_needs_shuffle_warning(self.future_telling, self.instance_shuffle) {
             eprintln!(
-                "warning: future_telling: true with instance_shuffle: false — the checkpoint horizon may \
+                "warning: futell: true with instance_shuffle: false — the checkpoint horizon may \
                  not mature until nearly the whole evaluation is already done, unless the instance file is \
                  already difficulty-decorrelated (see FUTURETELL.md D5)"
             );
@@ -600,43 +611,56 @@ mod tests {
         assert_eq!(s.future_telling_tolerance, 0.0);
     }
 
-    /// `future_telling_cores: null` (unset) must resolve to whatever `cores:`
+    /// `futell_cores: null` (unset) must resolve to whatever `cores:`
     /// resolved to for this run, at the same point `ils_options` is built —
     /// no independent default to pick.
     #[test]
     fn future_telling_cores_defaults_to_n_workers() {
-        let s = scenario("future_telling: true\n");
+        let s = scenario("futell: true\n");
         let options = s.ils_options(7, crate::DebugOptions::default()).unwrap();
         assert_eq!(options.future_telling_cores, 7);
     }
 
     #[test]
     fn future_telling_cores_override_is_kept() {
-        let s = scenario("future_telling: true\nfuture_telling_cores: 256\n");
+        let s = scenario("futell: true\nfutell_cores: 256\n");
         let options = s.ils_options(7, crate::DebugOptions::default()).unwrap();
         assert_eq!(options.future_telling_cores, 256);
     }
 
     #[test]
     fn future_telling_checkpoint_must_be_positive() {
-        let s = scenario("future_telling_checkpoint: 0.0\n");
+        let s = scenario("futell_checkpoint: 0.0\n");
         assert!(
             s.ils_options(1, crate::DebugOptions::default())
                 .unwrap_err()
                 .to_string()
-                .contains("future_telling_checkpoint")
+                .contains("futell_checkpoint")
         );
     }
 
     #[test]
     fn future_telling_tolerance_must_not_be_negative() {
-        let s = scenario("future_telling_tolerance: -0.1\n");
+        let s = scenario("futell_tolerance: -0.1\n");
         assert!(
             s.ils_options(1, crate::DebugOptions::default())
                 .unwrap_err()
                 .to_string()
-                .contains("future_telling_tolerance")
+                .contains("futell_tolerance")
         );
+    }
+
+    /// The old `future_telling*` spelling (pre-rename) must still parse, so
+    /// scenarios already written against it keep working.
+    #[test]
+    fn future_telling_key_alias_still_parses() {
+        let s = scenario(
+            "future_telling: true\nfuture_telling_checkpoint: 0.5\nfuture_telling_cores: 3\nfuture_telling_tolerance: 0.1\n",
+        );
+        assert!(s.future_telling);
+        assert_eq!(s.future_telling_checkpoint, 0.5);
+        assert_eq!(s.future_telling_cores, Some(3));
+        assert_eq!(s.future_telling_tolerance, 0.1);
     }
 
     /// The startup warning (FUTURETELL.md D5) fires on exactly the one
