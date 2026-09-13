@@ -10,13 +10,15 @@
 //!  │                                │                          │
 //!  │── submit(tasks, cache) ───────▶│                          │
 //!  │                          bulk cache read                  │
-//!  │                          hits ──────────────────▶ result_rx
+//!  │                          hits ──────────────────▶ event_rx (Completed)
 //!  │                          misses ────────────────────────▶ work batches
+//!  │                                │                          │── claims instance
+//!  │                                │                          │── event_tx (Dispatched)
 //!  │                                │                          │── run_solver ──▶
-//!  │◀── results().recv() ──────────────────────────────────────│
+//!  │◀── events().recv() ──────────────────────────────────────│── event_tx (Completed)
 //!  │                                │                          │
 //!  │── reset() ────────────────────▶│  (batch invalidated)     │
-//!  │   drain result_rx              │                          │ (finish call,
+//!  │   drain event_rx               │                          │ (finish call,
 //!  │                                │                          │  skip pending)
 //! ```
 //!
@@ -24,7 +26,7 @@
 //!
 //! `TaskResult` carries the `instance_id` and `hash` needed to call
 //! `cache.put()`.  The ILS writes back each result as it reads it from the
-//! result channel — keeps cache access single-threaded in the ILS.
+//! event channel — keeps cache access single-threaded in the ILS.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -54,7 +56,34 @@ pub struct EvalTask {
     pub instances: Arc<Vec<(i64, String)>>,
 }
 
+/// A real worker has just claimed `instance_id` and is about to run it —
+/// emitted before the solver process starts, not after it finishes
+/// (FUTURETELL.md D11). Lets a `CheckpointTracker` account for a
+/// still-running instance without waiting for its result to arrive.
+#[derive(Debug)]
+pub struct DispatchEvent {
+    pub batch_id: u64,
+    pub neighbor_id: usize,
+    pub instance_id: i64,
+    pub dispatch_time: f64,
+}
+
+/// One message on the scheduler's event channel. Kept as one enum on one
+/// channel rather than a second channel consumed via `crossbeam::select!`
+/// (FUTURETELL.md D11): a dispatch notice has none of `TaskResult`'s fields
+/// (they only exist once a solver has actually finished), so it can't be a
+/// bare `TaskResult` with placeholders — but it doesn't need a separate
+/// transport either. Per-sender ordering on the shared channel guarantees a
+/// `Dispatched` for an instance is always seen before its matching
+/// `Completed`.
+#[derive(Debug)]
+pub enum SchedulerEvent {
+    Dispatched(DispatchEvent),
+    Completed(TaskResult),
+}
+
 /// Result of one `(neighbor, instance)` evaluation.
+#[derive(Debug)]
 pub struct TaskResult {
     pub batch_id: u64,
     pub neighbor_id: usize,
@@ -118,8 +147,8 @@ struct WorkBatch {
 
 pub struct Scheduler {
     work_tx: Sender<WorkBatch>,
-    result_tx: Sender<TaskResult>, // used in submit() for cache hits
-    result_rx: Receiver<TaskResult>,
+    event_tx: Sender<SchedulerEvent>, // used in submit() for cache hits
+    event_rx: Receiver<SchedulerEvent>,
     batch_id: Arc<AtomicU64>,
     n_workers: usize,
     #[cfg(test)]
@@ -144,7 +173,7 @@ impl Scheduler {
     /// runs the solver, and sends `TaskResult`s back.
     pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: crate::DebugOptions) -> Self {
         let (work_tx, work_rx) = unbounded::<WorkBatch>();
-        let (result_tx, result_rx) = unbounded::<TaskResult>();
+        let (event_tx, event_rx) = unbounded::<SchedulerEvent>();
         let batch_id = Arc::new(AtomicU64::new(0));
         let active_process_groups = Arc::new(Mutex::new(HashMap::new()));
         let cancelled_neighbors: Arc<Mutex<HashSet<(u64, usize)>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -152,7 +181,7 @@ impl Scheduler {
         let workers = (0..n_workers)
             .map(|_| {
                 let work_rx: Receiver<WorkBatch> = work_rx.clone();
-                let result_tx: Sender<TaskResult> = result_tx.clone();
+                let event_tx: Sender<SchedulerEvent> = event_tx.clone();
                 let current_batch = Arc::clone(&batch_id);
                 let active_process_groups = Arc::clone(&active_process_groups);
                 let cancelled_neighbors = Arc::clone(&cancelled_neighbors);
@@ -174,6 +203,12 @@ impl Scheduler {
                                 break;
                             }
                             let (instance_id, instance_path) = &batch.instances[instance_index];
+                            let _ = event_tx.send(SchedulerEvent::Dispatched(DispatchEvent {
+                                batch_id: batch.batch_id,
+                                neighbor_id: batch.neighbor_id,
+                                instance_id: *instance_id,
+                                dispatch_time: crate::t(),
+                            }));
                             let Some((runtime, quality, status, runhash)) = run_solver_inner(
                                 &algo,
                                 &batch.config,
@@ -189,7 +224,7 @@ impl Scheduler {
                             ) else {
                                 break;
                             };
-                            let _ = result_tx.send(TaskResult {
+                            let _ = event_tx.send(SchedulerEvent::Completed(TaskResult {
                                 batch_id: batch.batch_id,
                                 neighbor_id: batch.neighbor_id,
                                 instance_id: *instance_id,
@@ -200,7 +235,7 @@ impl Scheduler {
                                 runhash,
                                 cacheable: true,
                                 cutoff: batch.cutoff_time,
-                            });
+                            }));
                         }
                     }
                 })
@@ -213,8 +248,8 @@ impl Scheduler {
         );
         Scheduler {
             work_tx,
-            result_tx,
-            result_rx,
+            event_tx,
+            event_rx,
             batch_id,
             n_workers,
             #[cfg(test)]
@@ -252,7 +287,7 @@ impl Scheduler {
             for (index, (instance_id, _)) in task.instances.iter().enumerate() {
                 if let Some(cached) = hits.get(instance_id) {
                     n_hits += 1;
-                    let _ = self.result_tx.send(TaskResult {
+                    let _ = self.event_tx.send(SchedulerEvent::Completed(TaskResult {
                         batch_id,
                         neighbor_id: task.neighbor_id,
                         instance_id: *instance_id,
@@ -263,7 +298,7 @@ impl Scheduler {
                         runhash: cached.runhash,
                         cacheable: false,
                         cutoff: self.cutoff_time,
-                    });
+                    }));
                 } else {
                     n_misses += 1;
                     missing_indices.push(index);
@@ -304,9 +339,10 @@ impl Scheduler {
         Ok(batch_id)
     }
 
-    /// The result channel — ILS reads `TaskResult`s from here as they arrive.
-    pub fn results(&self) -> &Receiver<TaskResult> {
-        &self.result_rx
+    /// The event channel — ILS reads `SchedulerEvent`s (dispatches and
+    /// results, interleaved in real arrival order) from here.
+    pub fn events(&self) -> &Receiver<SchedulerEvent> {
+        &self.event_rx
     }
 
     #[cfg(test)]
@@ -607,6 +643,16 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
+    /// Unwraps a `SchedulerEvent` a test expects to be `Completed` --
+    /// panics with the actual event otherwise, so a stray `Dispatched`
+    /// shows up as a clear test failure rather than a type error.
+    fn expect_completed(event: SchedulerEvent) -> TaskResult {
+        match event {
+            SchedulerEvent::Completed(result) => result,
+            SchedulerEvent::Dispatched(d) => panic!("expected a Completed event, got Dispatched: {d:?}"),
+        }
+    }
+
     #[test]
     fn parse_ok_line() {
         let (rt, q, st, rh, raw) =
@@ -684,12 +730,12 @@ mod tests {
 
         let mut results = vec![];
         for _ in 0..2 {
-            results.push(
+            results.push(expect_completed(
                 sched
-                    .results()
+                    .events()
                     .recv_timeout(std::time::Duration::from_millis(100))
                     .expect("expected cache hit result"),
-            );
+            ));
         }
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.neighbor_id == 7));
@@ -722,10 +768,12 @@ mod tests {
             )
             .unwrap();
 
-        let result = scheduler
-            .results()
-            .recv_timeout(Duration::from_millis(100))
-            .expect("expected synthetic timeout");
+        let result = expect_completed(
+            scheduler
+                .events()
+                .recv_timeout(Duration::from_millis(100))
+                .expect("expected synthetic timeout"),
+        );
         assert_eq!(result.status, "TIMEOUT");
         assert!(!result.cacheable);
 
@@ -743,7 +791,7 @@ mod tests {
         sched.submit(vec![], &cache).unwrap();
         sched.reset();
         // Drain — should be empty
-        while sched.results().try_recv().is_ok() {}
+        while sched.events().try_recv().is_ok() {}
         // Should be able to submit again without panic
         sched.submit(vec![], &cache).unwrap();
     }
@@ -789,6 +837,15 @@ mod tests {
         }
         let solver_pid: libc::pid_t = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
 
+        // The worker sends a `Dispatched` event the instant it claims the
+        // instance, before the solver even starts (FUTURETELL.md D11) --
+        // consume it here so it doesn't masquerade as "a result" in the
+        // no-more-events check below.
+        match sched.events().recv_timeout(Duration::from_secs(1)) {
+            Ok(SchedulerEvent::Dispatched(_)) => {}
+            other => panic!("expected a Dispatched event before the solver produced anything, got {other:?}"),
+        }
+
         sched.reset();
 
         let exit_deadline = Instant::now() + Duration::from_secs(2);
@@ -806,7 +863,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            sched.results().recv_timeout(Duration::from_millis(200)).is_err(),
+            sched.events().recv_timeout(Duration::from_millis(200)).is_err(),
             "canceled solver produced a result"
         );
     }
