@@ -207,7 +207,7 @@ fn print_debug_wrapper_version(algo: &str, block: &str) {
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
 
-fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
+fn print_debug_scenario(s: &Scenario, options: &ils::IlsOptions, n_instances: usize, n_workers: usize) {
     if !ramparils::any_debug_active() {
         return;
     }
@@ -238,13 +238,20 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
     ramparils::debug_line(d, &format!("[{t:8.2}s] timeout:    {}s", s.tuner_timeout));
     ramparils::debug_line(d, &format!("[{t:8.2}s] objective:  {run_obj} / {overall_obj}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] approach:   {}", s.approach));
-    ramparils::debug_line(
-        d,
-        &format!(
-            "[{t:8.2}s] fidelity:   initial={} step={}",
-            s.initial_fidelity, s.fidelity_step
-        ),
-    );
+    // Fidelity only means anything for FocusedILS -- Basic/Random always use
+    // every instance from the start, so printing initial/step there would
+    // read as a knob that's actually in play when it's simply unused.
+    if options.approach == ils::Approach::Focused {
+        ramparils::debug_line(
+            d,
+            &format!(
+                "[{t:8.2}s] fidelity:   initial={} step={}",
+                s.initial_fidelity, s.fidelity_step
+            ),
+        );
+    } else {
+        ramparils::debug_line(d, &format!("[{t:8.2}s] fidelity:   n/a (approach={})", s.approach));
+    }
     ramparils::debug_line(
         d,
         &format!(
@@ -264,6 +271,17 @@ fn print_debug_scenario(s: &Scenario, n_instances: usize, n_workers: usize) {
             s.restart_probability, s.restart_failures, s.restart_target, s.acceptance_tolerance, s.random_probes,
         ),
     );
+    if options.future_telling {
+        ramparils::debug_line(
+            d,
+            &format!(
+                "[{t:8.2}s] future_telling: true checkpoint={} cores={} tolerance={}",
+                options.future_telling_checkpoint, options.future_telling_cores, options.future_telling_tolerance,
+            ),
+        );
+    } else {
+        ramparils::debug_line(d, &format!("[{t:8.2}s] future_telling: false"));
+    }
     ramparils::debug_line(d, &format!("[{t:8.2}s] workers:    {n_workers}"));
     ramparils::debug_line(d, &format!("[{t:8.2}s] {sep}"));
 }
@@ -328,7 +346,7 @@ fn cmd_run(scenariofile: &str) -> Result<()> {
         },
     )?;
 
-    print_debug_scenario(&scenario, instances.len(), n_workers);
+    print_debug_scenario(&scenario, &options, instances.len(), n_workers);
 
     let initial = scenario.resolve_initial_config(&space)?;
 
