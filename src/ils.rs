@@ -30,7 +30,9 @@
 use anyhow::Result;
 use crossbeam::channel::RecvTimeoutError;
 use rand::Rng;
-use std::collections::BTreeSet;
+use rand::SeedableRng;
+use rand::seq::SliceRandom;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -101,10 +103,15 @@ mod counters {
 
     pub static EVALS: AtomicUsize = AtomicUsize::new(0);
     pub static CAPPED: AtomicUsize = AtomicUsize::new(0);
+    /// Distinct from `CAPPED` (Risks, FUTURETELL.md): a checkpoint rejection
+    /// is a statistical heuristic, not a proof, so a run summary should be
+    /// able to tell the two apart rather than reading one combined number.
+    pub static FUTURE_TELLING_REJECTED: AtomicUsize = AtomicUsize::new(0);
 
     pub fn reset() {
         EVALS.store(0, Relaxed);
         CAPPED.store(0, Relaxed);
+        FUTURE_TELLING_REJECTED.store(0, Relaxed);
     }
     /// One configuration evaluated to a verdict — completed or capped. A
     /// neighbour cancelled mid-flight because another one improved first
@@ -115,8 +122,13 @@ mod counters {
             CAPPED.fetch_add(1, Relaxed);
         }
     }
-    pub fn get() -> (usize, usize) {
-        (EVALS.load(Relaxed), CAPPED.load(Relaxed))
+    /// A checkpoint rejection, counted alongside (not instead of) whatever
+    /// `eval(true)` call already covers it as a generic incomplete verdict.
+    pub fn future_telling_rejected() {
+        FUTURE_TELLING_REJECTED.fetch_add(1, Relaxed);
+    }
+    pub fn get() -> (usize, usize, usize) {
+        (EVALS.load(Relaxed), CAPPED.load(Relaxed), FUTURE_TELLING_REJECTED.load(Relaxed))
     }
 }
 
@@ -188,7 +200,7 @@ impl RestartReason {
 }
 
 /// All tunable settings for a single ILS run.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct IlsOptions {
     pub approach: Approach,
     /// Max parallel worker threads.
@@ -225,6 +237,19 @@ pub struct IlsOptions {
     pub tuner_timeout: f64,
     pub run_obj: RunObjective,
     pub overall_obj: OverallObjective,
+    /// Shuffle `instances` once, deterministically, before dispatch (FUTURETELL.md D5).
+    pub instance_shuffle: bool,
+    /// Seed for `instance_shuffle`.
+    pub instance_shuffle_seed: u64,
+    /// Opt-in checkpoint-based early rejection of BLS neighbours (FUTURETELL.md).
+    pub future_telling: bool,
+    /// Checkpoint horizon, as a multiple of `cutoff_time`.
+    pub future_telling_checkpoint: f64,
+    /// Virtual worker count for the checkpoint simulation. Already resolved
+    /// (a `None` in the scenario becomes `n_workers` before this is built).
+    pub future_telling_cores: usize,
+    /// Relative rejection margin, same shape as `acceptance_tolerance`.
+    pub future_telling_tolerance: f64,
     pub debug: crate::DebugOptions,
 }
 
@@ -245,6 +270,29 @@ pub fn run(
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
     let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug);
     let mut rng = rand::thread_rng();
+
+    // Instance shuffle (FUTURETELL.md D5): a pure reordering of an
+    // already-ID-assigned `Vec<(i64, String)>` — `cache.load_instances()` has
+    // already run by the time `instances` reaches here, so this never affects
+    // which `instance_id` a path resolves to. Decorrelates the fixed
+    // evaluation-order prefix (fidelity growth, future-telling's checkpoint
+    // simulation) from any difficulty ordering already present in the file.
+    let shuffled_instances;
+    let instances: &[(i64, String)] = if options.instance_shuffle {
+        shuffled_instances = shuffle_instances(instances, options.instance_shuffle_seed);
+        crate::debug_line(
+            options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: instance_shuffle applied to {} instances (seed={})",
+                crate::t(),
+                shuffled_instances.len(),
+                options.instance_shuffle_seed
+            ),
+        );
+        &shuffled_instances
+    } else {
+        instances
+    };
     let n_total = instances.len();
 
     // FocusedILS starts at the configured fidelity and grows; Basic/Random use all instances.
@@ -294,6 +342,8 @@ pub fn run(
         options,
         space,
         None,
+        None,
+        cutoff_time,
         deadline,
     )?;
 
@@ -317,6 +367,8 @@ pub fn run(
             options,
             space,
             Some(current_eval.score),
+            current_eval.checkpoint,
+            cutoff_time,
             deadline,
         )?;
         // A capped probe scores above the bound and so above `current`, and
@@ -337,6 +389,12 @@ pub fn run(
 
     let mut incumbent = current.clone();
     let mut incumbent_score = current_eval.score;
+    // Run-local reference checkpoints for future-telling (FUTURETELL.md D7):
+    // reassigned unconditionally at every site `incumbent_score`/`last_lm_eval`
+    // are, including to `None` — a stale `Some` would compare a future
+    // challenger against a reference describing a config that no longer holds
+    // that role.
+    let mut incumbent_checkpoint = current_eval.checkpoint;
     // Kept for the home-base diff below: `incumbent` may be replaced by the
     // first descent, and `current` is moved into it.
     let initial_config = current.clone();
@@ -352,6 +410,8 @@ pub fn run(
         options,
         space,
         incumbent_score,
+        incumbent_checkpoint,
+        cutoff_time,
         &mut rng,
         deadline,
     )?;
@@ -360,11 +420,13 @@ pub fn run(
     if dominates(lm_eval.score, n_runs, incumbent_score, n_runs, options) {
         incumbent = lm.clone();
         incumbent_score = lm_eval.score;
+        incumbent_checkpoint = lm_eval.checkpoint;
         n_incumbents += 1;
         log_incumbent(options.debug.main, &incumbent, &lm_eval, n_runs, space)?;
     }
     let mut last_lm = lm;
     let mut last_lm_eval = lm_eval;
+    let mut home_base_checkpoint = last_lm_eval.checkpoint;
     // Fidelity at which `last_lm_eval` was measured; kept equal to `n_runs`.
     let mut last_lm_runs = n_runs;
     log_home_base(
@@ -419,6 +481,8 @@ pub fn run(
             options,
             space,
             Some(incumbent_score),
+            incumbent_checkpoint,
+            cutoff_time,
             deadline,
         )?;
         // A capped start is what gates a round: every neighbour that does not
@@ -451,6 +515,8 @@ pub fn run(
             options,
             space,
             incumbent_score,
+            incumbent_checkpoint,
+            cutoff_time,
             &mut rng,
             deadline,
         )?;
@@ -469,6 +535,7 @@ pub fn run(
         if !incumbent_survived {
             incumbent = new_lm.clone();
             incumbent_score = new_lm_eval.score;
+            incumbent_checkpoint = new_lm_eval.checkpoint;
             n_incumbents += 1;
             log_incumbent(options.debug.main, &incumbent, &new_lm_eval, n_runs, space)?;
         }
@@ -481,6 +548,7 @@ pub fn run(
             let previous_home_base = last_lm.clone();
             last_lm = new_lm;
             last_lm_eval = new_lm_eval;
+            home_base_checkpoint = last_lm_eval.checkpoint;
             last_lm_runs = n_runs;
             log_home_base(
                 options.debug.main,
@@ -507,6 +575,7 @@ pub fn run(
         last_lm = accepted;
         last_lm_eval = if took_new { new_lm_eval } else { last_lm_eval };
         debug_assert_eq!(last_lm_eval.score, accepted_score);
+        home_base_checkpoint = last_lm_eval.checkpoint;
         last_lm_runs = n_runs;
         log_home_base(
             options.debug.main,
@@ -553,6 +622,8 @@ pub fn run(
                 options,
                 space,
                 Some(incumbent_score),
+                incumbent_checkpoint,
+                cutoff_time,
                 deadline,
             )?;
             crate::debug_line(
@@ -575,6 +646,7 @@ pub fn run(
             let before_restart = last_lm.clone();
             last_lm = restarted;
             last_lm_eval = restarted_eval;
+            home_base_checkpoint = last_lm_eval.checkpoint;
             last_lm_runs = n_runs;
             rejections = 0;
             log_home_base(
@@ -601,6 +673,8 @@ pub fn run(
                     options,
                     space,
                     None,
+                    None,
+                    cutoff_time,
                     deadline,
                 )?;
                 if !(next_evaluation.complete && next_evaluation.score.is_finite()) {
@@ -639,6 +713,8 @@ pub fn run(
                         options,
                         space,
                         None,
+                        None,
+                        cutoff_time,
                         deadline,
                     )?;
                     if !(home_base_evaluation.complete && home_base_evaluation.score.is_finite()) {
@@ -656,10 +732,12 @@ pub fn run(
 
                 n_runs = next;
                 incumbent_score = next_evaluation.score;
+                incumbent_checkpoint = next_evaluation.checkpoint;
                 // Both re-measurements above are guarded on `complete`, so the
                 // home base's new score is a full one at the new fidelity.
                 let home_base_score = home_base_evaluation.score;
                 last_lm_eval = home_base_evaluation;
+                home_base_checkpoint = last_lm_eval.checkpoint;
                 last_lm_runs = next;
                 crate::debug_line(
                     options.debug.main,
@@ -672,12 +750,16 @@ pub fn run(
         }
     }
 
-    let (evals, capped) = counters::get();
+    // Recorded (D9) but not yet consulted by anything — kept for a possible
+    // future acceptance-side use; see FUTURETELL.md's open questions.
+    let _ = home_base_checkpoint;
+
+    let (evals, capped, future_telling_rejected) = counters::get();
     crate::debug_line(
         options.debug.main,
         &format!(
             "[{:8.2}s] ils: summary rounds={n_rounds} searched={n_searched} gated={n_gated} \
-             incumbents={n_incumbents} evals={evals} capped={capped}",
+             incumbents={n_incumbents} evals={evals} capped={capped} future_telling_rejected={future_telling_rejected}",
             crate::t()
         ),
     );
@@ -820,6 +902,149 @@ fn accepted_within_tolerance(new_score: f64, incumbent_score: f64, options: &Ils
 }
 
 // ---------------------------------------------------------------------------
+// Future-telling: checkpoint-based early rejection (FUTURETELL.md)
+// ---------------------------------------------------------------------------
+
+/// Replays `n_total` instances (the same fixed-order prefix every config in
+/// a run is evaluated against, see FUTURETELL.md D4) across `n_virtual`
+/// identical virtual workers, fed real per-instance runtimes as they stream
+/// back in whatever order the actual solver processes finish. Workers become
+/// free and take the next instance in *fixed* order, not arrival order —
+/// arrivals are only how the data gets to this tracker, not the order the
+/// simulation processes it in.
+///
+/// Needs only `runtime` (compared against `cutoff_time`, FUTURETELL.md D6)
+/// — no `quality`, no `run_obj`/`overall_obj` dependency.
+struct CheckpointTracker {
+    n_total: usize,
+    checkpoint_time: f64,
+    cutoff_time: f64,
+    virtual_busy: Vec<f64>,
+    /// Results that have arrived but are still waiting on an earlier
+    /// fixed-order position to unblock them.
+    pending: HashMap<usize, f64>,
+    /// Next fixed-order position the simulation needs before it can advance.
+    cursor: usize,
+    /// Count of positions virtually finished by `checkpoint_time` with
+    /// `runtime < cutoff_time` — an exact "solved" count for any wrapper
+    /// following the PAR1 contract (`docs/reference/protocol.md`), not an
+    /// approximation of one.
+    solved_count: usize,
+    /// True once every virtual worker's busy time exceeds `checkpoint_time`
+    /// — mirrors the assignment rule: it always goes to the least-busy
+    /// worker, so once the least-busy one is past the horizon, nothing
+    /// still-pending can land at or before it. Deliberately never set once
+    /// `cursor == n_total` — see `score()`.
+    ready: bool,
+}
+
+impl CheckpointTracker {
+    fn new(n_virtual: usize, checkpoint_time: f64, cutoff_time: f64, n_total: usize) -> Self {
+        Self {
+            n_total,
+            checkpoint_time,
+            cutoff_time,
+            virtual_busy: vec![0.0; n_virtual.max(1)],
+            pending: HashMap::new(),
+            cursor: 0,
+            solved_count: 0,
+            ready: false,
+        }
+    }
+
+    /// Feed one more real result at its *fixed* position (looked up by the
+    /// caller from `instance_id` via a position map built once per
+    /// evaluation — no `eval.rs`/`TaskResult` changes needed). Advances the
+    /// simulation through as many now-contiguous buffered positions as this
+    /// arrival unblocks. No-op once `ready`.
+    ///
+    /// `ready` is checked after *every single* position processed, not once
+    /// per call after exhausting a whole run of buffered positions -- when
+    /// several positions unblock at once (only possible with out-of-order
+    /// arrival), checking once per call would let the loop run straight
+    /// past the exact point maturity should have been detected, silently
+    /// depending on how arrivals happened to be batched. Caught by testing
+    /// arrival-order invariance, not by reasoning about it in advance.
+    fn record(&mut self, position: usize, runtime: f64) {
+        if self.ready {
+            return;
+        }
+        debug_assert!(position < self.n_total);
+        self.pending.insert(position, runtime);
+        while let Some(runtime) = self.pending.remove(&self.cursor) {
+            let w = self
+                .virtual_busy
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i)
+                .expect("virtual_busy is never empty");
+            let finish = self.virtual_busy[w] + runtime;
+            if finish <= self.checkpoint_time && runtime < self.cutoff_time {
+                self.solved_count += 1;
+            }
+            self.virtual_busy[w] = finish;
+            self.cursor += 1;
+            if self.cursor == self.n_total {
+                // Every instance is real-accounted-for now. Return before
+                // computing `ready` at all -- even if every virtual worker
+                // happens to already be past the horizon at this exact
+                // instant, `score()` treats `cursor == n_total` as "already
+                // exact" (see below), so there is no case where setting
+                // `ready` here would ever produce a usable answer.
+                return;
+            }
+            if self.virtual_busy.iter().all(|&t| t > self.checkpoint_time) {
+                self.ready = true;
+                return;
+            }
+        }
+    }
+
+    /// `Some(n_total - solved_count)` only for a config that is **still in
+    /// flight** when the virtual horizon matures (`ready` with `cursor <
+    /// n_total`) -- a genuine early read; lower is better. `None` in every
+    /// other case, including when `cursor` reaches `n_total` *before*
+    /// `ready` -- that means the real evaluation already finished, so its
+    /// exact score is already available through the normal completion path,
+    /// and the checkpoint has nothing to add.
+    fn score(&self) -> Option<f64> {
+        if !self.ready || self.cursor >= self.n_total {
+            return None;
+        }
+        Some((self.n_total - self.solved_count) as f64)
+    }
+}
+
+/// Whether future-telling should build/consult a `CheckpointTracker` at all
+/// this round (D3). Below this line the mechanism is provably inert — every
+/// arriving instance finds an idle virtual worker, so `ready` can never fire
+/// before the config's real evaluation is already fully complete — so
+/// running it would spend bookkeeping for zero possible benefit.
+fn future_telling_active(options: &IlsOptions, n_instances: usize) -> bool {
+    options.future_telling && n_instances > options.future_telling_cores
+}
+
+/// Reject rule (D8), same shape as `accepted_within_tolerance` but inverted
+/// for a reject: fire only when the challenger's checkpoint (an *unsolved*
+/// count — lower is better, D6) exceeds the incumbent's own by more than the
+/// tolerance band. Takes plain `f64`, not `Option<f64>` — the caller only
+/// ever calls this after unwrapping both sides (D7/D8); "reference missing"
+/// is handled once, at the call site.
+fn future_telling_rejects(challenger_ckpt: f64, incumbent_ckpt: f64, options: &IlsOptions) -> bool {
+    challenger_ckpt.is_finite()
+        && incumbent_ckpt.is_finite()
+        && challenger_ckpt > incumbent_ckpt + options.future_telling_tolerance * incumbent_ckpt.abs()
+}
+
+/// Build the shared `(instance_id -> fixed position)` map for one round's
+/// worth of `CheckpointTracker`s (D4) — identical for every neighbour
+/// evaluated against the same `eval_instances` slice this round.
+fn instance_positions(instances: &[(i64, String)]) -> HashMap<i64, usize> {
+    instances.iter().enumerate().map(|(pos, (id, _))| (*id, pos)).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Evaluation helpers
 // ---------------------------------------------------------------------------
 
@@ -837,6 +1062,8 @@ fn evaluate_config(
     options: &IlsOptions,
     space: &ParamSpace,
     incumbent_score: Option<f64>,
+    incumbent_checkpoint: Option<f64>,
+    cutoff_time: f64,
     deadline: Instant,
 ) -> Result<f64> {
     Ok(evaluate_config_outcome(
@@ -847,6 +1074,8 @@ fn evaluate_config(
         options,
         space,
         incumbent_score,
+        incumbent_checkpoint,
+        cutoff_time,
         deadline,
     )?
     .score)
@@ -873,13 +1102,21 @@ struct ConfigEvaluation {
     /// evaluations' `runhash` is only informative when their `runhash_n`
     /// agree; a partial batch is measured over a different set of instances.
     runhash_n: usize,
+    /// This evaluation's own `CheckpointTracker::score()` at whatever point
+    /// it stopped being updated (FUTURETELL.md D7) — `Some` only when the
+    /// checkpoint matured while genuinely still in flight; `None` when
+    /// future-telling was inactive (D3), never matured, or this evaluation
+    /// carries no checkpoint data at all (e.g. a random probe). Read by
+    /// `run()` at every incumbent/home-base update site to keep
+    /// `incumbent_checkpoint`/`home_base_checkpoint` current.
+    checkpoint: Option<f64>,
 }
 
 impl ConfigEvaluation {
-    /// A complete evaluation with no runhash data (e.g. a random probe, whose
-    /// caller only kept the scalar score).
+    /// A complete evaluation with no runhash or checkpoint data (e.g. a
+    /// random probe, whose caller only kept the scalar score).
     fn complete(score: f64, n_done: usize) -> Self {
-        Self { score, complete: true, n_done, runhash: 0, runhash_n: 0 }
+        Self { score, complete: true, n_done, runhash: 0, runhash_n: 0, checkpoint: None }
     }
 
     /// `2.698475` when complete, `>2.698475 (312/473)` when capped.
@@ -911,6 +1148,8 @@ fn evaluate_config_outcome(
     options: &IlsOptions,
     space: &ParamSpace,
     incumbent_score: Option<f64>,
+    incumbent_checkpoint: Option<f64>,
+    cutoff_time: f64,
     deadline: Instant,
 ) -> Result<ConfigEvaluation> {
     if instances.is_empty() {
@@ -931,12 +1170,14 @@ fn evaluate_config_outcome(
 
     collect_one(
         batch_id,
-        instances.len(),
+        instances,
         0,
         scheduler,
         cache,
         options,
         incumbent_score,
+        incumbent_checkpoint,
+        cutoff_time,
         deadline,
     )
 }
@@ -960,6 +1201,8 @@ fn basic_local_search(
     options: &IlsOptions,
     space: &ParamSpace,
     incumbent_score: f64,
+    incumbent_checkpoint: Option<f64>,
+    cutoff_time: f64,
     rng: &mut impl Rng,
     deadline: Instant,
 ) -> Result<(Config, ConfigEvaluation, usize)> {
@@ -1015,6 +1258,18 @@ fn basic_local_search(
         let mut done = vec![false; n];
         let mut n_done = 0usize;
 
+        // Future-telling (D3/D4): one tracker per neighbour, one shared
+        // position map for the round — every neighbour this round is
+        // evaluated against the identical `eval_instances` slice. Gated by
+        // D3: when inactive, no trackers are built at all, not just unused.
+        let future_telling_time = cutoff_time * options.future_telling_checkpoint;
+        let mut trackers: Option<Vec<CheckpointTracker>> = future_telling_active(options, n_instances).then(|| {
+            (0..n)
+                .map(|_| CheckpointTracker::new(options.future_telling_cores, future_telling_time, cutoff_time, n_instances))
+                .collect()
+        });
+        let positions = trackers.is_some().then(|| instance_positions(eval_instances));
+
         'collect: loop {
             if n_done >= n {
                 break;
@@ -1066,6 +1321,11 @@ fn basic_local_search(
                 RunObjective::Quality => result.quality,
             };
             partial[nid] += val;
+            if let (Some(trackers), Some(positions)) = (trackers.as_mut(), positions.as_ref()) {
+                if let Some(&position) = positions.get(&result.instance_id) {
+                    trackers[nid].record(position, result.runtime);
+                }
+            }
 
             // Adaptive capping: prune this neighbour once it has spent the whole
             // budget that beating the incumbent allows. Costs never go down, so
@@ -1096,6 +1356,7 @@ fn basic_local_search(
                 n_done += 1;
                 counters::eval(false);
                 let score = compute_score(&runtimes[nid], &qualities[nid], options);
+                let checkpoint = trackers.as_ref().and_then(|t| t[nid].score());
 
                 if dominates(score, n_instances, current_eval.score, n_instances, options) {
                     // Accept — stop evaluating the rest
@@ -1128,10 +1389,32 @@ fn basic_local_search(
                         n_done: n_instances,
                         runhash: runhashes[nid],
                         runhash_n: runhash_ns[nid],
+                        checkpoint,
                     };
                     steps += 1;
                     changed = true;
                     break 'collect;
+                }
+            } else if let (Some(inc_ckpt), Some(trackers)) = (incumbent_checkpoint, trackers.as_ref()) {
+                // Full completion (above) always wins over a checkpoint
+                // verdict — this branch is only reached when the neighbour
+                // is still incomplete (FUTURETELL.md "Where this lives").
+                if let Some(chal_ckpt) = trackers[nid].score() {
+                    if future_telling_rejects(chal_ckpt, inc_ckpt, options) {
+                        crate::debug_line(
+                            options.debug.main,
+                            &format!(
+                                "[{:8.2}s] ils: future-telling-rejected neighbor={nid} ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                crate::t(),
+                                runtimes[nid].len(),
+                            ),
+                        );
+                        done[nid] = true;
+                        n_done += 1;
+                        counters::eval(true);
+                        counters::future_telling_rejected();
+                        continue;
+                    }
                 }
             }
         }
@@ -1159,22 +1442,36 @@ fn basic_local_search(
 
 /// Collect exactly `n_instances` results for one config (neighbor_id = `expected_nid`).
 /// Used by `evaluate_config` for single-config evaluation.
+///
+/// `instances` is the exact slice this evaluation was submitted against —
+/// needed (beyond just its length) to build the `(instance_id -> fixed
+/// position)` map a `CheckpointTracker` buffers on (FUTURETELL.md D4).
 #[allow(clippy::too_many_arguments)]
 fn collect_one(
     batch_id: u64,
-    n_instances: usize,
+    instances: &[(i64, String)],
     expected_nid: usize,
     scheduler: &Scheduler,
     cache: &mut Cache,
     options: &IlsOptions,
     incumbent_score: Option<f64>,
+    incumbent_checkpoint: Option<f64>,
+    cutoff_time: f64,
     deadline: Instant,
 ) -> Result<ConfigEvaluation> {
+    let n_instances = instances.len();
     let mut runtimes = Vec::with_capacity(n_instances);
     let mut qualities = Vec::with_capacity(n_instances);
     let mut partial_sum = 0.0f64;
     let mut runhash = 0u64;
     let mut runhash_n = 0usize;
+
+    // Future-telling (D3): only built when the mechanism can possibly mature
+    // before real completion anyway.
+    let future_telling_time = cutoff_time * options.future_telling_checkpoint;
+    let mut tracker = future_telling_active(options, n_instances)
+        .then(|| CheckpointTracker::new(options.future_telling_cores, future_telling_time, cutoff_time, n_instances));
+    let positions = tracker.is_some().then(|| instance_positions(instances));
 
     while runtimes.len() < n_instances {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1220,6 +1517,11 @@ fn collect_one(
             runhash ^= h;
             runhash_n += 1;
         }
+        if let (Some(tracker), Some(positions)) = (tracker.as_mut(), positions.as_ref()) {
+            if let Some(&position) = positions.get(&result.instance_id) {
+                tracker.record(position, result.runtime);
+            }
+        }
 
         if options.pruning {
             if let Some(inc) = incumbent_score {
@@ -1235,6 +1537,36 @@ fn collect_one(
                 }
             }
         }
+
+        // Full completion always wins over a checkpoint verdict (FUTURETELL.md
+        // "Where this lives") — only consult the tracker while genuinely
+        // still incomplete, never after, even in the edge case where the same
+        // arriving result both completes this evaluation and matures its
+        // checkpoint.
+        if runtimes.len() < n_instances {
+            if let (Some(inc_ckpt), Some(tracker)) = (incumbent_checkpoint, tracker.as_ref()) {
+                if let Some(chal_ckpt) = tracker.score() {
+                    if future_telling_rejects(chal_ckpt, inc_ckpt, options) {
+                        crate::debug_line(
+                            options.debug.main,
+                            &format!(
+                                "[{:8.2}s] ils: future-telling-rejected config ckpt={chal_ckpt:.6} ref={inc_ckpt:.6} after {}/{n_instances}",
+                                crate::t(),
+                                runtimes.len(),
+                            ),
+                        );
+                        counters::future_telling_rejected();
+                        scheduler.reset();
+                        while let Ok(r) = scheduler.results().try_recv() {
+                            if r.cacheable && r.status != "UNKNOWN" {
+                                cache.put(r.hash, r.instance_id, r.runtime, r.quality, &r.status, r.cutoff, r.runhash)?;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     let complete = runtimes.len() == n_instances;
@@ -1244,7 +1576,8 @@ fn collect_one(
         compute_score(&runtimes, &qualities, options)
     };
     counters::eval(!complete);
-    Ok(ConfigEvaluation { score, complete, n_done: runtimes.len(), runhash, runhash_n })
+    let checkpoint = tracker.as_ref().and_then(CheckpointTracker::score);
+    Ok(ConfigEvaluation { score, complete, n_done: runtimes.len(), runhash, runhash_n, checkpoint })
 }
 
 /// Compute a scalar score from per-instance results.
@@ -1274,6 +1607,17 @@ fn active_config(config: &Config, space: &ParamSpace) -> Config {
         .into_iter()
         .filter_map(|param| config.get(&param.name).map(|value| (param.name.clone(), value.clone())))
         .collect()
+}
+
+/// Shuffle `instances` for `instance_shuffle` (FUTURETELL.md D5), deterministic
+/// on `seed`. A pure permutation of an already-ID-assigned slice — never
+/// touches which `instance_id` a path resolves to, only the order `run()`
+/// operates over afterward.
+fn shuffle_instances(instances: &[(i64, String)], seed: u64) -> Vec<(i64, String)> {
+    let mut shuffled = instances.to_vec();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    shuffled.shuffle(&mut rng);
+    shuffled
 }
 
 fn initial_n_runs(initial_fidelity: usize, n_total: usize) -> usize {
@@ -1511,6 +1855,12 @@ mod tests {
             tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+            instance_shuffle: true,
+            instance_shuffle_seed: 0,
+            future_telling: false,
+            future_telling_checkpoint: 1.0,
+            future_telling_cores: 1,
+            future_telling_tolerance: 0.0,
             debug: crate::DebugOptions::default(),
         }
     }
@@ -1612,6 +1962,12 @@ mod tests {
             tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+        instance_shuffle: true,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 1,
+        future_telling_tolerance: 0.0,
         };
         assert!(dominates(1.0, 5, 2.0, 5, &opts)); // strictly better
         assert!(dominates(1.0, 1, 2.0, 10, &opts)); // BasicILS ignores run counts
@@ -1639,6 +1995,12 @@ mod tests {
             tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+        instance_shuffle: true,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 1,
+        future_telling_tolerance: 0.0,
         };
         assert!(dominates(1.0, 10, 2.0, 5, &opts)); // strictly better score, more runs
         assert!(!dominates(1.0, 3, 2.0, 5, &opts)); // better score but fewer runs
@@ -1815,6 +2177,12 @@ mod tests {
             tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+        instance_shuffle: true,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 1,
+        future_telling_tolerance: 0.0,
         };
         assert!((compute_score(&[1.0, 2.0, 3.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
     }
@@ -1839,6 +2207,12 @@ mod tests {
             tuner_timeout: 60.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Median,
+        instance_shuffle: true,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 1,
+        future_telling_tolerance: 0.0,
         };
         assert!((compute_score(&[3.0, 1.0, 2.0], &[0.0; 3], &opts) - 2.0).abs() < 1e-9);
     }
@@ -1969,6 +2343,12 @@ mod tests {
             tuner_timeout: 2.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+            instance_shuffle: true,
+            instance_shuffle_seed: 0,
+            future_telling: false,
+            future_telling_checkpoint: 1.0,
+            future_telling_cores: 1,
+            future_telling_tolerance: 0.0,
             debug: crate::DebugOptions::default(),
         };
         let config = cfg(&[("alpha", "1")]);
@@ -1982,6 +2362,8 @@ mod tests {
             &options,
             &simple_space(),
             None,
+            None,
+            2.0,
             started + Duration::from_secs(2),
         )
         .unwrap();
@@ -2024,6 +2406,12 @@ mod tests {
             tuner_timeout: 0.1,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+            instance_shuffle: true,
+            instance_shuffle_seed: 0,
+            future_telling: false,
+            future_telling_checkpoint: 1.0,
+            future_telling_cores: 1,
+            future_telling_tolerance: 0.0,
             debug: crate::DebugOptions::default(),
         };
 
@@ -2035,6 +2423,8 @@ mod tests {
             &options,
             &space,
             None,
+            None,
+            2.0,
             Instant::now() + Duration::from_millis(50),
         )
         .unwrap();
@@ -2086,6 +2476,12 @@ mod tests {
             tuner_timeout: 2.0,
             run_obj: RunObjective::Runtime,
             overall_obj: OverallObjective::Mean,
+            instance_shuffle: true,
+            instance_shuffle_seed: 0,
+            future_telling: false,
+            future_telling_checkpoint: 1.0,
+            future_telling_cores: 1,
+            future_telling_tolerance: 0.0,
             debug: crate::DebugOptions::default(),
         };
 
@@ -2097,6 +2493,8 @@ mod tests {
             &options,
             &space,
             None,
+            None,
+            2.0,
             Instant::now() + Duration::from_secs(2),
         )
         .unwrap();
@@ -2105,5 +2503,555 @@ mod tests {
         assert_eq!(evaluation.runhash_n, 2);
         assert_eq!(evaluation.runhash, 0, "XOR of two identical runhashes must cancel to zero");
         assert_eq!(evaluation.runhash_suffix(2), " runhash=0000000000000000 (n=2/2)");
+    }
+
+    // -----------------------------------------------------------------
+    // Future-telling: CheckpointTracker (FUTURETELL.md)
+    // -----------------------------------------------------------------
+
+    /// Feeds `(position, runtime)` pairs into a tracker in the given
+    /// arrival order and returns `(solved_count, ready)`.
+    fn run_tracker(
+        n_virtual: usize,
+        checkpoint_time: f64,
+        cutoff_time: f64,
+        n_total: usize,
+        arrivals: &[(usize, f64)],
+    ) -> (usize, bool) {
+        let mut tracker = CheckpointTracker::new(n_virtual, checkpoint_time, cutoff_time, n_total);
+        for &(position, runtime) in arrivals {
+            tracker.record(position, runtime);
+        }
+        (tracker.solved_count, tracker.ready)
+    }
+
+    #[test]
+    fn checkpoint_tracker_arrival_order_is_irrelevant_to_the_final_count() {
+        // 8 instances, 2 virtual workers, checkpoint at t=1.0, cutoff=1.0.
+        // Fixed order: [0.2, 0.9, 0.3, 0.05, 0.7, 0.4, 0.6, 0.1]
+        let fixed: Vec<(usize, f64)> =
+            vec![0.2, 0.9, 0.3, 0.05, 0.7, 0.4, 0.6, 0.1].into_iter().enumerate().collect();
+
+        let (in_order_count, in_order_ready) = run_tracker(2, 1.0, 1.0, 8, &fixed);
+
+        // Same data, scrambled delivery order -- the tracker must buffer by
+        // fixed position and only advance the simulation through a
+        // contiguous prefix, so the result must not depend on this.
+        let mut scrambled = fixed.clone();
+        {
+            use rand::SeedableRng;
+            use rand::seq::SliceRandom;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+            scrambled.shuffle(&mut rng);
+        }
+        assert_ne!(scrambled, fixed, "the scramble must actually reorder something");
+        let (scrambled_count, scrambled_ready) = run_tracker(2, 1.0, 1.0, 8, &scrambled);
+
+        assert_eq!(in_order_count, scrambled_count);
+        assert_eq!(in_order_ready, scrambled_ready);
+    }
+
+    #[test]
+    fn checkpoint_tracker_runtime_equal_to_cutoff_is_not_solved() {
+        // Two virtual workers so each instance gets its own idle one --
+        // otherwise the second instance would queue behind the first and
+        // its *virtual* finish time would land past the checkpoint even
+        // though its own runtime is fast, muddying what this test checks.
+        let mut tracker = CheckpointTracker::new(2, 5.0, 5.0, 2);
+        // runtime == cutoff exactly: must count as "done by the horizon"
+        // (finish <= checkpoint) but NOT as solved (runtime < cutoff is
+        // strict).
+        tracker.record(0, 5.0);
+        assert_eq!(tracker.solved_count, 0);
+        // A second, genuinely fast instance on its own idle worker, to
+        // confirm the strict `<` is the only thing suppressing the count
+        // above, not something broader.
+        tracker.record(1, 1.0);
+        assert_eq!(tracker.solved_count, 1);
+    }
+
+    #[test]
+    fn checkpoint_tracker_finishing_before_maturing_never_reports_ready() {
+        // n_total <= n_virtual: every instance gets its own idle worker, so
+        // the "all workers busy > checkpoint_time" condition can only ever
+        // be reached via full completion, per D3 -- `ready` must stay false
+        // and `score()` must stay `None` even though every result is known.
+        let mut tracker = CheckpointTracker::new(8, 1.0, 10.0, 3);
+        tracker.record(0, 0.1);
+        tracker.record(1, 0.2);
+        tracker.record(2, 0.3);
+        assert!(!tracker.ready);
+        assert_eq!(tracker.score(), None);
+    }
+
+    #[test]
+    fn checkpoint_tracker_rejected_design_would_have_inverted_the_comparison() {
+        // Recorded per FUTURETELL.md D6: the design this replaced (mean of
+        // completed-subset runtimes) is volume-*insensitive*, so a config
+        // with a handful of great completions could look better than one
+        // with hundreds of decent ones. Confirm the actual (count-based)
+        // design does not reproduce that inversion.
+        let few_great: Vec<(usize, f64)> = vec![0.01, 0.01, 0.01].into_iter().enumerate().collect();
+        let many_decent: Vec<(usize, f64)> =
+            (0..60).map(|i| (i, 0.4)).collect::<Vec<(usize, f64)>>();
+
+        // Rejected design: mean of completed-subset runtimes.
+        let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+        let few_great_mean = mean(&few_great.iter().map(|&(_, rt)| rt).collect::<Vec<_>>());
+        let many_decent_mean = mean(&many_decent.iter().map(|&(_, rt)| rt).collect::<Vec<_>>());
+        assert!(
+            few_great_mean < many_decent_mean,
+            "the rejected mean-based design would call the 3-instance config better"
+        );
+
+        // Actual design: n_total - solved_count, over a shared n_total so
+        // the counts are comparable, with plenty of virtual workers so both
+        // mature well before their (different-sized) inputs run out.
+        let n_total = 100;
+        let (few_solved, _) = run_tracker(64, 1.0, 1.0, n_total, &few_great);
+        let (many_solved, _) = run_tracker(64, 1.0, 1.0, n_total, &many_decent);
+        assert!(
+            (n_total - many_solved) < (n_total - few_solved),
+            "the 60-good-completion config must score better (lower) than the 3-completion one"
+        );
+    }
+
+    /// Real per-instance runtimes (fixed benchmark order), for three named
+    /// E-prover strategies from a completed, already-analyzed evaluation
+    /// batch -- one line per instance, `n_total = 1999` each. Used only to
+    /// replay-validate `CheckpointTracker` against already-published
+    /// reference counts; see FUTURETELL.md's validation plan.
+    const REPLAY_AUTO: &str = include_str!("../tests/fixtures/checkpoint-replay/auto.txt");
+    const REPLAY_E_PRE_CASC_10: &str =
+        include_str!("../tests/fixtures/checkpoint-replay/e-pre_casc_10.txt");
+    const REPLAY_RAM_2B65A827: &str =
+        include_str!("../tests/fixtures/checkpoint-replay/ram-2b65a8274485a1ea.txt");
+
+    fn parse_replay_fixture(text: &str) -> Vec<f64> {
+        text.lines().filter(|l| !l.is_empty()).map(|l| l.parse().unwrap()).collect()
+    }
+
+    /// Replays a strategy's real runtimes at the same settings the diary's
+    /// own reference numbers were measured under (n_virtual=64,
+    /// checkpoint_time=5.0, cutoff_time=5.0), twice -- once in fixed order,
+    /// once in a scrambled delivery order -- and returns the (equal, by the
+    /// arrival-order-invariance property) solved count.
+    fn replay_solved_count(runtimes: &[f64]) -> usize {
+        let n_total = runtimes.len();
+        let fixed: Vec<(usize, f64)> = runtimes.iter().copied().enumerate().collect();
+
+        let (in_order, in_order_ready) = run_tracker(64, 5.0, 5.0, n_total, &fixed);
+        assert!(in_order_ready, "expected the checkpoint to mature well before full completion");
+
+        let mut scrambled = fixed.clone();
+        // Fixed, deterministic scramble -- not a real RNG, just enough to
+        // decorrelate delivery order from fixed position for this check.
+        scrambled.sort_by_key(|&(pos, _)| (pos.wrapping_mul(2654435761)) % n_total);
+        let (scrambled_count, scrambled_ready) = run_tracker(64, 5.0, 5.0, n_total, &scrambled);
+        assert_eq!(in_order, scrambled_count, "solved count must not depend on arrival order");
+        assert_eq!(in_order_ready, scrambled_ready);
+
+        in_order
+    }
+
+    #[test]
+    fn checkpoint_tracker_replay_e_pre_casc_10_matches_the_diary_exactly() {
+        let runtimes = parse_replay_fixture(REPLAY_E_PRE_CASC_10);
+        assert_eq!(runtimes.len(), 1999);
+        assert_eq!(replay_solved_count(&runtimes), 38);
+    }
+
+    #[test]
+    fn checkpoint_tracker_replay_ram_2b65a827_matches_the_diary_exactly() {
+        let runtimes = parse_replay_fixture(REPLAY_RAM_2B65A827);
+        assert_eq!(runtimes.len(), 1999);
+        assert_eq!(replay_solved_count(&runtimes), 47);
+    }
+
+    #[test]
+    fn checkpoint_tracker_replay_auto_reveals_a_real_par1_violation_upstream() {
+        // Diary's own reference count for `auto` at these settings is 55,
+        // from the *true* SZS-status-based solved determination. This
+        // fixture's `runtime < cutoff` proxy (FUTURETELL.md D6) gives 58 --
+        // a *measured*, not hypothetical, discrepancy: 3 of the 1999
+        // instances have SZS status `GaveUp` (not a real solve) but report
+        // a fast real runtime instead of the cutoff, which is a PAR1
+        // violation in the tool that produced this data (solverpy's own
+        // eprover integration, not a RamParILS wrapper -- RamParILS's own
+        // protocol requires PAR1 unconditionally and documents exactly this
+        // failure mode, `docs/reference/protocol.md`). This is the intended
+        // outcome of this test: it documents the gap `runtime < cutoff`
+        // depends on wrapper compliance to close, with real numbers, not a
+        // failure of the simulation port -- see FUTURETELL.md's Risks
+        // section and the "Rejected" validation item for `compute_score`.
+        let runtimes = parse_replay_fixture(REPLAY_AUTO);
+        assert_eq!(runtimes.len(), 1999);
+        assert_eq!(replay_solved_count(&runtimes), 58, "see this test's doc comment");
+    }
+
+    // -----------------------------------------------------------------
+    // Future-telling: instance_shuffle (FUTURETELL.md D5, validation item 4)
+    // -----------------------------------------------------------------
+
+    fn instances_0_to_9() -> Vec<(i64, String)> {
+        (0..10).map(|i| (i, i.to_string())).collect()
+    }
+
+    #[test]
+    fn shuffle_instances_is_deterministic_given_a_fixed_seed() {
+        let instances = instances_0_to_9();
+        let a = shuffle_instances(&instances, 42);
+        let b = shuffle_instances(&instances, 42);
+        assert_eq!(a, b, "the same seed must produce the same order every time");
+    }
+
+    #[test]
+    fn shuffle_instances_differs_across_seeds() {
+        let instances = instances_0_to_9();
+        let a = shuffle_instances(&instances, 1);
+        let b = shuffle_instances(&instances, 2);
+        assert_ne!(a, b, "different seeds should (overwhelmingly likely) give different orders");
+    }
+
+    #[test]
+    fn shuffle_instances_is_a_pure_reordering() {
+        // A permutation, never a resample: the shuffled vector must contain
+        // exactly the same (id, path) pairs, just reordered.
+        let instances = instances_0_to_9();
+        let mut shuffled = shuffle_instances(&instances, 7);
+        assert_ne!(shuffled, instances, "the scramble must actually reorder something");
+        shuffled.sort();
+        let mut original = instances.clone();
+        original.sort();
+        assert_eq!(shuffled, original);
+    }
+
+    /// Instance-ID assignment (`cache.load_instances`) must be independent of
+    /// whether/how shuffling is configured (FUTURETELL.md D5's ordering
+    /// requirement): the same path always resolves to the same `instance_id`,
+    /// whether or not `instance_shuffle` is set, since the shuffle only ever
+    /// runs on an already-ID-assigned `Vec`.
+    #[test]
+    fn instance_shuffle_never_changes_which_id_a_path_resolves_to() {
+        let cache = Cache::open(":memory:", false).unwrap();
+        let paths: Vec<String> = (0..20).map(|i| format!("instance{i}.cnf")).collect();
+        let id_map = cache.load_instances(&paths).unwrap();
+        let instances: Vec<(i64, String)> = paths.iter().map(|p| (id_map[p], p.clone())).collect();
+
+        let shuffled = shuffle_instances(&instances, 99);
+
+        // Same multiset of (id, path) pairs...
+        let mut a = instances.clone();
+        let mut b = shuffled.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+
+        // ...and every path in the shuffled copy still carries the exact id
+        // `cache.load_instances` assigned it, not some id implied by its new
+        // position.
+        for (id, path) in &shuffled {
+            assert_eq!(*id, id_map[path], "shuffle must never change {path}'s instance_id");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Future-telling: the D3 gate (FUTURETELL.md, validation item 5)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn future_telling_active_requires_strictly_more_runs_than_virtual_cores() {
+        let mut opts = focused_options();
+        opts.future_telling = true;
+        opts.future_telling_cores = 10;
+
+        assert!(!future_telling_active(&opts, 10), "equal to future_telling_cores must not open the gate");
+        assert!(!future_telling_active(&opts, 5));
+        assert!(future_telling_active(&opts, 11));
+
+        opts.future_telling = false;
+        assert!(!future_telling_active(&opts, 1000), "the master switch must gate regardless of n_instances");
+    }
+
+    // -----------------------------------------------------------------
+    // Future-telling: end-to-end BLS integration (FUTURETELL.md, validation
+    // item 5)
+    // -----------------------------------------------------------------
+
+    /// Builds the shared fixture for the checkpoint-rejection integration
+    /// tests below: a `mode {start, bad, good}` parameter space (so
+    /// `start`'s neighbourhood is exactly `[bad, good]`), a wrapper whose
+    /// real per-instance sleep is a deterministic, strictly increasing
+    /// function of the instance's own fixed position (`0.01 * idx` seconds,
+    /// via a zero-padded instance name so no floating-point shell arithmetic
+    /// is needed) -- so with a *single* real worker, real arrival order for
+    /// one config always matches fixed position order exactly, no OS
+    /// scheduling race involved. `-mode good` solves fast; anything else
+    /// (`bad`, and `start` if it's ever dispatched as a real neighbour) times
+    /// out at the cutoff.
+    ///
+    /// Returns `(scheduler, cache, space, instances, log)`, where `log` is
+    /// the path every real solver invocation appends `"<mode> <idx>\n"` to.
+    fn future_telling_fixture(
+        n_instances: usize,
+        cutoff_time: f64,
+        n_workers: usize,
+        domain: &[&str],
+    ) -> (Scheduler, Cache, ParamSpace, Vec<(i64, String)>, std::path::PathBuf, tempfile::TempDir) {
+        use std::io::Write;
+        assert!(n_instances <= 100, "instance names are 2-digit zero-padded");
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("invocations.log");
+        let wrapper = dir.path().join("wrapper.sh");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\n\
+                 idx=\"$1\"; cutoff=\"$2\"; shift 2\n\
+                 mode=\"bad\"\n\
+                 while [ $# -gt 0 ]; do case \"$1\" in -mode) mode=\"$2\"; shift 2;; *) shift;; esac; done\n\
+                 echo \"$mode $idx\" >> '{}'\n\
+                 sleep \"0.$idx\"\n\
+                 if [ \"$mode\" = good ]; then\n\
+                 echo \"#%# RamParIls #%# sat, 0.02, 0.0\"\n\
+                 else\n\
+                 echo \"#%# RamParIls #%# Timeout, $cutoff, 0.0\"\n\
+                 fi\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+        }
+        std::fs::set_permissions(&wrapper, permissions).unwrap();
+
+        let mut params_file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        writeln!(params_file, "mode {{{}}} [{}]", domain.join(", "), domain[0]).unwrap();
+        let space = ParamSpace::from_file(params_file.path().to_str().unwrap()).unwrap();
+
+        let cache = Cache::open(":memory:", false).unwrap();
+        // 2-digit zero-padded so `sleep "0.$idx"` scales consistently
+        // (`0.$idx` is idx hundredths of a second either way, "00".."19" ->
+        // 0..190ms) instead of "0."+"5"="0.05" vs "0."+"19"="0.19" mixing
+        // scales for single- vs double-digit indices.
+        let paths: Vec<String> = (0..n_instances).map(|i| format!("{i:02}")).collect();
+        let ids = cache.load_instances(&paths).unwrap();
+        let instances: Vec<(i64, String)> = paths.iter().map(|p| (ids[p], p.clone())).collect();
+
+        let scheduler = Scheduler::new(n_workers, wrapper.display().to_string(), cutoff_time, crate::DebugOptions::default());
+
+        (scheduler, cache, space, instances, log, dir)
+    }
+
+    fn count_invocations(log: &std::path::Path, mode: &str) -> usize {
+        std::fs::read_to_string(log)
+            .map(|s| s.lines().filter(|l| l.starts_with(&format!("{mode} "))).count())
+            .unwrap_or(0)
+    }
+
+    /// A single, obviously-bad config's own evaluation stops early
+    /// (`complete: false`, fewer than `n_instances` real results counted)
+    /// once its checkpoint matures against a strict reference -- the same
+    /// "stop watching it, count it as done, move on" outcome adaptive
+    /// capping already produces (D8). Uses a single real worker so arrival
+    /// order is deterministic (no other config competing for threads), which
+    /// is what makes the exact invocation count at rejection reproducible
+    /// rather than a race against OS thread scheduling.
+    #[test]
+    fn future_telling_stops_evaluating_a_bad_config_before_full_completion() {
+        let n_instances = 20;
+        let cutoff_time = 1.0;
+        let (scheduler, mut cache, space, instances, _log, _dir) =
+            future_telling_fixture(n_instances, cutoff_time, 1, &["start", "bad", "good"]);
+
+        let mut options = focused_options();
+        options.future_telling = true;
+        // With n_virtual=4 and `bad`'s runtime == cutoff_time == 1.0 always,
+        // all 4 virtual workers cross this horizon right after the 4th
+        // (fixed-order) position is simulated.
+        options.future_telling_checkpoint = 0.15;
+        options.future_telling_cores = 4;
+        options.future_telling_tolerance = 0.0;
+
+        let bad = cfg(&[("mode", "bad")]);
+        let evaluation = evaluate_config_outcome(
+            &bad,
+            &instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            None,
+            Some(5.0), // incumbent checkpoint: "5 of 20 unsolved so far"
+            cutoff_time,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert!(!evaluation.complete, "a checkpoint-rejected config must not be reported as a real measurement");
+        assert!(
+            evaluation.n_done < n_instances,
+            "expected the evaluation to stop well before {n_instances} real results, got {}",
+            evaluation.n_done
+        );
+    }
+
+    /// The mirror case: an obviously-good config, evaluated under the exact
+    /// same future-telling settings, is never checkpoint-rejected -- its own
+    /// tracker structurally never matures at this horizon (D3/D7's "config
+    /// finished before maturing" case: `runtime=0.02` keeps every virtual
+    /// worker's cumulative busy time under `checkpoint_time=0.15` for all 20
+    /// instances), so it runs to full, real completion regardless of how
+    /// strict the reference is.
+    #[test]
+    fn future_telling_never_rejects_a_config_whose_checkpoint_never_matures() {
+        let n_instances = 20;
+        let cutoff_time = 1.0;
+        let (scheduler, mut cache, space, instances, _log, _dir) =
+            future_telling_fixture(n_instances, cutoff_time, 1, &["start", "bad", "good"]);
+
+        let mut options = focused_options();
+        options.future_telling = true;
+        options.future_telling_checkpoint = 0.15;
+        options.future_telling_cores = 4;
+        // Deliberately impossible to satisfy, to prove the absence of
+        // rejection is structural (the tracker never matures), not merely a
+        // lenient tolerance happening not to fire.
+        options.future_telling_tolerance = 0.0;
+
+        let good = cfg(&[("mode", "good")]);
+        let evaluation = evaluate_config_outcome(
+            &good,
+            &instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            None,
+            Some(0.0),
+            cutoff_time,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert!(evaluation.complete);
+        assert_eq!(evaluation.n_done, n_instances);
+        assert!((evaluation.score - 0.02).abs() < 1e-6);
+    }
+
+    /// Full-pipeline wiring check, not a proof that checkpoint rejection
+    /// alone decided the outcome: `bad`'s real, completed score (1.0) can
+    /// never dominate `start_eval`'s 0.5 either way, checkpoint or not, so
+    /// this doesn't isolate the feature's causal contribution the way the
+    /// two single-config tests above do. What it does confirm is that the
+    /// per-round tracker/position bookkeeping `basic_local_search` now
+    /// builds when `future_telling` is on doesn't corrupt the ordinary
+    /// accept path: with both a checkpoint-eligible-but-never-winning `bad`
+    /// neighbour and a never-matures `good` one in the same round, the
+    /// local optimum returned is still the good one, with a real,
+    /// full-completion score.
+    #[test]
+    fn future_telling_never_lets_a_rejected_neighbour_win_a_round() {
+        let n_instances = 20;
+        let cutoff_time = 1.0;
+        let (scheduler, mut cache, space, instances, _log, _dir) =
+            future_telling_fixture(n_instances, cutoff_time, 4 * n_instances, &["start", "bad", "good"]);
+        let mut rng = rand::thread_rng();
+
+        let mut options = focused_options();
+        options.approach = Approach::Basic;
+        options.n_workers = 4 * n_instances;
+        options.pruning = true;
+        options.bound_multiplier = 10.0;
+        options.future_telling = true;
+        options.future_telling_checkpoint = 0.15;
+        options.future_telling_cores = 4;
+        options.future_telling_tolerance = 0.0;
+
+        let start = cfg(&[("mode", "start")]);
+        let start_eval = ConfigEvaluation::complete(0.5, n_instances);
+        let incumbent_score = 1.0;
+        let incumbent_checkpoint = Some(5.0);
+
+        let (current, current_eval, steps) = basic_local_search(
+            start,
+            start_eval,
+            &instances,
+            n_instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            incumbent_score,
+            incumbent_checkpoint,
+            cutoff_time,
+            &mut rng,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert!(steps >= 1, "the obviously better neighbour must have been accepted at least once");
+        assert_eq!(current.get("mode").map(String::as_str), Some("good"));
+        assert!((current_eval.score - 0.02).abs() < 1e-6);
+    }
+
+    /// D3's gate, exercised structurally rather than by "no rejection
+    /// happened" alone (which could pass for the wrong reason, e.g. a
+    /// tolerance that merely never triggered): with `n_runs <=
+    /// future_telling_cores`, the mechanism cannot mature even against a
+    /// deliberately strict reference (`incumbent_checkpoint: Some(0.0)`), so
+    /// an obviously bad neighbour must still run to full real completion.
+    #[test]
+    fn future_telling_gate_blocks_rejection_when_n_runs_does_not_exceed_virtual_cores() {
+        let n_instances = 5;
+        let cutoff_time = 1.0;
+        // No `good` value here at all -- `start`'s only neighbour is `bad`,
+        // so there is nothing else in the round that could race it to
+        // completion and confuse the invocation count this test checks.
+        let (scheduler, mut cache, space, instances, log, _dir) =
+            future_telling_fixture(n_instances, cutoff_time, 4 * n_instances, &["start", "bad"]);
+        let mut rng = rand::thread_rng();
+
+        let mut options = focused_options();
+        options.approach = Approach::Basic;
+        options.n_workers = 4 * n_instances;
+        options.pruning = false;
+        options.future_telling = true;
+        options.future_telling_checkpoint = 0.01; // as sharp a horizon as possible
+        options.future_telling_cores = 10; // >= n_instances: D3 gate must block
+        options.future_telling_tolerance = 0.0;
+
+        let start = cfg(&[("mode", "start")]);
+        let start_eval = ConfigEvaluation::complete(f64::INFINITY, n_instances);
+        // Deliberately impossible to satisfy, to prove absence of rejection
+        // is structural (the gate), not just this threshold happening not to
+        // fire.
+        let incumbent_checkpoint = Some(0.0);
+
+        basic_local_search(
+            start,
+            start_eval,
+            &instances,
+            n_instances,
+            &scheduler,
+            &mut cache,
+            &options,
+            &space,
+            f64::INFINITY,
+            incumbent_checkpoint,
+            cutoff_time,
+            &mut rng,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+
+        let bad_invocations = count_invocations(&log, "bad");
+        assert_eq!(
+            bad_invocations, n_instances,
+            "below the D3 gate, future-telling must never build a tracker, so `bad` must run to full completion"
+        );
     }
 }

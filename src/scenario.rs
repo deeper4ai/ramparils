@@ -36,6 +36,12 @@
 //! lambda_t: 0.5
 //! cores: 0                    # 0 = all available
 //! num_run: 0
+//! instance_shuffle: true       # shuffle instances once before dispatch (see docs)
+//! instance_shuffle_seed: 0     # deterministic given a fixed seed
+//! future_telling: false        # checkpoint-based early rejection of BLS neighbours
+//! future_telling_checkpoint: 1.0  # horizon, as a multiple of cutoff_time
+//! future_telling_cores: ~      # virtual worker count; null = same as `cores`
+//! future_telling_tolerance: 0.0   # relative rejection margin
 //! cache_db: ":memory:"          # use a file path to persist across runs
 //! debug: false
 //! debug_wrapper: false
@@ -97,6 +103,12 @@ fn default_run_obj() -> RunObjective {
 }
 fn default_overall_obj() -> OverallObjective {
     OverallObjective::Mean
+}
+fn default_true() -> bool {
+    true
+}
+fn default_future_telling_checkpoint() -> f64 {
+    1.0
 }
 
 /// Full scenario description — the single source of truth for all tuning knobs.
@@ -233,6 +245,40 @@ pub struct Scenario {
     #[serde(default)]
     pub num_run: u64,
 
+    /// Shuffle instances once, deterministically, before dispatch. Default on
+    /// — decorrelates a fixed evaluation-order prefix (fidelity growth,
+    /// future-telling's checkpoint simulation) from any difficulty ordering
+    /// already present in the instance file. See FUTURETELL.md D5.
+    #[serde(default = "default_true")]
+    pub instance_shuffle: bool,
+
+    /// Seed for `instance_shuffle`.
+    #[serde(default)]
+    pub instance_shuffle_seed: u64,
+
+    /// Opt-in: reject a BLS neighbour early once a simulated N-worker replay
+    /// of its real per-instance results, checkpointed at
+    /// `future_telling_checkpoint * cutoff_time`, is significantly worse than
+    /// the incumbent's own checkpoint. A heuristic prune, off by default —
+    /// see FUTURETELL.md.
+    #[serde(default)]
+    pub future_telling: bool,
+
+    /// Checkpoint horizon, as a multiple of `cutoff_time`.
+    #[serde(default = "default_future_telling_checkpoint")]
+    pub future_telling_checkpoint: f64,
+
+    /// Virtual worker count for the checkpoint simulation; `None` resolves to
+    /// whatever `cores:` resolved to for this run.
+    #[serde(default)]
+    pub future_telling_cores: Option<usize>,
+
+    /// Relative margin, same shape as `acceptance_tolerance`, within which a
+    /// challenger's checkpoint is still tolerated despite being worse than
+    /// the incumbent's.
+    #[serde(default)]
+    pub future_telling_tolerance: f64,
+
     /// Path to the SQLite result cache.
     #[serde(default = "default_cache_db")]
     pub cache_db: String,
@@ -290,12 +336,31 @@ impl Scenario {
             "scenario: acceptance_tolerance must not be negative, got {}",
             self.acceptance_tolerance
         );
+        anyhow::ensure!(
+            self.future_telling_checkpoint > 0.0,
+            "scenario: future_telling_checkpoint must be positive, got {}",
+            self.future_telling_checkpoint
+        );
+        anyhow::ensure!(
+            self.future_telling_tolerance >= 0.0,
+            "scenario: future_telling_tolerance must not be negative, got {}",
+            self.future_telling_tolerance
+        );
+
+        if future_telling_needs_shuffle_warning(self.future_telling, self.instance_shuffle) {
+            eprintln!(
+                "warning: future_telling: true with instance_shuffle: false — the checkpoint horizon may \
+                 not mature until nearly the whole evaluation is already done, unless the instance file is \
+                 already difficulty-decorrelated (see FUTURETELL.md D5)"
+            );
+        }
 
         let restart_strength = if self.restart_strength == 0 {
             2 * self.perturbation_strength
         } else {
             self.restart_strength
         };
+        let future_telling_cores = self.future_telling_cores.unwrap_or(n_workers);
 
         Ok(IlsOptions {
             approach,
@@ -314,6 +379,12 @@ impl Scenario {
             tuner_timeout: self.tuner_timeout,
             run_obj: self.run_obj.clone(),
             overall_obj: self.overall_obj.clone(),
+            instance_shuffle: self.instance_shuffle,
+            instance_shuffle_seed: self.instance_shuffle_seed,
+            future_telling: self.future_telling,
+            future_telling_checkpoint: self.future_telling_checkpoint,
+            future_telling_cores,
+            future_telling_tolerance: self.future_telling_tolerance,
             debug,
         })
     }
@@ -368,6 +439,15 @@ impl Scenario {
         space.validate_config(&config)?;
         Ok(config)
     }
+}
+
+/// Whether the `future_telling: true` + `instance_shuffle: false` combination
+/// deserves a startup warning (FUTURETELL.md D5) — not always wrong (a
+/// pre-randomized instance file is a legitimate reason for it), but usually a
+/// mistake, and there is no way to tell the two apart from here. A plain
+/// function so the decision itself is unit-testable without capturing stderr.
+fn future_telling_needs_shuffle_warning(future_telling: bool, instance_shuffle: bool) -> bool {
+    future_telling && !instance_shuffle
 }
 
 fn deserialize_optional_config<'de, D>(deserializer: D) -> std::result::Result<Option<Config>, D::Error>
@@ -502,5 +582,71 @@ mod tests {
         let config = scenario("").resolve_initial_config(&space()).unwrap();
         assert_eq!(config["mode"], "fast");
         assert_eq!(config["limit"], "1");
+    }
+
+    #[test]
+    fn instance_shuffle_defaults_to_true_with_seed_zero() {
+        let s = scenario("");
+        assert!(s.instance_shuffle);
+        assert_eq!(s.instance_shuffle_seed, 0);
+    }
+
+    #[test]
+    fn future_telling_defaults_off_with_cores_unresolved() {
+        let s = scenario("");
+        assert!(!s.future_telling);
+        assert_eq!(s.future_telling_checkpoint, 1.0);
+        assert_eq!(s.future_telling_cores, None);
+        assert_eq!(s.future_telling_tolerance, 0.0);
+    }
+
+    /// `future_telling_cores: null` (unset) must resolve to whatever `cores:`
+    /// resolved to for this run, at the same point `ils_options` is built —
+    /// no independent default to pick.
+    #[test]
+    fn future_telling_cores_defaults_to_n_workers() {
+        let s = scenario("future_telling: true\n");
+        let options = s.ils_options(7, crate::DebugOptions::default()).unwrap();
+        assert_eq!(options.future_telling_cores, 7);
+    }
+
+    #[test]
+    fn future_telling_cores_override_is_kept() {
+        let s = scenario("future_telling: true\nfuture_telling_cores: 256\n");
+        let options = s.ils_options(7, crate::DebugOptions::default()).unwrap();
+        assert_eq!(options.future_telling_cores, 256);
+    }
+
+    #[test]
+    fn future_telling_checkpoint_must_be_positive() {
+        let s = scenario("future_telling_checkpoint: 0.0\n");
+        assert!(
+            s.ils_options(1, crate::DebugOptions::default())
+                .unwrap_err()
+                .to_string()
+                .contains("future_telling_checkpoint")
+        );
+    }
+
+    #[test]
+    fn future_telling_tolerance_must_not_be_negative() {
+        let s = scenario("future_telling_tolerance: -0.1\n");
+        assert!(
+            s.ils_options(1, crate::DebugOptions::default())
+                .unwrap_err()
+                .to_string()
+                .contains("future_telling_tolerance")
+        );
+    }
+
+    /// The startup warning (FUTURETELL.md D5) fires on exactly the one
+    /// combination that is usually — not always — a mistake, and stays
+    /// silent on the other three.
+    #[test]
+    fn shuffle_warning_fires_only_for_future_telling_without_shuffle() {
+        assert!(future_telling_needs_shuffle_warning(true, false));
+        assert!(!future_telling_needs_shuffle_warning(true, true));
+        assert!(!future_telling_needs_shuffle_warning(false, true));
+        assert!(!future_telling_needs_shuffle_warning(false, false));
     }
 }

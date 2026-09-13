@@ -11,8 +11,33 @@ they describe what changed rather than what was announced at the time.
 
 ### Added
 
+- **`future_telling`: opt-in checkpoint-based early rejection of BLS
+  neighbours**, alongside the existing (exact) adaptive-capping prune. While a
+  neighbour's real per-instance results stream in, a simulated N-worker replay
+  is checkpointed at `future_telling_checkpoint × cutoff_time`
+  (`future_telling_cores` virtual workers, decoupled from real `cores:`), and
+  the neighbour is rejected outright once that checkpoint is significantly
+  worse than the incumbent's own (`future_telling_tolerance`). Unlike capping
+  this is a heuristic, not a proof — it can reject a configuration that would
+  have gone on to win — so it defaults to off; a rejection is counted
+  separately in the run summary's new `future_telling_rejected`. See
+  [docs/reference/algorithm.md#future-telling](docs/reference/algorithm.md#future-telling).
+- **`instance_shuffle` (default `true`) shuffles the instance list once,
+  deterministically, before dispatch** (`instance_shuffle_seed` for
+  reproducibility) — decorrelates a fixed evaluation-order prefix
+  (FocusedILS's fidelity growth, `future_telling`'s checkpoint simulation)
+  from any difficulty ordering already present in the instance file. **This
+  changes real evaluation order for every scenario that doesn't explicitly
+  set `instance_shuffle: false`**, including ones that never touch
+  `future_telling` — a deliberate default-behavior change, not only new
+  opt-in surface area, though a deterministic one (a given scenario + seed
+  still reproduces identically across reruns). Never affects which
+  `instance_id` a path is assigned in the cache. `future_telling: true` with
+  `instance_shuffle: false` prints a startup warning, not an error, since a
+  pre-randomized instance file is a legitimate reason for the combination.
 - An end-of-run `ils: summary` line reporting
-  `rounds / searched / gated / incumbents / evals / capped`. A *gated* round is
+  `rounds / searched / gated / incumbents / evals / capped /
+  future_telling_rejected`. A *gated* round is
   one whose starting configuration was capped and which then accepted no move,
   so the bound hid its whole neighbourhood and it produced no search. Comparing
   two approaches on final score alone can hide that one of them was pruned out

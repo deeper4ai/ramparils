@@ -127,6 +127,12 @@ fn run_ils_eprover() {
         tuner_timeout: 15.0,
         run_obj: RunObjective::Quality,
         overall_obj: OverallObjective::Mean,
+        instance_shuffle: true,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 1,
+        future_telling_tolerance: 0.0,
         debug: ramparils::DebugOptions::default(),
     };
 

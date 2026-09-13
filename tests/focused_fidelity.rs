@@ -67,6 +67,17 @@ fn fidelity_increases_remeasure_both_retained_states() {
         tuner_timeout: 8.0,
         run_obj: RunObjective::Runtime,
         overall_obj: OverallObjective::Mean,
+        // This test's fake solver derives runtime from the instance name's
+        // own numeric suffix, and `expected_prefix_mean` assumes
+        // `instances[..n]` is exactly `inst01..instNN` in that literal
+        // order — the default `instance_shuffle: true` would break that
+        // assumption, so it's turned off explicitly here.
+        instance_shuffle: false,
+        instance_shuffle_seed: 0,
+        future_telling: false,
+        future_telling_checkpoint: 1.0,
+        future_telling_cores: 4,
+        future_telling_tolerance: 0.0,
         debug: ramparils::DebugOptions {
             main: true,
             wrapper: false,

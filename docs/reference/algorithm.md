@@ -173,13 +173,44 @@ Prefer `pruning: false` there.
 A run ends with an account of what the search actually got to do:
 
 ```text
-ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489
+ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489 future_telling_rejected=0
 ```
 
 A *gated* round is one whose starting configuration was capped and which then accepted no move: the
 bound hid every neighbour, so the round produced no search. Worth reporting whenever two approaches
 are compared — the bound is relative to the incumbent, so it prunes a small perturbation and a fresh
 random draw at very different rates, and a final-score comparison alone hides that.
+
+---
+
+<a id="future-telling"></a>
+
+## 🔮 Future-telling
+
+An opt-in (`future_telling: true`) second, *heuristic* prune, alongside capping: while a
+neighbour's real per-instance results stream in, a simulated N-worker replay of what has arrived so
+far checkpoints its progress at `future_telling_checkpoint × cutoff_time`, and the neighbour is
+rejected outright once that checkpoint is significantly worse than the incumbent's own.
+
+| | Adaptive capping | Future-telling |
+|---|---|---|
+| Nature | mathematical proof (costs are non-negative and non-decreasing) | statistical heuristic, measured on one dataset |
+| Can it be wrong? | No — a capped score is a valid lower bound | **Yes** — can reject a configuration that would have gone on to win |
+| Typically fires | once enough real cost has accrued | potentially very early, as soon as enough *fast* results have streamed in |
+
+The simulation is deliberately decoupled from real wall-clock time and real `cores:` — it replays
+per-instance results against `future_telling_cores` *virtual* workers (list-scheduling: each idle
+worker takes the next instance, in the run's fixed instance order), so the checkpoint's sharpness is
+a free parameter independent of how many real workers this run happens to use. The fixed order this
+relies on is `instance_shuffle`'s (above): a difficulty-correlated instance file would otherwise
+delay maturity until nearly the whole evaluation is already done, defeating the point of an *early*
+reject — `future_telling: true` with `instance_shuffle: false` prints a startup warning for exactly
+this reason.
+
+A checkpoint rejection is counted in the run summary's `future_telling_rejected`, separate from
+`capped` (above) — unlike a capped score, a rejected neighbour leaves no "the good one might have
+been here" trace, so treat a suspicious-looking result as a reason to re-run with
+`future_telling: false` before trusting it.
 
 ---
 

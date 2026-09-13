@@ -105,6 +105,12 @@ lambda_c:              0.5
 lambda_t:              0.5
 cores:                 0         # 0 = all available
 num_run:               0
+instance_shuffle:      true      # shuffle instances once before dispatch
+instance_shuffle_seed: 0
+future_telling:            false   # checkpoint-based early rejection of BLS neighbours
+future_telling_checkpoint: 1.0     # horizon, as a multiple of cutoff_time
+future_telling_cores:      ~       # virtual worker count; null = same as `cores`
+future_telling_tolerance:  0.0
 cache_db:              ":memory:"    # use a file path to persist across runs
 debug:                 false
 debug_wrapper:         false
@@ -180,9 +186,8 @@ started.
 | `bound_multiplier` | `10.0` | Capping threshold. A candidate is abandoned once its running sum exceeds `bound_multiplier × incumbent_score × n_instances` — the budget beating the incumbent allows. Lower values prune more aggressively; capping is exact, so it never discards a configuration that would have been accepted. |
 | `pruning` | `true` | Enable capping. Disable it for `overall_obj: median`, where the test sums a statistic the run does not score. |
 
-FocusedILS uses the first N entries from `instance_file`, not a random sample.
-Order the file deliberately or shuffle it before a run when early prefixes
-should represent the full training set.
+FocusedILS uses the first N entries from the (shuffled, by default —
+see `instance_shuffle` below) instance list, not a random sample each round.
 
 ### 📈 Iterative deepening
 
@@ -205,6 +210,32 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 | `cores` | `0` | Number of parallel worker threads. `0` uses all available CPU cores. Set to a specific number to limit parallelism on shared machines. |
 | `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases. |
 | `num_run` | `0` | Run index, reserved for future use as a random seed. Has no effect currently. |
+| `instance_shuffle` | `true` | Shuffle the instance list once, deterministically, before dispatch — decorrelates a fixed evaluation-order prefix (FocusedILS fidelity growth, future-telling's checkpoint simulation, below) from any difficulty ordering already present in the instance file. Changes real evaluation order for *every* scenario that doesn't opt out, including ones that never touch `future_telling`. Turn it off if the instance list is already randomized (a second shuffle would be redundant) or a specific literal order must be preserved. Never affects which `instance_id` a path is assigned in the cache — it only reorders an already-assigned list. |
+| `instance_shuffle_seed` | `0` | Seed for `instance_shuffle`. |
+
+### 🔮 Future-telling
+
+An opt-in, second, *heuristic* early-rejection prune for `basic_local_search`'s
+neighbour evaluation, alongside the existing (exact) adaptive-capping prune.
+While a neighbour's real per-instance results stream in, a simulated N-worker
+replay of what has arrived so far predicts, from a checkpoint partway through,
+whether the neighbour is on track to beat the incumbent — and rejects it
+outright if it clearly is not. Unlike capping, this **can** reject a
+configuration that would have gone on to win; it is off by default for
+exactly that reason.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `future_telling` | `false` | Enable checkpoint-based early rejection. Gated internally so it is provably inert (never rejects anything) whenever a round's instance count does not exceed `future_telling_cores` — there is nothing to gain from running it there. |
+| `future_telling_checkpoint` | `1.0` | Checkpoint horizon, as a multiple of `cutoff_time`. `1.0` is deliberately conservative: maturity depends on the *summed* runtime of instances processed so far crossing `future_telling_cores × future_telling_checkpoint × cutoff_time`, so for a scenario whose instances mostly solve well under `cutoff_time`, expect the checkpoint to rarely mature at the default — lower this for a sharper, earlier signal once `future_telling` has been validated on a real scenario. |
+| `future_telling_cores` | `null` | Virtual worker count for the simulated replay, decoupled from `cores`. `null` resolves to whatever `cores` resolved to for this run. A larger value sharpens the signal but also raises the bar for `future_telling_checkpoint`'s gate. |
+| `future_telling_tolerance` | `0.0` | Relative margin, same shape as `acceptance_tolerance`, within which a challenger's checkpoint is still tolerated despite being worse than the incumbent's. `0.0` rejects on any checkpoint disagreement, which is likely too aggressive for a first run — checkpoint disagreement is measurably sharper for large gaps than for close ones. |
+
+A rejected neighbour is counted in the end-of-run summary's `future_telling_rejected`,
+separate from `capped` — capping is a proof (a capped score is always a valid
+lower bound); a checkpoint rejection is a statistical heuristic measured on
+one dataset, not a guarantee. If a run's outcome looks suspicious, re-run it
+with `future_telling: false` to check whether the feature changed anything.
 
 Cache entries are keyed by the active configuration and instance path, with the
 execution cutoff stored on each result. A timeout can satisfy only requests

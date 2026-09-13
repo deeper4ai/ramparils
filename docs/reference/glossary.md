@@ -26,6 +26,17 @@ each other.
 
 ---
 
+**Checkpoint** (see also: *future-telling*)
+An early, simulated read of a neighbour's progress, taken at
+`future_telling_checkpoint × cutoff_time` of virtual replay time across `future_telling_cores`
+virtual workers. Scored as a count: how many of the round's instances are *not yet confirmed
+solved* (`runtime < cutoff_time`) by that horizon — lower is better, like every other score in
+RamParILS. Only computed once the round's instance count exceeds `future_telling_cores`; below
+that, every virtual worker sits idle and the checkpoint can never mature before the real
+evaluation is already complete, so nothing is built at all.
+
+---
+
 **Configuration**
 A complete assignment of values to all parameters in the parameter space.
 Also called a *strategy* in the context of solver portfolios.
@@ -74,7 +85,8 @@ from a fixed ball however the incumbent behaves — which is what the log lets y
 **Fidelity**
 The number of leading training instances used to score each configuration. FocusedILS starts
 at `initial_fidelity` and grows by `fidelity_step` when the incumbent survives a challenge.
-Instances are taken in list order and are not shuffled.
+Instances are taken in list order, after `instance_shuffle` (on by default) reorders the list
+once at the start of the run. See also: *instance shuffle*.
 
 ---
 
@@ -83,6 +95,16 @@ A joint assignment of parameter values that is excluded from the search.
 Declared in the `.params` file as `{param1=val1, param2=val2}`.
 Any configuration containing a forbidden combination is skipped during neighbourhood
 exploration.
+
+---
+
+**Future-telling** (see also: *checkpoint*, *adaptive capping*)
+An opt-in (`future_telling: true`), heuristic early rejection of a BLS neighbour: while its real
+per-instance results stream in, a simulated N-worker replay is checkpointed at
+`future_telling_checkpoint × cutoff_time`, and the neighbour is rejected outright once that
+checkpoint is significantly worse than the incumbent's own. Unlike adaptive capping, this is not a
+proof — it can reject a configuration that would have gone on to win — which is why it defaults to
+off. See [Algorithm](algorithm.md#future-telling).
 
 ---
 
@@ -107,6 +129,16 @@ A benchmark problem on which the target algorithm is evaluated.
 Passed as a file path to the solver wrapper.
 RamParILS evaluates configurations across the training instance set to estimate
 generalisation performance.
+
+---
+
+**Instance shuffle** (`instance_shuffle`, `instance_shuffle_seed`)
+A one-time, deterministic reordering of the instance list, applied right after instance IDs are
+assigned and before anything else runs. On (`true`) by default, which changes real evaluation
+order for every scenario that doesn't opt out — not just ones using *future-telling*. Decorrelates
+a fixed evaluation-order prefix (FocusedILS fidelity growth, a *checkpoint*'s simulated replay)
+from any difficulty ordering already present in the instance file; never affects which instance ID
+a path is assigned.
 
 ---
 

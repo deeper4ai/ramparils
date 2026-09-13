@@ -72,6 +72,23 @@ def specialize(
             - **lambda_t** (*float*, default ``0.5``) — iterative deepening timeout factor.
             - **cores** (*int*, default ``0``) — parallel workers; ``0`` uses all available cores.
             - **num_run** (*int*, default ``0``) — run index / random seed (reserved).
+            - **instance_shuffle** (*bool*, default ``True``) — shuffle instances once,
+              deterministically, before dispatch. Changes real evaluation order for any
+              scenario that doesn't opt out; set to ``False`` if the instance file is
+              already randomized and a second shuffle would be redundant.
+            - **instance_shuffle_seed** (*int*, default ``0``) — seed for ``instance_shuffle``.
+            - **future_telling** (*bool*, default ``False``) — reject a BLS neighbour early
+              once a simulated N-worker replay of its real per-instance results is
+              significantly worse, at an early checkpoint, than the incumbent's own. A
+              heuristic prune (can reject a config that would have gone on to win), off
+              by default.
+            - **future_telling_checkpoint** (*float*, default ``1.0``) — checkpoint horizon,
+              as a multiple of ``cutoff_time``.
+            - **future_telling_cores** (*int*, default ``None``) — virtual worker count for
+              the checkpoint simulation; ``None`` uses whatever ``cores`` resolved to.
+            - **future_telling_tolerance** (*float*, default ``0.0``) — relative margin, same
+              shape as ``acceptance_tolerance``, within which a worse checkpoint is still
+              tolerated.
             - **cache_db** (*str*, default ``":memory:"``) — path to the SQLite cache.
               The default is an in-process cache that is not persisted.
             - **debug** (*bool*, default ``False``) — print new incumbents and scores to stderr.
