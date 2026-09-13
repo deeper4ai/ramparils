@@ -778,8 +778,10 @@ neighbour is still incomplete after the first check). `collect_one` gets a
 single `CheckpointTracker`, same treatment.
 
 A config that reaches its own checkpoint — matured or not, rejected or not
-— is logged once as `ils: future-telling-checkpoint`, separately from
-`ils: future-telling-rejected`; both are temporary, kept deliberately
+— is logged once as `futell: checkpoint`, separately from `futell:
+rejected` (renamed from `ils: future-telling-checkpoint`/`ils:
+future-telling-rejected` 2026-09-13, once the `ils::futell` submodule
+existed to prefix them with); both are temporary, kept deliberately
 verbose while this feature is still being validated against real data.
 `Scheduler::cancel_neighbor(batch_id, neighbor_id)` (`src/eval.rs`) is
 called at the point a neighbour is rejected (both capping's and
@@ -1211,9 +1213,10 @@ trust this until it's checked against real data, twice.
       nearly free") — silenced with a `let _ = home_base_checkpoint;` and a
       comment at the point it would otherwise warn as dead.
 - [x] Distinct counter + debug line for checkpoint rejections (Risks) —
-      `counters::FUTURE_TELLING_REJECTED`, reported as
-      `future_telling_rejected=N` in the end-of-run `ils: summary` line,
-      alongside (not instead of) the existing generic `capped` bucket
+      `counters::FUTURE_TELLING_REJECTED`, reported as `futell_rejected=N`
+      (renamed from `future_telling_rejected=N` 2026-09-13) in the
+      end-of-run `ils: summary` line, alongside (not instead of) the
+      existing generic `capped` bucket
 - [x] Integration test (validation item 5) — see "What the integration tests
       actually show" below; the exact framing in this checklist's earlier
       draft ("fewer than n_instances real solver invocations") turned out not

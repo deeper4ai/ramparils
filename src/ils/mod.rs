@@ -663,12 +663,12 @@ pub fn run(
         }
     }
 
-    let (evals, capped, future_telling_rejected) = counters::get();
+    let (evals, capped, futell_rejected) = counters::get();
     crate::debug_line(
         options.debug.main,
         &format!(
             "[{:8.2}s] ils: summary rounds={} searched={} gated={} \
-             incumbents={} evals={evals} capped={capped} future_telling_rejected={future_telling_rejected}",
+             incumbents={} evals={evals} capped={capped} futell_rejected={futell_rejected}",
             crate::t(),
             state.n_rounds,
             state.n_searched,

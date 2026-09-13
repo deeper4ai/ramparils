@@ -637,7 +637,7 @@ impl NeighbourRound {
             crate::debug_line(
                 ctx.options.debug.main,
                 &format!(
-                    "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                    "[{:8.2}s] futell: checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
                     crate::t(),
                     n_instances - chal_ckpt as usize,
                     incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
@@ -653,7 +653,7 @@ impl NeighbourRound {
         crate::debug_line(
             ctx.options.debug.main,
             &format!(
-                "[{:8.2}s] ils: future-telling-rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                "[{:8.2}s] futell: rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
                 crate::t(),
                 n_instances - chal_ckpt as usize,
                 n_instances - inc_ckpt as usize,
@@ -922,7 +922,7 @@ impl SingleConfigCollector {
             crate::debug_line(
                 ctx.options.debug.main,
                 &format!(
-                    "[{:8.2}s] ils: future-telling-checkpoint config solved={} ref={} after {}/{n_instances}",
+                    "[{:8.2}s] futell: checkpoint config solved={} ref={} after {}/{n_instances}",
                     crate::t(),
                     n_instances - chal_ckpt as usize,
                     incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
@@ -940,7 +940,7 @@ impl SingleConfigCollector {
         crate::debug_line(
             ctx.options.debug.main,
             &format!(
-                "[{:8.2}s] ils: future-telling-rejected config solved={} ref={} after {}/{n_instances}",
+                "[{:8.2}s] futell: rejected config solved={} ref={} after {}/{n_instances}",
                 crate::t(),
                 n_instances - chal_ckpt as usize,
                 n_instances - inc_ckpt as usize,
