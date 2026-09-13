@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cache::{Cache, hash_config};
-use crate::eval::{EvalTask, Scheduler, SchedulerEvent};
+use crate::eval::{DispatchEvent, EvalTask, Scheduler, SchedulerEvent, TaskResult};
 use crate::params::{Config, ParamSpace};
 use crate::scenario::RunObjective;
 
@@ -161,6 +161,24 @@ pub(super) fn perturbation(config: Config, strength: usize, space: &ParamSpace, 
     current
 }
 
+/// Persist one solver result to the cache, if it's eligible to be.
+/// `UNKNOWN` is excluded deliberately: a run that concluded nothing should
+/// not be served back to a later config as if it had.
+fn cache_result(cache: &mut Cache, r: &TaskResult) -> Result<()> {
+    if r.cacheable && r.status != "UNKNOWN" {
+        cache.put(
+            r.hash,
+            r.instance_id,
+            r.runtime,
+            r.quality,
+            &r.status,
+            r.cutoff,
+            r.runhash,
+        )?;
+    }
+    Ok(())
+}
+
 /// Drains any events already queued after a `scheduler.reset()`, writing
 /// back whatever `Completed` results were in flight before cancellation.
 /// `Dispatched` events (FUTURETELL.md D11) carry nothing to cache and are
@@ -169,17 +187,7 @@ pub(super) fn perturbation(config: Config, strength: usize, space: &ParamSpace, 
 fn drain_and_cache_writeback(scheduler: &Scheduler, cache: &mut Cache) -> Result<()> {
     while let Ok(event) = scheduler.events().try_recv() {
         let SchedulerEvent::Completed(r) = event else { continue };
-        if r.cacheable && r.status != "UNKNOWN" {
-            cache.put(
-                r.hash,
-                r.instance_id,
-                r.runtime,
-                r.quality,
-                &r.status,
-                r.cutoff,
-                r.runhash,
-            )?;
-        }
+        cache_result(cache, &r)?;
     }
     Ok(())
 }
@@ -290,6 +298,382 @@ pub(super) fn evaluate_config_outcome(
     collect_one(ctx, batch_id, instances, 0, incumbent_score, incumbent_checkpoint)
 }
 
+/// `neighbourhood(config, space)`, reordered for random first-improvement:
+/// which neighbour wins a tie in completion order is otherwise just an
+/// artefact of how the parameter file happens to list values.
+fn shuffled_neighbourhood(config: &Config, space: &ParamSpace, rng: &mut impl Rng) -> Vec<Config> {
+    let mut neighbors = neighbourhood(config, space);
+    for i in (1..neighbors.len()).rev() {
+        let j = rng.gen_range(0..=i);
+        neighbors.swap(i, j);
+    }
+    neighbors
+}
+
+/// Submit every neighbour of one BLS round as a single batch, all evaluated
+/// against the same `instances` slice.
+fn submit_neighbours(ctx: &mut EvalContext, neighbors: &[Config], instances: &[(i64, String)]) -> Result<u64> {
+    let shared_instances = Arc::new(instances.to_vec());
+    let tasks: Vec<EvalTask> = neighbors
+        .iter()
+        .enumerate()
+        .map(|(i, cfg)| {
+            let eval_config = active_config(cfg, ctx.space);
+            let hash = hash_config(&eval_config);
+            EvalTask {
+                neighbor_id: i,
+                config: eval_config,
+                hash,
+                instances: Arc::clone(&shared_instances),
+            }
+        })
+        .collect();
+    ctx.scheduler.submit(tasks, ctx.cache)
+}
+
+fn log_local_optimum(debug: bool, eval: &ConfigEvaluation, n_instances: usize) {
+    crate::debug_line(
+        debug,
+        &format!(
+            "[{:8.2}s] ils: bls local optimum score={}",
+            crate::t(),
+            eval.display(n_instances)
+        ),
+    );
+}
+
+/// Per-neighbour bookkeeping for one BLS round: every neighbour in the
+/// current batch is tracked here until it's `done` (fully completed, capped,
+/// or checkpoint-rejected).
+struct NeighbourRound {
+    n: usize,
+    runtimes: Vec<Vec<f64>>,
+    qualities: Vec<Vec<f64>>,
+    partial: Vec<f64>,
+    runhashes: Vec<u64>,
+    runhash_ns: Vec<usize>,
+    done: Vec<bool>,
+    n_done: usize,
+    /// Logged once per neighbour, the moment its own checkpoint first
+    /// matures — independent of whether it ends up rejected, so the
+    /// checkpoint value itself is visible for every neighbour that reaches
+    /// one, not just the rejected ones. Temporary, kept on purpose while
+    /// future-telling is still being validated against real data.
+    checkpoint_logged: Vec<bool>,
+    /// Future-telling (D3): one tracker per neighbour, or `None` when
+    /// inactive — gated by D3, so no trackers are built at all, not just
+    /// unused.
+    trackers: Option<Vec<CheckpointTracker>>,
+}
+
+impl NeighbourRound {
+    fn new(ctx: &mut EvalContext, n: usize, n_instances: usize) -> Self {
+        let future_telling_time = ctx.cutoff_time * ctx.options.future_telling_checkpoint;
+        let trackers = future_telling_active(ctx.options, n_instances).then(|| {
+            (0..n)
+                .map(|_| {
+                    CheckpointTracker::new(
+                        ctx.options.future_telling_cores,
+                        future_telling_time,
+                        ctx.cutoff_time,
+                        n_instances,
+                    )
+                })
+                .collect()
+        });
+        Self {
+            n,
+            runtimes: vec![vec![]; n],
+            qualities: vec![vec![]; n],
+            partial: vec![0.0; n],
+            runhashes: vec![0; n],
+            runhash_ns: vec![0; n],
+            done: vec![false; n],
+            n_done: 0,
+            checkpoint_logged: vec![false; n],
+            trackers,
+        }
+    }
+
+    /// Run this round's collection loop to completion: either a neighbour is
+    /// accepted (returns its config and evaluation), or every neighbour
+    /// reaches a verdict without one dominating `current_eval` (returns
+    /// `None`). Leaves the scheduler drained and caught up on cache
+    /// write-back either way.
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        ctx: &mut EvalContext,
+        batch_id: u64,
+        neighbors: &[Config],
+        current: &Config,
+        current_eval: ConfigEvaluation,
+        incumbent_score: f64,
+        incumbent_checkpoint: Option<f64>,
+        n_instances: usize,
+    ) -> Result<Option<(Config, ConfigEvaluation)>> {
+        loop {
+            if self.n_done >= self.n || crate::interrupted() {
+                self.finish(ctx)?;
+                return Ok(None);
+            }
+            let remaining = ctx.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.finish(ctx)?;
+                return Ok(None);
+            }
+
+            let event = match ctx
+                .scheduler
+                .events()
+                .recv_timeout(remaining.min(Duration::from_millis(500)))
+            {
+                Ok(e) => e,
+                Err(RecvTimeoutError::Timeout) => {
+                    // No new event, but real time has still passed -- give
+                    // every tracker a chance to notice a still-running
+                    // instance has aged past its checkpoint horizon on its
+                    // own (FUTURETELL.md D11's `poll`).
+                    self.poll_trackers();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.finish(ctx)?;
+                    return Ok(None);
+                }
+            };
+
+            let result = match event {
+                SchedulerEvent::Dispatched(d) => {
+                    self.record_dispatch(batch_id, d);
+                    continue;
+                }
+                SchedulerEvent::Completed(r) => r,
+            };
+
+            cache_result(ctx.cache, &result)?;
+            if result.batch_id != batch_id {
+                continue;
+            }
+            let nid = result.neighbor_id;
+            // Guard against stale results from a previous reset (shouldn't
+            // normally happen, but the window between reset() and drain is tiny).
+            if nid >= self.n || self.done[nid] {
+                continue;
+            }
+
+            self.accumulate(ctx.options, nid, &result);
+
+            if self.check_capping(ctx, batch_id, nid, incumbent_score, n_instances) {
+                continue;
+            }
+
+            if self.runtimes[nid].len() == n_instances {
+                if let Some(eval) = self.complete(ctx, nid, current, &neighbors[nid], current_eval, n_instances)? {
+                    return Ok(Some((neighbors[nid].clone(), eval)));
+                }
+            } else {
+                self.check_future_telling(ctx, batch_id, nid, incumbent_checkpoint, n_instances);
+            }
+        }
+    }
+
+    fn record_dispatch(&mut self, batch_id: u64, d: DispatchEvent) {
+        if d.batch_id != batch_id {
+            return;
+        }
+        let nid = d.neighbor_id;
+        if nid < self.n && !self.done[nid] {
+            if let Some(trackers) = self.trackers.as_mut() {
+                trackers[nid].record_dispatch(d.instance_id, d.dispatch_time);
+            }
+        }
+    }
+
+    fn poll_trackers(&mut self) {
+        if let Some(trackers) = self.trackers.as_mut() {
+            let now = crate::t();
+            for tracker in trackers.iter_mut() {
+                tracker.poll(now);
+            }
+        }
+    }
+
+    fn accumulate(&mut self, options: &IlsOptions, nid: usize, result: &TaskResult) {
+        self.runtimes[nid].push(result.runtime);
+        self.qualities[nid].push(result.quality);
+        if let Some(h) = result.runhash {
+            self.runhashes[nid] ^= h;
+            self.runhash_ns[nid] += 1;
+        }
+        let val = match options.run_obj {
+            RunObjective::Runtime => result.runtime,
+            RunObjective::Quality => result.quality,
+        };
+        self.partial[nid] += val;
+        if let Some(trackers) = self.trackers.as_mut() {
+            trackers[nid].record(result.instance_id, result.runtime);
+        }
+    }
+
+    fn tracker_score(&self, nid: usize) -> Option<f64> {
+        self.trackers.as_ref().and_then(|t| t[nid].score())
+    }
+
+    fn mark_done(&mut self, nid: usize) {
+        self.done[nid] = true;
+        self.n_done += 1;
+    }
+
+    /// Adaptive capping: prune this neighbour once it has spent the whole
+    /// budget that beating the incumbent allows. Costs never go down, so
+    /// passing the budget *proves* the final mean exceeds the bound — this
+    /// is a decision, not a guess, and it is the earliest point at which the
+    /// proof exists. Returns whether it fired.
+    fn check_capping(
+        &mut self,
+        ctx: &mut EvalContext,
+        batch_id: u64,
+        nid: usize,
+        incumbent_score: f64,
+        n_instances: usize,
+    ) -> bool {
+        if !ctx.options.pruning {
+            return false;
+        }
+        let budget = ctx.options.bound_multiplier * incumbent_score * n_instances as f64;
+        if self.partial[nid] <= budget {
+            return false;
+        }
+        crate::debug_line(
+            ctx.options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: capped neighbor={nid} spent={:.6} budget={budget:.6} after {}/{n_instances}",
+                crate::t(),
+                self.partial[nid],
+                self.runtimes[nid].len(),
+            ),
+        );
+        self.mark_done(nid);
+        counters::eval(true);
+        // Stop this neighbour's own dispatch, not just the ILS's bookkeeping
+        // about it — see `cancel_neighbor`'s own doc comment for why this
+        // used to be a no-op in practice.
+        ctx.scheduler.cancel_neighbor(batch_id, nid);
+        true
+    }
+
+    /// This neighbour has just reached full completion. Returns its
+    /// evaluation if it dominates `current_eval` and should be accepted
+    /// (ending the round, having already reset the scheduler and drained
+    /// its leftover events); `None` if it's merely recorded as done and the
+    /// round continues.
+    fn complete(
+        &mut self,
+        ctx: &mut EvalContext,
+        nid: usize,
+        current: &Config,
+        neighbor: &Config,
+        current_eval: ConfigEvaluation,
+        n_instances: usize,
+    ) -> Result<Option<ConfigEvaluation>> {
+        self.mark_done(nid);
+        counters::eval(false);
+        let score = compute_score(&self.runtimes[nid], &self.qualities[nid], ctx.options);
+        let checkpoint = self.tracker_score(nid);
+        if !dominates(score, n_instances, current_eval.score, n_instances, ctx.options) {
+            return Ok(None);
+        }
+
+        // Accept — stop evaluating the rest.
+        ctx.scheduler.reset();
+        drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
+        crate::debug_line(
+            ctx.options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {})",
+                crate::t(),
+                current_eval.display(n_instances)
+            ),
+        );
+        crate::debug_line(
+            ctx.options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: bls arguments: {}",
+                crate::t(),
+                format_argument_changes(current, neighbor, ctx.space)
+            ),
+        );
+        Ok(Some(ConfigEvaluation {
+            score,
+            complete: true,
+            n_done: n_instances,
+            runhash: self.runhashes[nid],
+            runhash_n: self.runhash_ns[nid],
+            checkpoint,
+        }))
+    }
+
+    /// Consult this neighbour's checkpoint tracker while it's still running:
+    /// log once when it first matures, then reject it if it's significantly
+    /// worse than the incumbent's own checkpoint (D8). Full completion
+    /// (`complete`, above) always wins over a checkpoint verdict — this is
+    /// only reached while the neighbour is still incomplete (FUTURETELL.md
+    /// "Where this lives").
+    fn check_future_telling(
+        &mut self,
+        ctx: &mut EvalContext,
+        batch_id: u64,
+        nid: usize,
+        incumbent_checkpoint: Option<f64>,
+        n_instances: usize,
+    ) {
+        let Some(chal_ckpt) = self.tracker_score(nid) else {
+            return;
+        };
+
+        if !self.checkpoint_logged[nid] {
+            self.checkpoint_logged[nid] = true;
+            crate::debug_line(
+                ctx.options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                    crate::t(),
+                    n_instances - chal_ckpt as usize,
+                    incumbent_checkpoint.map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
+                    self.runtimes[nid].len(),
+                ),
+            );
+        }
+
+        let Some(inc_ckpt) = incumbent_checkpoint else { return };
+        if !future_telling_rejects(chal_ckpt, inc_ckpt, ctx.options) {
+            return;
+        }
+        crate::debug_line(
+            ctx.options.debug.main,
+            &format!(
+                "[{:8.2}s] ils: future-telling-rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
+                crate::t(),
+                n_instances - chal_ckpt as usize,
+                n_instances - inc_ckpt as usize,
+                self.runtimes[nid].len(),
+            ),
+        );
+        self.mark_done(nid);
+        counters::eval(true);
+        counters::future_telling_rejected();
+        ctx.scheduler.cancel_neighbor(batch_id, nid);
+    }
+
+    /// No neighbour in this round improved on `current` — reset the
+    /// scheduler and drain any leftover events for cache write-back.
+    fn finish(&self, ctx: &mut EvalContext) -> Result<()> {
+        ctx.scheduler.reset();
+        drain_and_cache_writeback(ctx.scheduler, ctx.cache)
+    }
+}
+
 /// Parallel first-improvement BLS.
 ///
 /// Submits all neighbours as `EvalTask`s at once.  Accepts the first
@@ -317,279 +701,35 @@ pub(super) fn basic_local_search(
     // first accepted step this is a real score even if `start_eval` was capped.
     let mut current_eval = start_eval;
     let mut steps = 0usize;
-    let mut changed = true;
 
-    while changed && Instant::now() < ctx.deadline && !crate::interrupted() {
-        changed = false;
-
-        let mut neighbors = neighbourhood(&current, ctx.space);
+    while Instant::now() < ctx.deadline && !crate::interrupted() {
+        let neighbors = shuffled_neighbourhood(&current, ctx.space, rng);
         if neighbors.is_empty() {
             break;
         }
 
-        // Shuffle for random first-improvement ordering
-        for i in (1..neighbors.len()).rev() {
-            let j = rng.gen_range(0..=i);
-            neighbors.swap(i, j);
-        }
+        let batch_id = submit_neighbours(ctx, &neighbors, instances)?;
+        let mut round = NeighbourRound::new(ctx, neighbors.len(), n_instances);
 
-        let n = neighbors.len();
-
-        // Submit all neighbours (evaluated on the first n_runs instances only)
-        let shared_instances = Arc::new(instances.to_vec());
-        let tasks: Vec<EvalTask> = neighbors
-            .iter()
-            .enumerate()
-            .map(|(i, cfg)| {
-                let eval_config = active_config(cfg, ctx.space);
-                let hash = hash_config(&eval_config);
-                EvalTask {
-                    neighbor_id: i,
-                    config: eval_config,
-                    hash,
-                    instances: Arc::clone(&shared_instances),
-                }
-            })
-            .collect();
-        let batch_id = ctx.scheduler.submit(tasks, ctx.cache)?;
-
-        // Per-neighbour tracking
-        let mut runtimes: Vec<Vec<f64>> = vec![vec![]; n];
-        let mut qualities: Vec<Vec<f64>> = vec![vec![]; n];
-        let mut partial: Vec<f64> = vec![0.0; n];
-        let mut runhashes: Vec<u64> = vec![0; n];
-        let mut runhash_ns: Vec<usize> = vec![0; n];
-        let mut done = vec![false; n];
-        let mut n_done = 0usize;
-        // Logged once per neighbour, the moment its own checkpoint first
-        // matures — independent of whether it ends up rejected, so the
-        // checkpoint value itself is visible for every neighbour that
-        // reaches one, not just the rejected ones. Temporary, kept on
-        // purpose while future-telling is still being validated against
-        // real data.
-        let mut checkpoint_logged = vec![false; n];
-
-        // Future-telling (D3): one tracker per neighbour. Gated by D3: when
-        // inactive, no trackers are built at all, not just unused.
-        let future_telling_time = ctx.cutoff_time * ctx.options.future_telling_checkpoint;
-        let mut trackers: Option<Vec<CheckpointTracker>> = future_telling_active(ctx.options, n_instances).then(|| {
-            (0..n)
-                .map(|_| {
-                    CheckpointTracker::new(
-                        ctx.options.future_telling_cores,
-                        future_telling_time,
-                        ctx.cutoff_time,
-                        n_instances,
-                    )
-                })
-                .collect()
-        });
-
-        'collect: loop {
-            if n_done >= n {
+        match round.run(
+            ctx,
+            batch_id,
+            &neighbors,
+            &current,
+            current_eval,
+            incumbent_score,
+            incumbent_checkpoint,
+            n_instances,
+        )? {
+            Some((next, next_eval)) => {
+                current = next;
+                current_eval = next_eval;
+                steps += 1;
+            }
+            None => {
+                log_local_optimum(ctx.options.debug.main, &current_eval, n_instances);
                 break;
             }
-            let remaining = ctx.deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || crate::interrupted() {
-                break;
-            }
-
-            let event = match ctx
-                .scheduler
-                .events()
-                .recv_timeout(remaining.min(Duration::from_millis(500)))
-            {
-                Ok(e) => e,
-                Err(RecvTimeoutError::Timeout) => {
-                    // No new event, but real time has still passed -- give
-                    // every tracker a chance to notice a still-running
-                    // instance has aged past its checkpoint horizon on its
-                    // own (FUTURETELL.md D11's `poll`).
-                    if let Some(trackers) = trackers.as_mut() {
-                        let now = crate::t();
-                        for tracker in trackers.iter_mut() {
-                            tracker.poll(now);
-                        }
-                    }
-                    continue;
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
-
-            let result = match event {
-                SchedulerEvent::Dispatched(d) => {
-                    if d.batch_id == batch_id {
-                        let nid = d.neighbor_id;
-                        if nid < n && !done[nid] {
-                            if let Some(trackers) = trackers.as_mut() {
-                                trackers[nid].record_dispatch(d.instance_id, d.dispatch_time);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                SchedulerEvent::Completed(r) => r,
-            };
-
-            if result.cacheable && result.status != "UNKNOWN" {
-                ctx.cache.put(
-                    result.hash,
-                    result.instance_id,
-                    result.runtime,
-                    result.quality,
-                    &result.status,
-                    result.cutoff,
-                    result.runhash,
-                )?;
-            }
-            if result.batch_id != batch_id {
-                continue;
-            }
-
-            let nid = result.neighbor_id;
-            // Guard against stale results from a previous reset (shouldn't
-            // normally happen, but the window between reset() and drain is tiny).
-            if nid >= n || done[nid] {
-                continue;
-            }
-
-            runtimes[nid].push(result.runtime);
-            qualities[nid].push(result.quality);
-            if let Some(h) = result.runhash {
-                runhashes[nid] ^= h;
-                runhash_ns[nid] += 1;
-            }
-            let val = match ctx.options.run_obj {
-                RunObjective::Runtime => result.runtime,
-                RunObjective::Quality => result.quality,
-            };
-            partial[nid] += val;
-            if let Some(trackers) = trackers.as_mut() {
-                trackers[nid].record(result.instance_id, result.runtime);
-            }
-
-            // Adaptive capping: prune this neighbour once it has spent the whole
-            // budget that beating the incumbent allows. Costs never go down, so
-            // passing the budget *proves* the final mean exceeds the bound —
-            // this is a decision, not a guess, and it is the earliest point at
-            // which the proof exists.
-            if ctx.options.pruning {
-                let budget = ctx.options.bound_multiplier * incumbent_score * n_instances as f64;
-                if partial[nid] > budget {
-                    crate::debug_line(
-                        ctx.options.debug.main,
-                        &format!(
-                            "[{:8.2}s] ils: capped neighbor={nid} spent={:.6} budget={budget:.6} after {}/{n_instances}",
-                            crate::t(),
-                            partial[nid],
-                            runtimes[nid].len(),
-                        ),
-                    );
-                    done[nid] = true;
-                    n_done += 1;
-                    counters::eval(true);
-                    // Stop this neighbour's own dispatch, not just the ILS's
-                    // bookkeeping about it — see `cancel_neighbor`'s own doc
-                    // comment for why this used to be a no-op in practice.
-                    ctx.scheduler.cancel_neighbor(batch_id, nid);
-                    continue;
-                }
-            }
-
-            if runtimes[nid].len() == n_instances {
-                done[nid] = true;
-                n_done += 1;
-                counters::eval(false);
-                let score = compute_score(&runtimes[nid], &qualities[nid], ctx.options);
-                let checkpoint = trackers.as_ref().and_then(|t| t[nid].score());
-
-                if dominates(score, n_instances, current_eval.score, n_instances, ctx.options) {
-                    // Accept — stop evaluating the rest
-                    ctx.scheduler.reset();
-                    drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
-                    crate::debug_line(
-                        ctx.options.debug.main,
-                        &format!(
-                            "[{:8.2}s] ils: bls improvement neighbor={nid} score={score:.6} (was {})",
-                            crate::t(),
-                            current_eval.display(n_instances)
-                        ),
-                    );
-                    crate::debug_line(
-                        ctx.options.debug.main,
-                        &format!(
-                            "[{:8.2}s] ils: bls arguments: {}",
-                            crate::t(),
-                            format_argument_changes(&current, &neighbors[nid], ctx.space)
-                        ),
-                    );
-                    current = neighbors[nid].clone();
-                    current_eval = ConfigEvaluation {
-                        score,
-                        complete: true,
-                        n_done: n_instances,
-                        runhash: runhashes[nid],
-                        runhash_n: runhash_ns[nid],
-                        checkpoint,
-                    };
-                    steps += 1;
-                    changed = true;
-                    break 'collect;
-                }
-            } else if let Some(trackers) = trackers.as_ref() {
-                // Full completion (above) always wins over a checkpoint
-                // verdict — this branch is only reached when the neighbour
-                // is still incomplete (FUTURETELL.md "Where this lives").
-                if let Some(chal_ckpt) = trackers[nid].score() {
-                    if !checkpoint_logged[nid] {
-                        checkpoint_logged[nid] = true;
-                        crate::debug_line(
-                            ctx.options.debug.main,
-                            &format!(
-                                "[{:8.2}s] ils: future-telling-checkpoint neighbor={nid} solved={} ref={} after {}/{n_instances}",
-                                crate::t(),
-                                n_instances - chal_ckpt as usize,
-                                incumbent_checkpoint
-                                    .map_or_else(|| "none".to_string(), |v| (n_instances - v as usize).to_string()),
-                                runtimes[nid].len(),
-                            ),
-                        );
-                    }
-                    if let Some(inc_ckpt) = incumbent_checkpoint {
-                        if future_telling_rejects(chal_ckpt, inc_ckpt, ctx.options) {
-                            crate::debug_line(
-                                ctx.options.debug.main,
-                                &format!(
-                                    "[{:8.2}s] ils: future-telling-rejected neighbor={nid} solved={} ref={} after {}/{n_instances}",
-                                    crate::t(),
-                                    n_instances - chal_ckpt as usize,
-                                    n_instances - inc_ckpt as usize,
-                                    runtimes[nid].len(),
-                                ),
-                            );
-                            done[nid] = true;
-                            n_done += 1;
-                            counters::eval(true);
-                            counters::future_telling_rejected();
-                            ctx.scheduler.cancel_neighbor(batch_id, nid);
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-
-        if !changed {
-            ctx.scheduler.reset();
-            drain_and_cache_writeback(ctx.scheduler, ctx.cache)?;
-            crate::debug_line(
-                ctx.options.debug.main,
-                &format!(
-                    "[{:8.2}s] ils: bls local optimum score={}",
-                    crate::t(),
-                    current_eval.display(n_instances)
-                ),
-            );
         }
     }
 
@@ -668,17 +808,7 @@ pub(super) fn collect_one(
             SchedulerEvent::Completed(r) => r,
         };
 
-        if result.cacheable && result.status != "UNKNOWN" {
-            ctx.cache.put(
-                result.hash,
-                result.instance_id,
-                result.runtime,
-                result.quality,
-                &result.status,
-                result.cutoff,
-                result.runhash,
-            )?;
-        }
+        cache_result(ctx.cache, &result)?;
         if result.batch_id != batch_id {
             continue;
         }
