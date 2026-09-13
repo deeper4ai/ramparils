@@ -575,6 +575,18 @@ impl NeighbourRound {
     /// (ending the round, having already reset the scheduler and drained
     /// its leftover events); `None` if it's merely recorded as done and the
     /// round continues.
+    ///
+    /// An incomplete `current_eval` (a gated start: the round's own starting
+    /// point was itself capped before this descent even began, see
+    /// `gated_start` in `super::RunState::record_round`) can never be the
+    /// comparison bar here. Per `ConfigEvaluation`'s own doc comment, a
+    /// capped score is an optimistic lower bound — the real score can only
+    /// be worse — so no complete, real evaluation could ever be proven to
+    /// dominate it, and the descent would silently find zero improving
+    /// moves every time, which is indistinguishable in the log from a
+    /// genuine local optimum. This neighbour, being fully evaluated, is
+    /// unconditionally taken as the improvement instead: it is real data
+    /// against a value we know is not.
     fn complete(
         &mut self,
         ctx: &mut EvalContext,
@@ -588,7 +600,9 @@ impl NeighbourRound {
         counters::eval(false);
         let score = compute_score(&self.runtimes[nid], &self.qualities[nid], ctx.options);
         let checkpoint = self.tracker_score(nid);
-        if !dominates(score, n_instances, current_eval.score, n_instances, ctx.options) {
+        let beats_current =
+            !current_eval.complete || dominates(score, n_instances, current_eval.score, n_instances, ctx.options);
+        if !beats_current {
             return Ok(None);
         }
 

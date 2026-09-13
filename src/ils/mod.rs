@@ -213,6 +213,13 @@ impl RunState {
 
     /// Promote `candidate` to incumbent if it (strictly) dominates the
     /// current one; logs `ils: new incumbent` and returns whether it did.
+    ///
+    /// Refuses an incomplete `eval` outright, before ever comparing scores.
+    /// A capped/checkpoint-rejected evaluation's score is a partial mean
+    /// over however many instances happened to finish — often optimistic,
+    /// not pessimistic, when `future_telling` is what capped it — so it
+    /// must never be allowed to win `dominates` against a real, fully
+    /// measured incumbent score.
     fn try_promote_incumbent(
         &mut self,
         candidate: &Config,
@@ -221,6 +228,9 @@ impl RunState {
         space: &ParamSpace,
         options: &IlsOptions,
     ) -> Result<bool> {
+        if !eval.complete {
+            return Ok(false);
+        }
         if !dominates(eval.score, n_runs, self.incumbent_score, n_runs, options) {
             return Ok(false);
         }
@@ -234,6 +244,12 @@ impl RunState {
 
     /// Replace the home base outright, no acceptance test — used by
     /// `Approach::Random` (which has no home base to keep) and by a restart.
+    ///
+    /// Refuses an incomplete `eval`: the home base's score/checkpoint feed
+    /// straight into every later round's reference and pruning bound, so an
+    /// optimistic partial score here would keep corrupting comparisons long
+    /// after this one round. An incomplete restart/random candidate is
+    /// dropped and the previous home base kept, logged for visibility.
     fn set_home_base(
         &mut self,
         new_home_base: Config,
@@ -242,6 +258,17 @@ impl RunState {
         space: &ParamSpace,
         options: &IlsOptions,
     ) {
+        if !eval.complete {
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: home base candidate incomplete ({}), keeping previous home base",
+                    crate::t(),
+                    eval.display(n_runs)
+                ),
+            );
+            return;
+        }
         let previous = std::mem::replace(&mut self.last_lm, new_home_base);
         log_home_base(options.debug.main, &previous, &self.last_lm, &eval, n_runs, space);
         self.home_base_checkpoint = eval.checkpoint;
@@ -250,6 +277,12 @@ impl RunState {
 
     /// Run the acceptance criterion against `new_lm` and update the home
     /// base accordingly, tracking `rejections` for the stagnation restart.
+    ///
+    /// An incomplete `new_lm_eval` (a gated/capped descent that never got
+    /// going, see `gated_start`) is treated as an outright rejection without
+    /// ever reaching `acceptance_criterion` — same reasoning as
+    /// `set_home_base`: its score is a partial mean, not comparable to the
+    /// home base's or incumbent's full-evaluation scores.
     fn accept_or_reject_home_base(
         &mut self,
         new_lm: Config,
@@ -258,6 +291,18 @@ impl RunState {
         space: &ParamSpace,
         options: &IlsOptions,
     ) {
+        if !new_lm_eval.complete {
+            crate::debug_line(
+                options.debug.main,
+                &format!(
+                    "[{:8.2}s] ils: home base candidate incomplete ({}), rejected",
+                    crate::t(),
+                    new_lm_eval.display(n_runs)
+                ),
+            );
+            self.rejections += 1;
+            return;
+        }
         let previous = self.last_lm.clone();
         let (accepted, accepted_score, took_new) = acceptance_criterion(
             new_lm,

@@ -21,13 +21,13 @@ pub(super) fn log_incumbent(
         return Ok(());
     }
     let hash = hash_config(&active_config(incumbent, space));
-    let score = eval.score;
     let runhash = eval.runhash_suffix(n_runs);
     crate::debug_line(
         true,
         &format!(
-            "[{:8.2}s] ils: new incumbent: hash={hash:016x} score={score:.6} instances={n_runs}{runhash}",
-            crate::t()
+            "[{:8.2}s] ils: new incumbent: hash={hash:016x} score={} instances={n_runs}{runhash}",
+            crate::t(),
+            eval.display(n_runs)
         ),
     );
     crate::debug_block(true, &config_to_yaml(incumbent)?);
