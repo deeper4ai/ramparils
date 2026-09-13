@@ -188,7 +188,9 @@ pub fn close_error_log() {
 pub fn log_crash(cmd: &str, stdout: &str, stderr: &str, exit_code: Option<i32>) {
     let guard = ERROR_LOG.lock().unwrap();
     let Some(path) = guard.as_deref() else { return };
-    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
     let mut f = std::io::LineWriter::new(file);
     let t = t();
     let exit_str = exit_code
@@ -366,7 +368,10 @@ mod tests {
         );
         super::log_crash("cmd3", "out3", "err3", Some(1));
         let third = std::fs::read_to_string(&path).unwrap();
-        assert!(third.starts_with(&second), "a later run must append after the earlier run's entries, not replace them");
+        assert!(
+            third.starts_with(&second),
+            "a later run must append after the earlier run's entries, not replace them"
+        );
         assert!(third.contains("cmd3"));
 
         super::close_error_log();

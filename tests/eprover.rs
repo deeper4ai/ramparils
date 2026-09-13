@@ -105,7 +105,11 @@ fn parse_eprover_params_default_active() {
     let mut four_slots = default.clone();
     four_slots.insert("slots".to_string(), "4".to_string());
     assert!(!space.is_forbidden(&four_slots));
-    let active_at_4: Vec<&str> = space.active_params(&four_slots).iter().map(|p| p.name.as_str()).collect();
+    let active_at_4: Vec<&str> = space
+        .active_params(&four_slots)
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
     for name in ["heur1", "freq1", "heur2", "freq2", "heur3", "freq3", "heur4", "freq4"] {
         assert!(active_at_4.contains(&name), "{name} should be active with slots=4");
     }

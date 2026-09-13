@@ -637,7 +637,9 @@ mod tests {
         assert_eq!(hits[&1].runtime, 1.5, "pre-existing results must survive the migration");
         assert_eq!(hits[&1].runhash, None, "a pre-migration row has no runhash");
 
-        cache.put(7, 2, 0.5, 0.0, "sat", 10.0, Some(0x3eff6fcf0e4d910d)).unwrap();
+        cache
+            .put(7, 2, 0.5, 0.0, "sat", 10.0, Some(0x3eff6fcf0e4d910d))
+            .unwrap();
         let hits = cache.get_batch(7, &[2], 10.0).unwrap();
         assert_eq!(hits[&2].runhash, Some(0x3eff6fcf0e4d910d));
     }

@@ -198,7 +198,10 @@ impl Scheduler {
                                 break;
                             };
                             let cancelled = batch.batch_id != current_batch.load(Ordering::Relaxed)
-                                || cancelled_neighbors.lock().unwrap().contains(&(batch.batch_id, batch.neighbor_id));
+                                || cancelled_neighbors
+                                    .lock()
+                                    .unwrap()
+                                    .contains(&(batch.batch_id, batch.neighbor_id));
                             if cancelled {
                                 break;
                             }
@@ -655,8 +658,7 @@ mod tests {
 
     #[test]
     fn parse_ok_line() {
-        let (rt, q, st, rh, raw) =
-            parse_solver_output("some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n", 10.0);
+        let (rt, q, st, rh, raw) = parse_solver_output("some preamble\n#%# RamParIls #%# Theorem, 1.23, 42.0\n", 10.0);
         assert!((rt - 1.23).abs() < 1e-9);
         assert!((q - 42.0).abs() < 1e-9);
         assert_eq!(st, "Theorem");
@@ -674,8 +676,7 @@ mod tests {
 
     #[test]
     fn parse_ok_line_with_runhash() {
-        let (rt, q, st, rh, raw) =
-            parse_solver_output("#%# RamParIls #%# sat, 1.23, 0.0, 3eff6fcf0e4d910d\n", 10.0);
+        let (rt, q, st, rh, raw) = parse_solver_output("#%# RamParIls #%# sat, 1.23, 0.0, 3eff6fcf0e4d910d\n", 10.0);
         assert!((rt - 1.23).abs() < 1e-9);
         assert!((q - 0.0).abs() < 1e-9);
         assert_eq!(st, "sat");
@@ -942,10 +943,16 @@ mod tests {
             if !alive(pid0) {
                 break;
             }
-            assert!(Instant::now() < exit_deadline, "neighbour 0's solver process survived cancel_neighbor");
+            assert!(
+                Instant::now() < exit_deadline,
+                "neighbour 0's solver process survived cancel_neighbor"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(alive(pid1), "cancel_neighbor(0) must not touch neighbour 1's still-legitimate process");
+        assert!(
+            alive(pid1),
+            "cancel_neighbor(0) must not touch neighbour 1's still-legitimate process"
+        );
 
         sched.reset();
     }

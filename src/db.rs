@@ -336,16 +336,34 @@ mod tests {
                 .unwrap();
             cache.put_strategy(hash, &config).unwrap();
             cache
-                .put(hash, ids["solved.p"], 0.5, 0.0, "Theorem", 10.0, Some(0x3eff6fcf0e4d910d))
+                .put(
+                    hash,
+                    ids["solved.p"],
+                    0.5,
+                    0.0,
+                    "Theorem",
+                    10.0,
+                    Some(0x3eff6fcf0e4d910d),
+                )
                 .unwrap();
-            cache.put(hash, ids["timedout.p"], 10.0, 0.0, "ResourceOut", 10.0, None).unwrap();
+            cache
+                .put(hash, ids["timedout.p"], 10.0, 0.0, "ResourceOut", 10.0, None)
+                .unwrap();
         }
 
         super::status(&cache_path, out_dir.path()).unwrap();
 
         let stem = cache_path.file_stem().unwrap().to_str().unwrap();
-        let exported = out_dir.path().join("status").join(stem).join(format!("ram-{hash:016x}"));
-        let lines: Vec<String> = std::fs::read_to_string(exported).unwrap().lines().map(str::to_string).collect();
+        let exported = out_dir
+            .path()
+            .join("status")
+            .join(stem)
+            .join(format!("ram-{hash:016x}"));
+        let lines: Vec<String> = std::fs::read_to_string(exported)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
         assert_eq!(lines.len(), 2);
 
         let solved_line = lines.iter().find(|l| l.starts_with("solved.p")).unwrap();
@@ -376,28 +394,58 @@ mod tests {
 
             // Both instances attempted and succeed: n=2, XORed.
             cache.put_strategy(complete_hash, &complete).unwrap();
-            cache.put(complete_hash, ids["i1.p"], 0.1, 0.0, "Theorem", 10.0, Some(0xAAAA)).unwrap();
-            cache.put(complete_hash, ids["i2.p"], 0.2, 0.0, "Theorem", 10.0, Some(0x5555)).unwrap();
+            cache
+                .put(complete_hash, ids["i1.p"], 0.1, 0.0, "Theorem", 10.0, Some(0xAAAA))
+                .unwrap();
+            cache
+                .put(complete_hash, ids["i2.p"], 0.2, 0.0, "Theorem", 10.0, Some(0x5555))
+                .unwrap();
 
             // Only one of two instances attempted at all: still included, n=1
             // -- not disqualified for missing coverage.
             cache.put_strategy(partial_attempt_hash, &partial_attempt).unwrap();
-            cache.put(partial_attempt_hash, ids["i1.p"], 0.1, 0.0, "Theorem", 10.0, Some(0x1234)).unwrap();
+            cache
+                .put(
+                    partial_attempt_hash,
+                    ids["i1.p"],
+                    0.1,
+                    0.0,
+                    "Theorem",
+                    10.0,
+                    Some(0x1234),
+                )
+                .unwrap();
 
             // Both attempted, one times out (null runhash): the timeout is
             // skipped when XOR-combining but still counts toward n (every
             // result, timeouts included) -- included, n=2, runhash from the
             // one instance that actually contributed.
             cache.put_strategy(partial_timeout_hash, &partial_timeout).unwrap();
-            cache.put(partial_timeout_hash, ids["i1.p"], 0.1, 0.0, "Theorem", 10.0, Some(0x1234)).unwrap();
-            cache.put(partial_timeout_hash, ids["i2.p"], 10.0, 0.0, "ResourceOut", 10.0, None).unwrap();
+            cache
+                .put(
+                    partial_timeout_hash,
+                    ids["i1.p"],
+                    0.1,
+                    0.0,
+                    "Theorem",
+                    10.0,
+                    Some(0x1234),
+                )
+                .unwrap();
+            cache
+                .put(partial_timeout_hash, ids["i2.p"], 10.0, 0.0, "ResourceOut", 10.0, None)
+                .unwrap();
 
             // Both instances time out: nothing to XOR, must be excluded
             // entirely (n=0 carries no information, matching the wrapper's
             // own reasoning for an empty-selection hash).
             cache.put_strategy(all_timeout_hash, &all_timeout).unwrap();
-            cache.put(all_timeout_hash, ids["i1.p"], 10.0, 0.0, "ResourceOut", 10.0, None).unwrap();
-            cache.put(all_timeout_hash, ids["i2.p"], 10.0, 0.0, "ResourceOut", 10.0, None).unwrap();
+            cache
+                .put(all_timeout_hash, ids["i1.p"], 10.0, 0.0, "ResourceOut", 10.0, None)
+                .unwrap();
+            cache
+                .put(all_timeout_hash, ids["i2.p"], 10.0, 0.0, "ResourceOut", 10.0, None)
+                .unwrap();
         }
 
         super::runhashes(&cache_path, out_dir.path()).unwrap();
