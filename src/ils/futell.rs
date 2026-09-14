@@ -1,5 +1,5 @@
 //! Future-telling: checkpoint-based early rejection of BLS neighbours
-//! (FUTURETELL.md).
+//! (DONE.md).
 
 use std::collections::HashMap;
 
@@ -7,7 +7,7 @@ use super::IlsOptions;
 
 /// Replays `n_total` instances across `n_virtual` identical virtual workers.
 /// Two feeds, both routing into the same `virtual_busy` buckets
-/// (FUTURETELL.md D11):
+/// (DONE.md):
 ///
 /// - **Dispatch-tracked** (`record_dispatch` then `record`, correlated by
 ///   `instance_id`): for a real solver invocation, busy-time is claimed the
@@ -23,7 +23,7 @@ use super::IlsOptions;
 /// - **Fallback** (`record` alone, no matching `record_dispatch`): a cache
 ///   hit, or any dispatch this tracker never saw (e.g. more concurrently
 ///   in-flight real dispatches than `n_virtual` buckets — not yet designed
-///   for, see FUTURETELL.md D11's "not yet decided" note). Assigns to
+///   for, see DONE.md's "not yet decided" note). Assigns to
 ///   whichever bucket is currently least busy and chains onto its existing
 ///   relative-time total — exactly the old, purely arrival-order-driven
 ///   behaviour, so a tracker fed only through `record` (never
@@ -148,12 +148,26 @@ impl CheckpointTracker {
                 .expect("a bucket in `assigned` always has a matching `pending` entry");
             (w, dispatch_rel + runtime)
         } else {
+            // Prefer a bucket with no dispatch still pending in it, same as
+            // `record_dispatch`'s own placement — landing on a pending
+            // bucket would overwrite `virtual_busy` with this fallback
+            // job's finish time, and that bucket's real pending dispatch
+            // would later overwrite it right back on its own `record` call,
+            // silently discarding this job's busy-time from the ledger
+            // (understating total load and risking an early false `ready`).
+            // Only when every bucket is already pending (full
+            // oversubscription of `n_virtual`, the still-undecided case
+            // from the struct doc) is there no bucket left that avoids
+            // this, and the plain least-busy pick is the best available.
             let w = self
-                .virtual_busy
-                .iter()
-                .enumerate()
-                .min_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(w, _)| w)
+                .least_busy_free_bucket()
+                .or_else(|| {
+                    self.virtual_busy
+                        .iter()
+                        .enumerate()
+                        .min_by(|a, b| a.1.total_cmp(b.1))
+                        .map(|(w, _)| w)
+                })
                 .expect("virtual_busy is never empty");
             (w, self.virtual_busy[w] + runtime)
         };
