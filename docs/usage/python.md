@@ -91,6 +91,7 @@ instance-list file.
 | `futell_cores` | `None` | Virtual worker count for the checkpoint simulation; `None` uses whatever `cores` resolved to. |
 | `futell_tolerance` | `0.0` | Relative margin, same shape as `acceptance_tolerance`, within which a worse checkpoint is still tolerated. |
 | `cache_db` | `":memory:"` | Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases. |
+| `cache_disable` | `False` | Disable cache *lookups*: every task is treated as a miss and actually run, no matter what `cache_db` already holds. Writes still happen, subject to the usual keep-existing-unless-upgrading-a-timeout policy. For isolating whether cache hits are skewing something, not for routine use. |
 | `debug` | `False` | Print new incumbents, scores, and accepted argument changes to stderr. |
 | `debug_wrapper` | `False` | Print every solver invocation. |
 | `debug_solver` | `False` | Print every solver result. |

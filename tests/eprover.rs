@@ -156,6 +156,7 @@ fn run_ils_eprover() {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 1,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: ramparils::DebugOptions::default(),
     };
 

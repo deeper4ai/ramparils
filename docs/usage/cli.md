@@ -112,6 +112,7 @@ futell_checkpoint: 1.0     # horizon, as a multiple of cutoff_time
 futell_cores:      ~       # virtual worker count; null = same as `cores`
 futell_tolerance:  0.0
 cache_db:              ":memory:"    # use a file path to persist across runs
+cache_disable:         false    # true: never read a cache hit (writes still happen)
 debug:                 false
 debug_wrapper:         false
 debug_solver:          false
@@ -209,6 +210,7 @@ See [Iterative deepening](../reference/algorithm.md#iterative-deepening).
 |-------|---------|-------------|
 | `cores` | `0` | Number of parallel worker threads. `0` uses all available CPU cores. Set to a specific number to limit parallelism on shared machines. |
 | `cache_db` | `":memory:"` | Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases. |
+| `cache_disable` | `false` | Disable cache *lookups*: every task is treated as a miss and actually run, no matter what `cache_db` already holds. Writes still happen — a result still lands in the cache via the normal keep-existing-unless-upgrading-a-timeout write policy, so a repeated `(strategy, instance)` pair keeps its first solved result rather than being overwritten by a later re-run's differing number. For isolating whether cache hits are skewing something, not for routine use. |
 | `num_run` | `0` | Run index, reserved for future use as a random seed. Has no effect currently. |
 | `instance_shuffle` | `true` | Shuffle the instance list once, deterministically, before dispatch — decorrelates FocusedILS's fidelity-growth prefix from any difficulty ordering already present in the instance file. Changes real evaluation order for *every* scenario that doesn't opt out, including ones that never touch `futell`. Turn it off if the instance list is already randomized (a second shuffle would be redundant) or a specific literal order must be preserved. Never affects which `instance_id` a path is assigned in the cache — it only reorders an already-assigned list. |
 | `instance_shuffle_seed` | `0` | Seed for `instance_shuffle`. |

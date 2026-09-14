@@ -319,6 +319,16 @@ impl Cache {
 
     /// Store a single result.
     ///
+    /// A repeated `(strategy_hash, instance_id)` write does **not** always
+    /// overwrite: it's a no-op unless the existing row is itself a timeout
+    /// being upgraded (to a non-timeout, or to a longer-cutoff timeout) —
+    /// see `should_write` below. A genuine solved/proved result is kept
+    /// forever once seen, even if `cache_disable` (or anything else) causes
+    /// the same pair to be re-run and produce a different number; only a
+    /// timeout can ever be replaced. This matters more once `cache_disable`
+    /// is set, since re-runs of the same pair become routine rather than
+    /// exceptional.
+    ///
     /// `runhash` is the wrapper's optional fourth result-line field — `None`
     /// for anything but a terminated (sat/unsat-shaped) run; see the module
     /// doc note on the `runhash` column.

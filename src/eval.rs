@@ -154,6 +154,9 @@ pub struct Scheduler {
     #[cfg(test)]
     submitted_work_batches: AtomicUsize,
     cutoff_time: f64,
+    /// When set, `submit()` skips `cache.get_batch()` and treats every task
+    /// as a miss. Results are still written back as usual.
+    cache_disable: bool,
     debug: crate::DebugOptions,
     active_process_groups: Arc<Mutex<HashMap<libc::pid_t, (u64, usize)>>>,
     /// `(batch_id, neighbor_id)` pairs cancelled via `cancel_neighbor()`
@@ -171,7 +174,13 @@ pub struct Scheduler {
 impl Scheduler {
     /// Spawn `n_workers` worker threads. Each loops waiting for work batches,
     /// runs the solver, and sends `TaskResult`s back.
-    pub fn new(n_workers: usize, algo: String, cutoff_time: f64, debug: crate::DebugOptions) -> Self {
+    pub fn new(
+        n_workers: usize,
+        algo: String,
+        cutoff_time: f64,
+        cache_disable: bool,
+        debug: crate::DebugOptions,
+    ) -> Self {
         let (work_tx, work_rx) = unbounded::<WorkBatch>();
         let (event_tx, event_rx) = unbounded::<SchedulerEvent>();
         let batch_id = Arc::new(AtomicU64::new(0));
@@ -258,6 +267,7 @@ impl Scheduler {
             #[cfg(test)]
             submitted_work_batches: AtomicUsize::new(0),
             cutoff_time,
+            cache_disable,
             debug,
             active_process_groups,
             cancelled_neighbors,
@@ -267,8 +277,10 @@ impl Scheduler {
 
     /// Dispatch one batch of tasks.
     ///
-    /// For each task, issues one bulk cache query; hits go directly to the
-    /// result channel, while misses are grouped into shared work batches.
+    /// For each task, issues one bulk cache query (skipped entirely, every
+    /// task treated as a miss, when `cache_disable` is set); hits go
+    /// directly to the result channel, while misses are grouped into shared
+    /// work batches.
     ///
     /// Returns an id that identifies all results from this submission.
     pub fn submit(&self, tasks: Vec<EvalTask>, cache: &Cache) -> Result<u64> {
@@ -284,7 +296,11 @@ impl Scheduler {
             cache.put_strategy(task.hash, &task.config)?;
 
             let ids: Vec<i64> = task.instances.iter().map(|(id, _)| *id).collect();
-            let hits: HashMap<i64, CachedResult> = cache.get_batch(task.hash, &ids, self.cutoff_time)?;
+            let hits: HashMap<i64, CachedResult> = if self.cache_disable {
+                HashMap::new()
+            } else {
+                cache.get_batch(task.hash, &ids, self.cutoff_time)?
+            };
             let mut missing_indices = Vec::with_capacity(task.instances.len() - hits.len());
 
             for (index, (instance_id, _)) in task.instances.iter().enumerate() {
@@ -716,7 +732,7 @@ mod tests {
         cache.put(hash, id1, 0.5, 0.0, "Theorem", 10.0, None).unwrap();
         cache.put(hash, id2, 1.0, 0.0, "Theorem", 10.0, None).unwrap();
 
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, crate::DebugOptions::default());
         sched
             .submit(
                 vec![EvalTask {
@@ -747,6 +763,74 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_cache_disable_forces_miss_and_rewrites() {
+        // A pre-cached, already-solved result exists; cache_disable must
+        // ignore it on lookup and actually run the solver. Cache.put's own
+        // keep-existing-unless-upgrading-a-timeout policy (unchanged by this
+        // option) then means the stale *solved* row is kept as-is, not
+        // overwritten by the fresh run's differing number.
+        let mut cache = Cache::open(":memory:", false).unwrap();
+        let instance = "i1.cnf".to_string();
+        let id_map = cache.load_instances(std::slice::from_ref(&instance)).unwrap();
+        let instance_id = id_map[&instance];
+        let config: Config = [("alpha".to_string(), "1".to_string())].into();
+        let hash = hash_config(&config);
+        cache.put(hash, instance_id, 0.5, 0.0, "Theorem", 10.0, None).unwrap();
+
+        let scheduler = Scheduler::new(
+            1,
+            "printf '#%%# RamParIls #%%# sat, 3.3, 0.0\\n'".to_string(),
+            10.0,
+            true,
+            crate::DebugOptions::default(),
+        );
+        scheduler
+            .submit(
+                vec![EvalTask {
+                    neighbor_id: 0,
+                    config,
+                    hash,
+                    instances: Arc::new(vec![(instance_id, instance)]),
+                }],
+                &cache,
+            )
+            .unwrap();
+
+        match scheduler.events().recv_timeout(Duration::from_millis(500)) {
+            Ok(SchedulerEvent::Dispatched(_)) => {}
+            other => panic!("expected a Dispatched event for a real (non-cached) run, got {other:?}"),
+        }
+        let result = expect_completed(
+            scheduler
+                .events()
+                .recv_timeout(Duration::from_millis(500))
+                .expect("expected a real solver run, not a cache hit"),
+        );
+        assert!(
+            (result.runtime - 3.3).abs() < 1e-9,
+            "got stale cached runtime instead of a real run"
+        );
+        assert!(result.cacheable);
+
+        cache
+            .put(
+                hash,
+                instance_id,
+                result.runtime,
+                result.quality,
+                &result.status,
+                10.0,
+                result.runhash,
+            )
+            .unwrap();
+        let stored = cache.get_batch(hash, &[instance_id], 10.0).unwrap();
+        assert!(
+            (stored[&instance_id].runtime - 0.5).abs() < 1e-9,
+            "a genuine solved result must not be clobbered by a later re-run's differing number"
+        );
+    }
+
+    #[test]
     fn synthetic_timeout_is_not_cacheable() {
         let mut cache = Cache::open(":memory:", false).unwrap();
         let instance = "i1.cnf".to_string();
@@ -756,7 +840,7 @@ mod tests {
         let hash = hash_config(&config);
         cache.put(hash, instance_id, 8.0, 0.0, "sat", 10.0, None).unwrap();
 
-        let scheduler = Scheduler::new(1, "unused".to_string(), 5.0, crate::DebugOptions::default());
+        let scheduler = Scheduler::new(1, "unused".to_string(), 5.0, false, crate::DebugOptions::default());
         scheduler
             .submit(
                 vec![EvalTask {
@@ -786,7 +870,7 @@ mod tests {
     #[test]
     fn scheduler_reset_drains_cleanly() {
         let cache = Cache::open(":memory:", false).unwrap();
-        let sched = Scheduler::new(2, "unused".to_string(), 10.0, crate::DebugOptions::default());
+        let sched = Scheduler::new(2, "unused".to_string(), 10.0, false, crate::DebugOptions::default());
 
         // Submit empty batch (nothing to do) then reset immediately.
         sched.submit(vec![], &cache).unwrap();
@@ -818,7 +902,13 @@ mod tests {
         let instance = "instance.cnf".to_string();
         let ids = cache.load_instances(std::slice::from_ref(&instance)).unwrap();
         let config: Config = [("alpha".to_string(), "1".to_string())].into();
-        let sched = Scheduler::new(1, wrapper.display().to_string(), 300.0, crate::DebugOptions::default());
+        let sched = Scheduler::new(
+            1,
+            wrapper.display().to_string(),
+            300.0,
+            false,
+            crate::DebugOptions::default(),
+        );
         sched
             .submit(
                 vec![EvalTask {
@@ -900,7 +990,13 @@ mod tests {
         let config1: Config = [("alpha".to_string(), "1".to_string())].into();
         // Two workers, one instance each -- both dispatch immediately, no
         // queueing behind one another.
-        let sched = Scheduler::new(2, wrapper.display().to_string(), 300.0, crate::DebugOptions::default());
+        let sched = Scheduler::new(
+            2,
+            wrapper.display().to_string(),
+            300.0,
+            false,
+            crate::DebugOptions::default(),
+        );
         let batch_id = sched
             .submit(
                 vec![
@@ -964,7 +1060,7 @@ mod tests {
         let id_map = cache.load_instances(&paths).unwrap();
         let instances = Arc::new(paths.iter().map(|path| (id_map[path], path.clone())).collect());
         let config: Config = [("alpha".to_string(), "1".to_string())].into();
-        let sched = Scheduler::new(4, "true".to_string(), 10.0, crate::DebugOptions::default());
+        let sched = Scheduler::new(4, "true".to_string(), 10.0, false, crate::DebugOptions::default());
 
         sched
             .submit(

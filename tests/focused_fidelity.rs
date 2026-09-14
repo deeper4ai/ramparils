@@ -78,6 +78,7 @@ fn fidelity_increases_remeasure_both_retained_states() {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 4,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: ramparils::DebugOptions {
             main: true,
             wrapper: false,

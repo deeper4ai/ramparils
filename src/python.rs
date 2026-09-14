@@ -97,6 +97,7 @@ fn extract_scenario(d: &Bound<'_, PyDict>) -> PyResult<Scenario> {
         future_telling_cores: opt_usize("futell_cores")?,
         future_telling_tolerance: opt_f64("futell_tolerance")?.unwrap_or(0.0),
         cache_db: opt_str("cache_db")?.unwrap_or_else(|| ":memory:".to_string()),
+        cache_disable: opt_bool("cache_disable")?.unwrap_or(false),
         debug: opt_bool("debug")?.unwrap_or(false),
         debug_wrapper: opt_bool("debug_wrapper")?.unwrap_or(false),
         debug_solver: opt_bool("debug_solver")?.unwrap_or(false),

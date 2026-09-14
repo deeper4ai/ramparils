@@ -158,6 +158,9 @@ pub struct IlsOptions {
     pub future_telling_cores: usize,
     /// Relative rejection margin, same shape as `acceptance_tolerance`.
     pub future_telling_tolerance: f64,
+    /// Disable cache lookups: every task runs regardless of what's already
+    /// cached (writes still happen). See `Scenario::cache_disable`.
+    pub cache_disable: bool,
     pub debug: crate::DebugOptions,
 }
 
@@ -370,7 +373,13 @@ pub fn run(
 ) -> Result<(Config, f64)> {
     counters::reset();
     let deadline = Instant::now() + Duration::from_secs_f64(options.tuner_timeout);
-    let scheduler = Scheduler::new(options.n_workers, algo.to_string(), cutoff_time, options.debug);
+    let scheduler = Scheduler::new(
+        options.n_workers,
+        algo.to_string(),
+        cutoff_time,
+        options.cache_disable,
+        options.debug,
+    );
     let mut rng = rand::thread_rng();
     let mut ctx = EvalContext {
         scheduler: &scheduler,

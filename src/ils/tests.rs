@@ -78,6 +78,7 @@ fn focused_options() -> IlsOptions {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 1,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
     }
 }
@@ -165,6 +166,7 @@ fn dominates_basic() {
         approach: Approach::Basic,
         n_workers: 1,
         perturbation_strength: 4,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
         restart_probability: 0.0,
         restart_failures: 0,
@@ -198,6 +200,7 @@ fn dominates_focused() {
         approach: Approach::Focused,
         n_workers: 1,
         perturbation_strength: 4,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
         restart_probability: 0.0,
         restart_failures: 0,
@@ -379,6 +382,7 @@ fn compute_score_mean_runtime() {
         approach: Approach::Basic,
         n_workers: 1,
         perturbation_strength: 4,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
         restart_probability: 0.0,
         restart_failures: 0,
@@ -409,6 +413,7 @@ fn compute_score_median_runtime() {
         approach: Approach::Basic,
         n_workers: 1,
         perturbation_strength: 4,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
         restart_probability: 0.0,
         restart_failures: 0,
@@ -546,6 +551,7 @@ fn evaluation_waits_through_poll_timeouts() {
         1,
         "sleep 0.7; echo '#%# RamParIls #%# sat, 0.7, 0.0'; true".to_string(),
         2.0,
+        false,
         crate::DebugOptions::default(),
     );
     let options = IlsOptions {
@@ -571,6 +577,7 @@ fn evaluation_waits_through_poll_timeouts() {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 1,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
     };
     let config = cfg(&[("alpha", "1")]);
@@ -605,6 +612,7 @@ fn evaluation_marks_partial_cache_result_incomplete() {
         1,
         "sleep 0.5; echo '#%# RamParIls #%# sat, 0.5, 0.0'; true".to_string(),
         2.0,
+        false,
         crate::DebugOptions::default(),
     );
     let options = IlsOptions {
@@ -630,6 +638,7 @@ fn evaluation_marks_partial_cache_result_incomplete() {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 1,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
     };
 
@@ -671,6 +680,7 @@ fn evaluation_combines_runhash_via_xor() {
         1,
         "printf '#%%# RamParIls #%%# sat, 0.1, 0.0, 00000000000000ff\\n'".to_string(),
         2.0,
+        false,
         crate::DebugOptions::default(),
     );
     let options = IlsOptions {
@@ -696,6 +706,7 @@ fn evaluation_combines_runhash_via_xor() {
         future_telling_checkpoint: 1.0,
         future_telling_cores: 1,
         future_telling_tolerance: 0.0,
+        cache_disable: false,
         debug: crate::DebugOptions::default(),
     };
 
@@ -1102,6 +1113,7 @@ fn future_telling_fixture(
         n_workers,
         wrapper.display().to_string(),
         cutoff_time,
+        false,
         crate::DebugOptions::default(),
     );
 

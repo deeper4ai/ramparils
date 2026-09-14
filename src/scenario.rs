@@ -287,6 +287,16 @@ pub struct Scenario {
     #[serde(default = "default_cache_db")]
     pub cache_db: String,
 
+    /// Disable cache *lookups*: every task is treated as a miss and actually
+    /// run, regardless of what `cache_db` already holds. Writes are
+    /// unaffected — a result still lands in `results` via `INSERT OR
+    /// REPLACE`, so a repeated (strategy, instance) pair simply keeps the
+    /// most recent run, same as with caching enabled. For isolating whether
+    /// cache hits are skewing something (e.g. a checkpoint mechanism reading
+    /// unrealistically-fast cache-hit "runtimes"), not for routine use.
+    #[serde(default)]
+    pub cache_disable: bool,
+
     /// Print debug output (new incumbents and their quality).
     #[serde(default)]
     pub debug: bool,
@@ -389,6 +399,7 @@ impl Scenario {
             future_telling_checkpoint: self.future_telling_checkpoint,
             future_telling_cores,
             future_telling_tolerance: self.future_telling_tolerance,
+            cache_disable: self.cache_disable,
             debug,
         })
     }

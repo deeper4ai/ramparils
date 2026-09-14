@@ -11,6 +11,18 @@ they describe what changed rather than what was announced at the time.
 
 ### Added
 
+- **`cache_disable` scenario option**: when set, `Scheduler::submit` skips
+  `cache.get_batch()` entirely and treats every task as a miss, so every
+  instance actually runs regardless of what `cache_db` already holds.
+  Writes are unaffected — `cache.put()`'s existing keep-existing-unless-
+  upgrading-a-timeout policy (a genuine solved result is never clobbered by
+  a later re-run's differing number; only a timeout can be replaced) applies
+  exactly as before. Added to let a cache-hit-heavy run be re-run with
+  caching off as a clean A/B check for whether cache hits (whose "runtime"
+  contributes to a virtual-worker simulation like `future_telling`'s
+  checkpoint at a very different wall-clock cost than a real dispatch) are
+  skewing something.
+
 - **`future_telling`: opt-in checkpoint-based early rejection of BLS
   neighbours**, alongside the existing (exact) adaptive-capping prune. While a
   neighbour's real per-instance results stream in, a simulated N-worker replay
