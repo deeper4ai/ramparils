@@ -476,18 +476,15 @@ statistic, and a partial evaluation is compared as if it were a full one.
 
 **✅ Adaptive capping: test the cumulative sum, not the running mean — done, see `DONE.md`.**
 
-## ⬜ Pass `dominates` the count actually completed, not nominal `n_runs`
-
-Both call sites pass the nominal instance count on each side even when pruning
-made one side a partial evaluation. `Basic` and `Random` ignore run counts, so
-it cannot bite today; **`Focused` compares `a_runs >= b_runs`** and would read a
-capped partial score as full-fidelity.
-
-The plumbing this needed is now in place — `basic_local_search` takes and
-returns a `ConfigEvaluation`, so `complete` and `n_done` survive to the
-comparison instead of being dropped by `evaluate_config`. What remains is to use
-them at the two `dominates` call sites. Before `Focused` is run with
-`pruning: true`.
+**✅ Never let a partial evaluation win a `dominates` comparison — done, see `DONE.md`.**
+Turned out to need a broader fix than passing `n_done` to the two
+`dominates` call sites (that alone would only have protected `Focused`,
+via its `a_runs >= b_runs` guard — `Basic`/`Random` ignore run counts
+entirely and would've stayed exposed): `try_promote_incumbent`/
+`accept_or_reject_home_base`/`set_home_base` now refuse an incomplete
+evaluation outright, for every approach, before ever comparing scores.
+Found for real via `futell`'s aggressive checkpoint capping, not
+speculatively — see `DONE.md`'s `futell` entry.
 
 ## ⬜ Capping sums even under `overall_obj: median`
 
@@ -498,9 +495,29 @@ the final median is above it too. Otherwise disable capping for `median`.
 
 ---
 
+# Proposed — `futell` real tuning validation (2026-09-13)
+
+`futell` (checkpoint-based early rejection of BLS neighbours, `DONE.md`) is
+implemented, default off, and validated at the mechanism level — replay
+simulation matches real checkpoints, the D3 gate holds at its boundary, a
+rejected neighbour never wins a round. What it has never had is a real
+tuning comparison.
+
+## ⬜ Real tuning comparison before flipping any default
+
+Run `futell: true` against a plain `futell: false` baseline, same scenario,
+same `instance_shuffle` (fixed across both sides so shuffle isn't a
+confound), and compare final scores — not just eval counts. A couple of
+short, real tuning runs with `futell` on have happened since it shipped
+(one an explicit 1h bug-shakeout smoke test, one launched to exercise the
+acceptance-path fix found the same day), but neither was framed or sized as
+this comparison. Still open.
+
+---
+
 # Proposed — `run_obj: solved` (2026-09-12)
 
-Raised while designing the future-telling checkpoint feature (`FUTURETELL.md`):
+Raised while designing the future-telling checkpoint feature (`DONE.md`):
 a `RunObjective` that scores a configuration by how many instances it solves,
 rather than by runtime or quality.
 
@@ -524,7 +541,7 @@ would (`ResourceOut` vs `GaveUp` vs `Timeout` all becoming the same
 status`). Two buckets — solved / not-solved — are enough.
 
 **This also has a free-standing use beyond `run_obj: solved` itself**:
-future-telling's own checkpoint metric (`FUTURETELL.md`) independently needs
+future-telling's own checkpoint metric (`DONE.md`) independently needs
 a cheap "is this solved" signal, and settled on deriving it from the
 existing PAR1 wrapper contract (`runtime < cutoff_time`) rather than
 `is_solved()`'s status-string matching, specifically so it works for *any*

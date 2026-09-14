@@ -77,16 +77,16 @@ def specialize(
               scenario that doesn't opt out; set to ``False`` if the instance file is
               already randomized and a second shuffle would be redundant.
             - **instance_shuffle_seed** (*int*, default ``0``) — seed for ``instance_shuffle``.
-            - **future_telling** (*bool*, default ``False``) — reject a BLS neighbour early
+            - **futell** (*bool*, default ``False``) — reject a BLS neighbour early
               once a simulated N-worker replay of its real per-instance results is
               significantly worse, at an early checkpoint, than the incumbent's own. A
               heuristic prune (can reject a config that would have gone on to win), off
               by default.
-            - **future_telling_checkpoint** (*float*, default ``1.0``) — checkpoint horizon,
+            - **futell_checkpoint** (*float*, default ``1.0``) — checkpoint horizon,
               as a multiple of ``cutoff_time``.
-            - **future_telling_cores** (*int*, default ``None``) — virtual worker count for
+            - **futell_cores** (*int*, default ``None``) — virtual worker count for
               the checkpoint simulation; ``None`` uses whatever ``cores`` resolved to.
-            - **future_telling_tolerance** (*float*, default ``0.0``) — relative margin, same
+            - **futell_tolerance** (*float*, default ``0.0``) — relative margin, same
               shape as ``acceptance_tolerance``, within which a worse checkpoint is still
               tolerated.
             - **cache_db** (*str*, default ``":memory:"``) — path to the SQLite cache.

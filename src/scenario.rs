@@ -42,7 +42,6 @@
 //! futell_checkpoint: 1.0      # horizon, as a multiple of cutoff_time
 //! futell_cores: ~             # virtual worker count; null = same as `cores`
 //! futell_tolerance: 0.0       # relative rejection margin
-//! # future_telling*: accepted as an alias of futell* for existing scenarios
 //! cache_db: ":memory:"          # use a file path to persist across runs
 //! debug: false
 //! debug_wrapper: false
@@ -249,7 +248,7 @@ pub struct Scenario {
     /// Shuffle instances once, deterministically, before dispatch. Default on
     /// — decorrelates a fixed evaluation-order prefix (fidelity growth,
     /// future-telling's checkpoint simulation) from any difficulty ordering
-    /// already present in the instance file. See FUTURETELL.md D5.
+    /// already present in the instance file. See DONE.md.
     #[serde(default = "default_true")]
     pub instance_shuffle: bool,
 
@@ -261,33 +260,27 @@ pub struct Scenario {
     /// of its real per-instance results, checkpointed at
     /// `futell_checkpoint * cutoff_time`, is significantly worse than
     /// the incumbent's own checkpoint. A heuristic prune, off by default —
-    /// see FUTURETELL.md.
+    /// see DONE.md.
     ///
-    /// Scenario key is `futell` (`future_telling` accepted as an alias, for
-    /// scenarios written before this rename).
-    #[serde(default, rename = "futell", alias = "future_telling")]
+    /// Scenario key is `futell`.
+    #[serde(default, rename = "futell")]
     pub future_telling: bool,
 
     /// Checkpoint horizon, as a multiple of `cutoff_time`. Scenario key
-    /// `futell_checkpoint` (`future_telling_checkpoint` aliased).
-    #[serde(
-        default = "default_future_telling_checkpoint",
-        rename = "futell_checkpoint",
-        alias = "future_telling_checkpoint"
-    )]
+    /// `futell_checkpoint`.
+    #[serde(default = "default_future_telling_checkpoint", rename = "futell_checkpoint")]
     pub future_telling_checkpoint: f64,
 
     /// Virtual worker count for the checkpoint simulation; `None` resolves to
     /// whatever `cores:` resolved to for this run. Scenario key
-    /// `futell_cores` (`future_telling_cores` aliased).
-    #[serde(default, rename = "futell_cores", alias = "future_telling_cores")]
+    /// `futell_cores`.
+    #[serde(default, rename = "futell_cores")]
     pub future_telling_cores: Option<usize>,
 
     /// Relative margin, same shape as `acceptance_tolerance`, within which a
     /// challenger's checkpoint is still tolerated despite being worse than
-    /// the incumbent's. Scenario key `futell_tolerance`
-    /// (`future_telling_tolerance` aliased).
-    #[serde(default, rename = "futell_tolerance", alias = "future_telling_tolerance")]
+    /// the incumbent's. Scenario key `futell_tolerance`.
+    #[serde(default, rename = "futell_tolerance")]
     pub future_telling_tolerance: f64,
 
     /// Path to the SQLite result cache.
@@ -362,7 +355,7 @@ impl Scenario {
             eprintln!(
                 "warning: futell: true with instance_shuffle: false — the checkpoint horizon may \
                  not mature until nearly the whole evaluation is already done, unless the instance file is \
-                 already difficulty-decorrelated (see FUTURETELL.md D5)"
+                 already difficulty-decorrelated (see DONE.md)"
             );
         }
 
@@ -453,7 +446,7 @@ impl Scenario {
 }
 
 /// Whether the `future_telling: true` + `instance_shuffle: false` combination
-/// deserves a startup warning (FUTURETELL.md D5) — not always wrong (a
+/// deserves a startup warning (DONE.md) — not always wrong (a
 /// pre-randomized instance file is a legitimate reason for it), but usually a
 /// mistake, and there is no way to tell the two apart from here. A plain
 /// function so the decision itself is unit-testable without capturing stderr.
@@ -650,20 +643,23 @@ mod tests {
         );
     }
 
-    /// The old `future_telling*` spelling (pre-rename) must still parse, so
-    /// scenarios already written against it keep working.
+    /// The pre-rename `future_telling*` spelling is no longer accepted (the
+    /// alias existed only to carry a handful of already-run smoke-test
+    /// scenarios; those are concluded, and `futell*` is the only spelling
+    /// from here on) -- it parses as unknown extra keys and every field
+    /// falls back to its default rather than picking up the given values.
     #[test]
-    fn future_telling_key_alias_still_parses() {
+    fn future_telling_key_no_longer_parses() {
         let s = scenario(
             "future_telling: true\nfuture_telling_checkpoint: 0.5\nfuture_telling_cores: 3\nfuture_telling_tolerance: 0.1\n",
         );
-        assert!(s.future_telling);
-        assert_eq!(s.future_telling_checkpoint, 0.5);
-        assert_eq!(s.future_telling_cores, Some(3));
-        assert_eq!(s.future_telling_tolerance, 0.1);
+        assert!(!s.future_telling);
+        assert_eq!(s.future_telling_checkpoint, 1.0);
+        assert_eq!(s.future_telling_cores, None);
+        assert_eq!(s.future_telling_tolerance, 0.0);
     }
 
-    /// The startup warning (FUTURETELL.md D5) fires on exactly the one
+    /// The startup warning (DONE.md) fires on exactly the one
     /// combination that is usually — not always — a mistake, and stays
     /// silent on the other three.
     #[test]

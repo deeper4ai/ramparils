@@ -30,7 +30,7 @@ include a random seed.
 - `src/ils/`: BasicILS, FocusedILS, perturbation, local search, capping, and
   iterative deepening, split into `mod.rs` (the `run()` orchestration loop),
   `bls.rs` (parallel first-improvement descent + single-config evaluation),
-  `futell.rs` (checkpoint-based early rejection, FUTURETELL.md),
+  `futell.rs` (checkpoint-based early rejection, DONE.md),
   `logging.rs`, `counters.rs` and `deepening.rs`.
 - `src/main.rs`: the CLI — `run` and `db` sub-commands, and all of the clap
   structure; tuning options come from the scenario.

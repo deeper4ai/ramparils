@@ -86,10 +86,10 @@ instance-list file.
 | `num_run` | `0` | Run index / random seed (reserved). |
 | `instance_shuffle` | `True` | Shuffle instances once, deterministically, before dispatch. Changes real evaluation order for any scenario that doesn't opt out; set `False` if the instance list is already randomized. |
 | `instance_shuffle_seed` | `0` | Seed for `instance_shuffle`. |
-| `future_telling` | `False` | Reject a BLS neighbour early once a simulated N-worker replay of its real per-instance results is significantly worse, at an early checkpoint, than the incumbent's own. A heuristic prune (can reject a config that would have gone on to win), off by default. |
-| `future_telling_checkpoint` | `1.0` | Checkpoint horizon, as a multiple of `cutoff_time`. |
-| `future_telling_cores` | `None` | Virtual worker count for the checkpoint simulation; `None` uses whatever `cores` resolved to. |
-| `future_telling_tolerance` | `0.0` | Relative margin, same shape as `acceptance_tolerance`, within which a worse checkpoint is still tolerated. |
+| `futell` | `False` | Reject a BLS neighbour early once a simulated N-worker replay of its real per-instance results is significantly worse, at an early checkpoint, than the incumbent's own. A heuristic prune (can reject a config that would have gone on to win), off by default. |
+| `futell_checkpoint` | `1.0` | Checkpoint horizon, as a multiple of `cutoff_time`. |
+| `futell_cores` | `None` | Virtual worker count for the checkpoint simulation; `None` uses whatever `cores` resolved to. |
+| `futell_tolerance` | `0.0` | Relative margin, same shape as `acceptance_tolerance`, within which a worse checkpoint is still tolerated. |
 | `cache_db` | `":memory:"` | Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases. |
 | `debug` | `False` | Print new incumbents, scores, and accepted argument changes to stderr. |
 | `debug_wrapper` | `False` | Print every solver invocation. |

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 pub static EVALS: AtomicUsize = AtomicUsize::new(0);
 pub static CAPPED: AtomicUsize = AtomicUsize::new(0);
-/// Distinct from `CAPPED` (Risks, FUTURETELL.md): a checkpoint rejection
+/// Distinct from `CAPPED` (Risks, DONE.md): a checkpoint rejection
 /// is a statistical heuristic, not a proof, so a run summary should be
 /// able to tell the two apart rather than reading one combined number.
 pub static FUTURE_TELLING_REJECTED: AtomicUsize = AtomicUsize::new(0);

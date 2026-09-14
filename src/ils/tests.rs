@@ -719,7 +719,7 @@ fn evaluation_combines_runhash_via_xor() {
 }
 
 // -----------------------------------------------------------------
-// Future-telling: CheckpointTracker (FUTURETELL.md)
+// Future-telling: CheckpointTracker (DONE.md)
 // -----------------------------------------------------------------
 
 /// Feeds `runtimes` into a tracker in the given order and returns
@@ -838,7 +838,7 @@ fn checkpoint_tracker_finishing_before_maturing_never_reports_ready() {
 
 #[test]
 fn checkpoint_tracker_rejected_design_would_have_inverted_the_comparison() {
-    // Recorded per FUTURETELL.md D6: the design this replaced (mean of
+    // Recorded per DONE.md: the design this replaced (mean of
     // completed-subset runtimes) is volume-*insensitive*, so a config
     // with a handful of great completions could look better than one
     // with hundreds of decent ones. Confirm the actual (count-based)
@@ -869,7 +869,7 @@ fn checkpoint_tracker_rejected_design_would_have_inverted_the_comparison() {
 /// E-prover strategies from a completed, already-analyzed evaluation
 /// batch -- one line per instance, `n_total = 1999` each. Used only to
 /// replay-validate `CheckpointTracker` against already-published
-/// reference counts; see FUTURETELL.md's validation plan.
+/// reference counts; see DONE.md's validation plan.
 const REPLAY_AUTO: &str = include_str!("../../tests/fixtures/checkpoint-replay/auto.txt");
 const REPLAY_E_PRE_CASC_10: &str = include_str!("../../tests/fixtures/checkpoint-replay/e-pre_casc_10.txt");
 const REPLAY_RAM_2B65A827: &str = include_str!("../../tests/fixtures/checkpoint-replay/ram-2b65a8274485a1ea.txt");
@@ -913,7 +913,7 @@ fn checkpoint_tracker_replay_ram_2b65a827_matches_the_diary_exactly() {
 fn checkpoint_tracker_replay_auto_reveals_a_real_par1_violation_upstream() {
     // Diary's own reference count for `auto` at these settings is 55,
     // from the *true* SZS-status-based solved determination. This
-    // fixture's `runtime < cutoff` proxy (FUTURETELL.md D6) gives 58 --
+    // fixture's `runtime < cutoff` proxy (DONE.md) gives 58 --
     // a *measured*, not hypothetical, discrepancy: 3 of the 1999
     // instances have SZS status `GaveUp` (not a real solve) but report
     // a fast real runtime instead of the cutoff, which is a PAR1
@@ -923,7 +923,7 @@ fn checkpoint_tracker_replay_auto_reveals_a_real_par1_violation_upstream() {
     // failure mode, `docs/reference/protocol.md`). This is the intended
     // outcome of this test: it documents the gap `runtime < cutoff`
     // depends on wrapper compliance to close, with real numbers, not a
-    // failure of the simulation port -- see FUTURETELL.md's Risks
+    // failure of the simulation port -- see DONE.md's Risks
     // section and the "Rejected" validation item for `compute_score`.
     let runtimes = parse_replay_fixture(REPLAY_AUTO);
     assert_eq!(runtimes.len(), 1999);
@@ -931,7 +931,7 @@ fn checkpoint_tracker_replay_auto_reveals_a_real_par1_violation_upstream() {
 }
 
 // -----------------------------------------------------------------
-// Future-telling: instance_shuffle (FUTURETELL.md D5, validation item 4)
+// Future-telling: instance_shuffle (DONE.md, validation item 4)
 // -----------------------------------------------------------------
 
 fn instances_0_to_9() -> Vec<(i64, String)> {
@@ -971,7 +971,7 @@ fn shuffle_instances_is_a_pure_reordering() {
 }
 
 /// Instance-ID assignment (`cache.load_instances`) must be independent of
-/// whether/how shuffling is configured (FUTURETELL.md D5's ordering
+/// whether/how shuffling is configured (DONE.md's ordering
 /// requirement): the same path always resolves to the same `instance_id`,
 /// whether or not `instance_shuffle` is set, since the shuffle only ever
 /// runs on an already-ID-assigned `Vec`.
@@ -1000,7 +1000,7 @@ fn instance_shuffle_never_changes_which_id_a_path_resolves_to() {
 }
 
 // -----------------------------------------------------------------
-// Future-telling: the D3 gate (FUTURETELL.md, validation item 5)
+// Future-telling: the D3 gate (DONE.md, validation item 5)
 // -----------------------------------------------------------------
 
 #[test]
@@ -1024,7 +1024,7 @@ fn future_telling_active_requires_strictly_more_runs_than_virtual_cores() {
 }
 
 // -----------------------------------------------------------------
-// Future-telling: end-to-end BLS integration (FUTURETELL.md, validation
+// Future-telling: end-to-end BLS integration (DONE.md, validation
 // item 5)
 // -----------------------------------------------------------------
 
@@ -1170,7 +1170,7 @@ fn future_telling_stops_evaluating_a_bad_config_before_full_completion() {
 /// The mirror case: an obviously-good config, evaluated under the exact
 /// same future-telling settings, is never checkpoint-rejected -- its own
 /// tracker structurally never matures at this horizon (D3/D7's "config
-/// finished before maturing" case: real dispatch (FUTURETELL.md D11)
+/// finished before maturing" case: real dispatch (DONE.md)
 /// keeps every real worker's own busy time under `checkpoint_time=1.0`
 /// for all 20 instances), so it runs to full, real completion regardless
 /// of how strict the reference is.

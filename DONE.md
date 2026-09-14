@@ -309,3 +309,77 @@ Does not touch `validate_initial`'s forbidden check (`params.rs:207-208`),
 which still tests the raw caller-supplied config — that check is already
 *too strict* (over-rejecting), the opposite direction from this bug, and
 changing it wasn't asked for here.
+
+---
+
+# `futell` — checkpoint-based early rejection for BLS neighbours (2026-09-13/14)
+
+Implemented end to end and wired into `run()`/`basic_local_search`/
+`collect_one`, default off (`futell: false`). Compacted from `FUTURETELL.md`
+(deleted 2026-09-14) — that document's own D1–D11 design log and worked
+examples are gone; this is the settled shape and what's still open.
+
+**The mechanism**: while a BLS neighbour's real per-instance results stream
+in, a simulated N-worker replay (list-scheduling: each virtual worker takes
+the next arriving result) checkpoints its progress at
+`futell_checkpoint × cutoff_time` and rejects the neighbour outright if that
+checkpoint is significantly worse than the incumbent's own — a *heuristic*
+prune, unlike adaptive capping's exact one, since it can reject a config that
+would have gone on to win. Gated on `n_runs > futell_cores`
+(`future_telling_active()`) so it never runs where it's structurally inert
+(every arrival finds an idle worker, so the checkpoint could never mature
+before the real evaluation already had). Rejections are counted separately
+in the run summary as `futell_rejected`, alongside (not instead of)
+`capped`. See `docs/reference/algorithm.md#future-telling` and
+`docs/reference/glossary.md` for the user-facing description.
+
+**Built alongside it, both load-bearing on their own**:
+- `instance_shuffle`/`instance_shuffle_seed` (default on) — shuffles the
+  instance list once, deterministically, right after `instance_id`
+  assignment. A real default-behavior change (evaluation order moves for
+  every scenario that doesn't opt out), not just new surface area for
+  `futell`; a startup warning (not an error) fires for `futell: true` +
+  `instance_shuffle: false`.
+- `Scheduler::cancel_neighbor` (`src/eval.rs`) — a rejection (capping's or
+  `futell`'s) used to only stop the ILS's own bookkeeping about a neighbour,
+  not its still-running solver dispatch; confirmed for real on a live
+  tuning run, where two rejected neighbours still each accumulated every
+  real solver invocation for their full instance set. Now terminates
+  that one `(batch_id, neighbor_id)`'s dispatch specifically, without
+  touching any other neighbour still legitimately in flight.
+- Dispatch-time busy-time tracking (D11, `CheckpointTracker::record_dispatch`/
+  `pending`/`assigned` in `src/ils/futell.rs`) — busy-time is claimed the
+  instant a real worker *starts* an instance, not when its result arrives,
+  since a slow-draining shared worker pool otherwise made a queued
+  neighbour's own checkpoint mature far later than its real per-instance
+  runtimes would suggest. A completion with no matching dispatch (a cache
+  hit, or more concurrent real dispatches than `futell_cores`) falls back to
+  the original least-busy-bucket assignment.
+
+**Naming**: renamed from `future_telling`/`future_telling_*` to
+`futell`/`futell_*` during the `ils.rs` module-split refactor (2026-09-13,
+matching the new `ils::futell` module name); the old spelling's alias was
+removed 2026-09-14 — see `CHANGELOG.md`. The Rust struct/option field names
+(`IlsOptions::future_telling`, etc.) keep the old identifier internally;
+only the scenario/Python-dict key and the summary counter's label changed.
+
+**Two real bugs found and fixed after this was already running real data**
+(2026-09-14; see `CHANGELOG.md` for the fixes themselves): the ILS
+acceptance path didn't check whether an evaluation was
+complete before comparing scores, letting a capped/checkpoint-rejected
+partial score (always an optimistic lower bound) win against a real,
+fully-measured incumbent; and `CheckpointTracker`'s fallback bucket
+selection could silently discard a still-pending real dispatch's busy-time.
+Neither was caught by the integration tests below, which exercise the
+checkpoint mechanism in isolation, not its interaction with the acceptance
+path or with oversubscription.
+
+**Validated**: replay simulation matches real solverpy batch checkpoints
+exactly at the boundaries; unit/integration tests cover the full-completion-
+before-checkpoint ordering, the D3 gate at its exact boundary
+(`future_telling_active_requires_strictly_more_runs_than_virtual_cores`), a
+never-maturing checkpoint never rejecting, and a rejected neighbour never
+winning a round (`future_telling_never_lets_a_rejected_neighbour_win_a_round`,
+`src/ils/tests.rs`). **Not validated**: a real tuning comparison against a
+plain run holding `instance_shuffle` fixed on both sides — moved to
+`TODO.md` as the one thing standing between this and flipping any default.

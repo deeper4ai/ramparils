@@ -12,7 +12,7 @@
 //! - `bls` — the parallel first-improvement descent step ([`bls::basic_local_search`])
 //!   and the single-config evaluation machinery ([`bls::evaluate_config_outcome`],
 //!   [`bls::collect_one`]) it shares with [`run`].
-//! - `futell` — checkpoint-based early rejection of BLS neighbours (FUTURETELL.md).
+//! - `futell` — checkpoint-based early rejection of BLS neighbours (DONE.md).
 //! - `logging` — the `ils: new incumbent`/`ils: new home base` debug lines.
 //! - `counters` — atomics behind the end-of-run `ils: summary` line.
 //! - `deepening` — the iterative-deepening wrapper around [`run`].
@@ -145,11 +145,11 @@ pub struct IlsOptions {
     pub tuner_timeout: f64,
     pub run_obj: RunObjective,
     pub overall_obj: OverallObjective,
-    /// Shuffle `instances` once, deterministically, before dispatch (FUTURETELL.md D5).
+    /// Shuffle `instances` once, deterministically, before dispatch (DONE.md).
     pub instance_shuffle: bool,
     /// Seed for `instance_shuffle`.
     pub instance_shuffle_seed: u64,
-    /// Opt-in checkpoint-based early rejection of BLS neighbours (FUTURETELL.md).
+    /// Opt-in checkpoint-based early rejection of BLS neighbours (DONE.md).
     pub future_telling: bool,
     /// Checkpoint horizon, as a multiple of `cutoff_time`.
     pub future_telling_checkpoint: f64,
@@ -170,7 +170,7 @@ pub struct IlsOptions {
 struct RunState {
     incumbent: Config,
     incumbent_score: f64,
-    /// Run-local reference checkpoint for future-telling (FUTURETELL.md D7):
+    /// Run-local reference checkpoint for future-telling (DONE.md):
     /// reassigned unconditionally everywhere `incumbent_score` is, including
     /// to `None` — a stale `Some` would compare a future challenger against a
     /// reference describing a config that no longer holds that role.
@@ -178,7 +178,7 @@ struct RunState {
     last_lm: Config,
     last_lm_eval: ConfigEvaluation,
     /// Recorded (D9) but not yet consulted by anything — kept for a possible
-    /// future acceptance-side use; see FUTURETELL.md's open questions. Always
+    /// future acceptance-side use; see DONE.md's open questions. Always
     /// equal to `last_lm_eval.checkpoint` at every point it's read.
     home_base_checkpoint: Option<f64>,
     /// Consecutive rounds whose local optimum failed the acceptance
@@ -381,7 +381,7 @@ pub fn run(
         deadline,
     };
 
-    // Instance shuffle (FUTURETELL.md D5): a pure reordering of an
+    // Instance shuffle (DONE.md): a pure reordering of an
     // already-ID-assigned `Vec<(i64, String)>` — `cache.load_instances()` has
     // already run by the time `instances` reaches here, so this never affects
     // which `instance_id` a path resolves to. Decorrelates the fixed
@@ -733,7 +733,7 @@ fn active_config(config: &Config, space: &ParamSpace) -> Config {
         .collect()
 }
 
-/// Shuffle `instances` for `instance_shuffle` (FUTURETELL.md D5), deterministic
+/// Shuffle `instances` for `instance_shuffle` (DONE.md), deterministic
 /// on `seed`. A pure permutation of an already-ID-assigned slice — never
 /// touches which `instance_id` a path resolves to, only the order `run()`
 /// operates over afterward.

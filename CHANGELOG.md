@@ -121,9 +121,40 @@ they describe what changed rather than what was announced at the time.
   the expected name instead. Also gains the `--version`/`supports:` protocol
   above and a `--params` dry-run flag that resolves a parameter set to a
   command line without running anything.
+- **`future_telling`/`future_telling_checkpoint`/`future_telling_cores`/
+  `future_telling_tolerance` renamed to `futell`/`futell_checkpoint`/
+  `futell_cores`/`futell_tolerance`**, matching the `ils::futell` module
+  name. The old spelling briefly parsed as an alias for scenarios already
+  run against it; that alias is now removed — `futell*` is the only
+  spelling `Scenario`, the Python bindings, and the run summary's
+  `futell_rejected` counter accept.
 
 ### Fixed
 
+- **An incomplete evaluation could win an acceptance comparison and corrupt
+  the incumbent.** A capped/checkpoint-rejected evaluation's score is a mean
+  over whichever instances happened to finish first — an optimistic lower
+  bound, not a real measurement — but nothing checked `complete` before
+  comparing scores. A `futell`-capped restart/perturbation could out-score a
+  real, fully-evaluated incumbent purely by having run on fewer, faster
+  instances. `try_promote_incumbent`/`accept_or_reject_home_base`/
+  `set_home_base` now refuse an incomplete evaluation outright; inside a
+  single descent, a gated/incomplete starting point can no longer block a
+  genuine neighbour from being accepted either, since no real evaluation
+  could ever be proven to dominate an untrustworthy one.
+- **`futell`'s checkpoint fallback could silently discard a pending real
+  dispatch's busy-time.** `CheckpointTracker::record`'s fallback bucket
+  selection (a completion with no matching `record_dispatch`, e.g. a cache
+  hit) picked the globally least-busy virtual bucket without excluding
+  buckets still occupied by a pending dispatch, unlike
+  `least_busy_free_bucket()`. Landing on such a bucket overwrote its
+  busy-until with the fallback job's timeline, which the real pending
+  dispatch's own eventual `record` call would then overwrite right back —
+  understating total simulated load and risking an early false-positive
+  checkpoint maturity. Only reachable when concurrent real dispatches
+  exceed `futell_cores` (oversubscription); every scenario run against this
+  feature so far kept `futell_cores == cores`, so it was dormant in
+  practice.
 - **Debug and error logs no longer truncate on a rerun.** Both were opened
   with `File::create`, so a second `ramparils run` (or `specialize()` call)
   against the same paths silently discarded the previous run's history. They

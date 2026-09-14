@@ -181,7 +181,7 @@ fn cache_result(cache: &mut Cache, r: &TaskResult) -> Result<()> {
 
 /// Drains any events already queued after a `scheduler.reset()`, writing
 /// back whatever `Completed` results were in flight before cancellation.
-/// `Dispatched` events (FUTURETELL.md D11) carry nothing to cache and are
+/// `Dispatched` events (DONE.md) carry nothing to cache and are
 /// simply discarded here -- the round is over, nothing more consults their
 /// tracker.
 fn drain_and_cache_writeback(scheduler: &Scheduler, cache: &mut Cache) -> Result<()> {
@@ -214,7 +214,7 @@ pub(super) struct ConfigEvaluation {
     /// agree; a partial batch is measured over a different set of instances.
     pub(super) runhash_n: usize,
     /// This evaluation's own `CheckpointTracker::score()` at whatever point
-    /// it stopped being updated (FUTURETELL.md D7) — `Some` only when the
+    /// it stopped being updated (DONE.md) — `Some` only when the
     /// checkpoint matured while genuinely still in flight; `None` when
     /// future-telling was inactive (D3), never matured, or this evaluation
     /// carries no checkpoint data at all (e.g. a random probe). Read by
@@ -433,7 +433,7 @@ impl NeighbourRound {
                     // No new event, but real time has still passed -- give
                     // every tracker a chance to notice a still-running
                     // instance has aged past its checkpoint horizon on its
-                    // own (FUTURETELL.md D11's `poll`).
+                    // own (DONE.md's `poll`).
                     self.poll_trackers();
                     continue;
                 }
@@ -639,7 +639,7 @@ impl NeighbourRound {
     /// log once when it first matures, then reject it if it's significantly
     /// worse than the incumbent's own checkpoint (D8). Full completion
     /// (`complete`, above) always wins over a checkpoint verdict — this is
-    /// only reached while the neighbour is still incomplete (FUTURETELL.md
+    /// only reached while the neighbour is still incomplete (DONE.md
     /// "Where this lives").
     fn check_future_telling(
         &mut self,
@@ -872,7 +872,7 @@ impl SingleConfigCollector {
                 return Ok(());
             }
             // Full completion always wins over a checkpoint verdict
-            // (FUTURETELL.md "Where this lives") — only consult the tracker
+            // (DONE.md "Where this lives") — only consult the tracker
             // while genuinely still incomplete, never after, even in the
             // edge case where the same arriving result both completes this
             // evaluation and matures its checkpoint.

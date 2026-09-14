@@ -58,7 +58,7 @@ pub struct EvalTask {
 
 /// A real worker has just claimed `instance_id` and is about to run it —
 /// emitted before the solver process starts, not after it finishes
-/// (FUTURETELL.md D11). Lets a `CheckpointTracker` account for a
+/// (DONE.md). Lets a `CheckpointTracker` account for a
 /// still-running instance without waiting for its result to arrive.
 #[derive(Debug)]
 pub struct DispatchEvent {
@@ -70,7 +70,7 @@ pub struct DispatchEvent {
 
 /// One message on the scheduler's event channel. Kept as one enum on one
 /// channel rather than a second channel consumed via `crossbeam::select!`
-/// (FUTURETELL.md D11): a dispatch notice has none of `TaskResult`'s fields
+/// (DONE.md): a dispatch notice has none of `TaskResult`'s fields
 /// (they only exist once a solver has actually finished), so it can't be a
 /// bare `TaskResult` with placeholders — but it doesn't need a separate
 /// transport either. Per-sender ordering on the shared channel guarantees a
@@ -839,7 +839,7 @@ mod tests {
         let solver_pid: libc::pid_t = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
 
         // The worker sends a `Dispatched` event the instant it claims the
-        // instance, before the solver even starts (FUTURETELL.md D11) --
+        // instance, before the solver even starts (DONE.md) --
         // consume it here so it doesn't masquerade as "a result" in the
         // no-more-events check below.
         match sched.events().recv_timeout(Duration::from_secs(1)) {
