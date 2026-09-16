@@ -1607,3 +1607,119 @@ fn checkpoint_tracker_dispatch_tracked_probe_undersubscription() {
         eprintln!("n_real_workers={n_real}: {outcome:?}");
     }
 }
+
+/// Like [`simulate_dispatch_tracked`], but each instance carries a real
+/// wall-clock duration *separately* from the runtime it reports.
+///
+/// Those two are the same thing only for a genuine solve. For every
+/// unsolved outcome the wrapper protocol requires the reported runtime to
+/// be `cutoff_time` regardless of how fast the process actually exited
+/// (`docs/reference/protocol.md`; `examples/eprover/eprover_ho_wrapper.py`
+/// does exactly this, and `eval.rs`'s own crash path reports `cutoff_time`
+/// too) -- so a segfault, a `GaveUp`, or a memory-limit abort that takes
+/// 50ms of real time still reports the full cutoff.
+///
+/// Entries are `(real_duration, reported_runtime)`.
+fn simulate_dispatch_tracked_par1(
+    n_workers: usize,
+    n_virtual: usize,
+    checkpoint_time: f64,
+    cutoff_time: f64,
+    instances: &[(f64, f64)],
+) -> Option<(usize, usize, f64)> {
+    use std::collections::BinaryHeap;
+
+    let n_total = instances.len();
+    let mut tracker = CheckpointTracker::new(n_virtual, checkpoint_time, cutoff_time, n_total);
+    let mut heap: BinaryHeap<Busy> = BinaryHeap::new();
+    let mut next = 0usize;
+
+    // The initial wave is staggered by a millisecond per worker: 64
+    // separate threads each stamp their own `crate::t()` as they pick an
+    // instance up, so only the very first dispatch sits exactly at the
+    // tracker's `t0`.
+    for w in 0..n_workers.min(n_total) {
+        let (real, reported) = instances[next];
+        let idx = next as i64;
+        let dispatched_at = w as f64 * 0.001;
+        next += 1;
+        tracker.record_dispatch(idx, dispatched_at);
+        heap.push(Busy {
+            finish: dispatched_at + real,
+            worker: w,
+            instance_id: idx,
+            runtime: reported,
+        });
+    }
+
+    while let Some(Busy {
+        finish,
+        worker,
+        instance_id,
+        runtime,
+    }) = heap.pop()
+    {
+        tracker.record(instance_id, runtime);
+        if tracker.ready {
+            // `finish` here is REAL elapsed time, not the reported runtime.
+            return Some((tracker.n_seen, tracker.solved_count, finish));
+        }
+        if next < n_total {
+            let (real, reported) = instances[next];
+            let idx = next as i64;
+            next += 1;
+            tracker.record_dispatch(idx, finish);
+            heap.push(Busy {
+                finish: finish + real,
+                worker,
+                instance_id: idx,
+                runtime: reported,
+            });
+        }
+    }
+    None
+}
+
+/// One fast-failing instance must not collapse the checkpoint horizon.
+///
+/// Reproduces the anomaly seen in RUN 08's futell arms: a 5.0s horizon
+/// (`futell_checkpoint: 1.0` * `cutoff_time: 5.0`) matured after ~0.4s of
+/// real wall clock, having seen only 27 of 500 instances.
+///
+/// The mechanism: `record` feeds `finish = dispatch_rel + runtime` to
+/// `refresh` as a stand-in for "now", on the stated assumption that "a
+/// completion can only be observed after its own relative finish time has
+/// actually elapsed". That assumption holds for a genuine solve, whose
+/// reported runtime IS its real duration -- but not for an unsolved one,
+/// whose reported runtime is the PAR1 clamp (`cutoff_time`) however fast
+/// the process really exited. One segfault or fast `GaveUp` therefore
+/// reports a full cutoff's worth of elapsed time within milliseconds,
+/// `refresh` believes the horizon has passed, and every still-pending
+/// bucket is written off as busy past it in one shot -- maturing the
+/// checkpoint on a handful of instances instead of a horizon's worth.
+///
+/// 26 genuine fast solves (real runtimes from RUN 08's own seed config,
+/// `ram-3e1a18975bdde446`), then one instance that really takes 50ms but
+/// reports the 5.0s cutoff, exactly as a crashing eprover-ho run does.
+#[test]
+fn checkpoint_tracker_fast_failure_must_not_collapse_the_horizon() {
+    let real = parse_replay_fixture(REPLAY_RUN08_FUTELL_NOCACHE_INIT);
+    let fast_solves: Vec<f64> = real.iter().copied().filter(|&r| r < 5.0).take(26).collect();
+    assert_eq!(fast_solves.len(), 26);
+
+    let mut instances: Vec<(f64, f64)> = fast_solves.iter().map(|&r| (r, r)).collect();
+    // The fast failure: 50ms of real time, reported as the full cutoff.
+    instances.push((0.05, 5.0));
+    // Everything after it is a genuine timeout: really takes the cutoff.
+    instances.resize(500, (5.0, 5.0));
+
+    let outcome = simulate_dispatch_tracked_par1(64, 64, 5.0, 5.0, &instances);
+    eprintln!("fast-failure outcome (n_seen, solved, real_time): {outcome:?}");
+
+    let (n_seen, _solved, real_time) = outcome.expect("the checkpoint should mature at some point");
+    assert!(
+        real_time > 4.0,
+        "checkpoint matured after only {n_seen}/500 completions at {real_time:.3}s of REAL time, \
+         for a 5.0s horizon -- one PAR1-clamped fast failure collapsed it"
+    );
+}

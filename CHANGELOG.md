@@ -143,6 +143,25 @@ they describe what changed rather than what was announced at the time.
 
 ### Fixed
 
+- **One fast-failing instance collapsed `futell`'s whole checkpoint horizon.**
+  `CheckpointTracker::record` fed `dispatch_rel + runtime` to `refresh` as a
+  stand-in for "now", on the assumption that a completion can only be observed
+  once its own finish time has really elapsed. That holds for a genuine solve,
+  whose reported runtime is its measured duration — but not for an unsolved
+  one, which reports `cutoff_time` however fast the process actually exited
+  (the PAR1 contract, `docs/reference/protocol.md`; a segfault, a `GaveUp` or
+  a memory-limit abort all report a full cutoff within milliseconds). A single
+  such result therefore handed `refresh` a whole cutoff's worth of time that
+  never passed, and the pending-bucket test (`now_rel > checkpoint_time`,
+  added with D11) wrote off *every* still-pending virtual worker as busy past
+  the horizon in one shot. The checkpoint then matured on whatever handful of
+  instances had finished by then instead of on a horizon's worth of work —
+  measured in production as a 5.0s horizon maturing after 0.41s of real wall
+  clock, having seen 27 of 500 instances. Only a solved result's finish is now
+  taken as an elapsed-time bound; for an unsolved one only its dispatch is
+  known to have happened. Latent since D11 (`22518c9`) and invisible whenever
+  the first cutoff-reporting arrival happened to be a genuine timeout, which
+  is why earlier `futell` runs matured at plausible-looking times.
 - **An incomplete evaluation could win an acceptance comparison and corrupt
   the incumbent.** A capped/checkpoint-rejected evaluation's score is a mean
   over whichever instances happened to finish first — an optimistic lower

@@ -141,11 +141,25 @@ impl CheckpointTracker {
         if self.ready {
             return;
         }
+        // Lower bound on this neighbour's own relative "now", carried out
+        // of the branch below because only the dispatch-tracked path knows
+        // a real time to derive one from. See the `refresh` call at the end.
+        let mut now_bound = None;
         let (w, finish) = if let Some(w) = self.assigned.remove(&instance_id) {
             let (_, dispatch_rel) = self
                 .pending
                 .remove(&w)
                 .expect("a bucket in `assigned` always has a matching `pending` entry");
+            // Only a *solved* result's runtime is a real measured duration,
+            // so only then is its virtual finish also a real elapsed-time
+            // bound. An unsolved one reports `cutoff_time` however fast the
+            // process really exited (PAR1), so all that is known to have
+            // elapsed is its dispatch.
+            now_bound = Some(if runtime < self.cutoff_time {
+                dispatch_rel + runtime
+            } else {
+                dispatch_rel
+            });
             (w, dispatch_rel + runtime)
         } else {
             // Prefer a bucket with no dispatch still pending in it, same as
@@ -189,11 +203,17 @@ impl CheckpointTracker {
             // ever produce a usable answer.
             return;
         }
-        // `finish` is a valid lower bound on this neighbour's own relative
-        // "now": a completion can only be observed after its own relative
-        // finish time has actually elapsed. Using it here means `record`
-        // never needs a separately-threaded "current time" parameter.
-        self.refresh(finish);
+        // A completion can only be observed after its own relative finish
+        // time has actually elapsed — but only when that finish time was
+        // built from a *real* duration. Under the PAR1 contract an unsolved
+        // result reports `cutoff_time` no matter how fast it really exited
+        // (a segfault, a `GaveUp`, a memory-limit abort), so treating its
+        // finish as elapsed time would hand `refresh` a whole cutoff's worth
+        // of time that never passed, writing off every still-pending bucket
+        // as busy past the horizon in one shot. `now_bound` above keeps the
+        // bound honest; the fallback path has no real dispatch time to
+        // derive one from and stays on its own virtual-time chain.
+        self.refresh(now_bound.unwrap_or(finish));
     }
 
     /// Re-check readiness using the current real clock, for when no new
