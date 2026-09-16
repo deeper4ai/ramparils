@@ -1345,3 +1345,265 @@ fn future_telling_gate_blocks_rejection_when_n_runs_does_not_exceed_virtual_core
         "below the D3 gate, future-telling must never build a tracker, so `bad` must run to full completion"
     );
 }
+
+/// Real per-instance runtimes from RUN 08's `futell-nocache` arm
+/// (2026-09-15/16, `eprover-ho-basic-t5-subtrain500-6h-futell-nocache`) --
+/// the very first ("config") evaluation of the whole run, i.e.
+/// `ram-3e1a18975bdde446` (RUN 08's shared seed config) on
+/// `subtrain500`/T5. Pulled from the run's own exported dbcache
+/// (`solverpy_db/status/eprover-ho-basic-t5-subtrain500-6h-futell-nocache/
+/// ram-3e1a18975bdde446`), one runtime per line, in the file's own
+/// (arbitrary, not real-dispatch-order) instance order -- the real,
+/// unmodified per-instance runtime distribution the run actually
+/// measured (314/500 unsolved, clamped to `cutoff_time=5.0` per the PAR1
+/// contract; the rest genuine solves, many well under 1s).
+///
+/// This is what the run's own log (`DIARY.md`, 2026-09-16) matured this
+/// exact evaluation's checkpoint against: `[0.41s] futell: checkpoint
+/// config solved=26 ref=none par1=4.743785 after 27/500` -- a 5.0s
+/// horizon (`futell_checkpoint: 1.0` * `cutoff_time: 5.0`) maturing at
+/// real t=0.41s, after only 27/500 real completions.
+const REPLAY_RUN08_FUTELL_NOCACHE_INIT: &str =
+    include_str!("../../tests/fixtures/checkpoint-replay/run08-futell-nocache-init-config.txt");
+
+/// A worker slot busy on one instance until `finish`, ordered for a
+/// min-heap (`BinaryHeap` is a max-heap by default, so `Ord` is reversed
+/// on `finish` here).
+struct Busy {
+    finish: f64,
+    worker: usize,
+    instance_id: i64,
+    runtime: f64,
+}
+impl PartialEq for Busy {
+    fn eq(&self, other: &Self) -> bool {
+        self.finish == other.finish
+    }
+}
+impl Eq for Busy {}
+impl PartialOrd for Busy {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Busy {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.finish.total_cmp(&self.finish)
+    }
+}
+
+/// Replays `runtimes` through a **dispatch-tracked** `CheckpointTracker`
+/// (`record_dispatch` + `record`, the path production actually uses --
+/// every other replay test in this file drives `record` alone, the
+/// cache-hit/fallback path, per `run_tracker`'s own doc comment).
+///
+/// The dbcache doesn't record real dispatch or completion *times*, only
+/// each instance's own runtime, so this fills those in with a discrete-
+/// event simulation of exactly the scheduler's own mechanics (`eval.rs`'s
+/// persistent-worker loop, `Scheduler::new`): `n_workers` workers, each
+/// immediately grabbing the next queued instance the moment it frees up
+/// (a shared, greedy work queue -- the real scheduler's atomic
+/// `fetch_add` over `missing_indices`), dispatch and completion events
+/// fed to the tracker in true chronological order, exactly as
+/// `SingleConfigCollector::run`'s event loop would receive them from the
+/// scheduler's channel. The one thing genuinely filled in is dispatch
+/// ORDER (a fixed-seed shuffle standing in for `instance_shuffle`) and
+/// the assumption that all `n_workers` grab their first instance at
+/// t=0 (the scheduler dispatches its initial wave essentially at once);
+/// the runtimes themselves are the real, unmodified per-instance data.
+///
+/// Returns `(n_seen, solved_count, sim_time)` at the moment `ready`
+/// first becomes true, or `None` if the tracker never matures before
+/// every instance completes.
+fn simulate_dispatch_tracked(
+    n_workers: usize,
+    checkpoint_time: f64,
+    cutoff_time: f64,
+    runtimes: &[f64],
+    seed: u64,
+) -> Option<(usize, usize, f64)> {
+    use rand::SeedableRng;
+    use rand::seq::SliceRandom;
+    use std::collections::BinaryHeap;
+
+    let n_total = runtimes.len();
+    let mut order: Vec<usize> = (0..n_total).collect();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    order.shuffle(&mut rng);
+
+    let mut tracker = CheckpointTracker::new(n_workers, checkpoint_time, cutoff_time, n_total);
+
+    let mut heap: BinaryHeap<Busy> = BinaryHeap::new();
+    let mut next = 0usize;
+
+    // Initial wave: every worker grabs its first instance at t=0.
+    for w in 0..n_workers.min(n_total) {
+        let idx = order[next] as i64;
+        let runtime = runtimes[order[next]];
+        next += 1;
+        tracker.record_dispatch(idx, 0.0);
+        heap.push(Busy {
+            finish: runtime,
+            worker: w,
+            instance_id: idx,
+            runtime,
+        });
+    }
+
+    while let Some(Busy {
+        finish,
+        worker,
+        instance_id,
+        runtime,
+    }) = heap.pop()
+    {
+        tracker.record(instance_id, runtime);
+        if tracker.ready {
+            return Some((tracker.n_seen, tracker.solved_count, finish));
+        }
+        if next < n_total {
+            let idx = order[next] as i64;
+            let new_runtime = runtimes[order[next]];
+            next += 1;
+            tracker.record_dispatch(idx, finish);
+            heap.push(Busy {
+                finish: finish + new_runtime,
+                worker,
+                instance_id: idx,
+                runtime: new_runtime,
+            });
+        }
+    }
+    None
+}
+
+#[test]
+fn checkpoint_tracker_dispatch_tracked_replay_run08_futell_nocache_init_config() {
+    // Same settings the run itself used: 64 workers, a 5.0s horizon
+    // (futell_checkpoint=1.0 * cutoff_time=5.0), 500 instances.
+    let runtimes = parse_replay_fixture(REPLAY_RUN08_FUTELL_NOCACHE_INIT);
+    assert_eq!(runtimes.len(), 500);
+
+    let outcome = simulate_dispatch_tracked(64, 5.0, 5.0, &runtimes, 0);
+
+    eprintln!("dispatch-tracked replay outcome: {outcome:?}");
+
+    // The run's own log matured this exact evaluation's checkpoint at
+    // real t=0.41s, after only 27/500 completions (solved=26) -- for a
+    // 5.0s horizon. A faithful discrete-event simulation of the real
+    // scheduler mechanics, fed with the real per-instance runtimes,
+    // should not mature this early: with only ~27/500 real completions
+    // in well under half a second of simulated wall time, most of the
+    // 64 virtual buckets are still on their very first (short-runtime)
+    // dispatch, nowhere near a 5.0s horizon.
+    if let Some((n_seen, _solved, sim_time)) = outcome {
+        assert!(
+            sim_time > 4.0,
+            "checkpoint matured after only {n_seen}/500 real completions, at simulated \
+             time {sim_time:.3}s -- far too early for a 5.0s horizon, matching the anomaly \
+             observed in the run's own log (DIARY.md, 2026-09-16: matured at real t=0.41s \
+             after 27/500). If this simulation now also matures this early, it reproduces \
+             the bug; if it does NOT (assertion holds), the discrepancy is not explained by \
+             CheckpointTracker's core dispatch/record math under this dispatch model, and \
+             lies elsewhere (event delivery/ordering, or a different n_virtual/checkpoint_time \
+             actually in effect in production)."
+        );
+    }
+}
+
+#[test]
+fn checkpoint_tracker_dispatch_tracked_replay_run08_multiple_seeds() {
+    let runtimes = parse_replay_fixture(REPLAY_RUN08_FUTELL_NOCACHE_INIT);
+    for seed in 0..20u64 {
+        let outcome = simulate_dispatch_tracked(64, 5.0, 5.0, &runtimes, seed);
+        eprintln!("seed {seed}: {outcome:?}");
+        if let Some((n_seen, _solved, sim_time)) = outcome {
+            assert!(
+                sim_time > 3.0,
+                "seed {seed}: matured at simulated t={sim_time:.3}s after {n_seen}/500 -- \
+                 too early even allowing generous slack"
+            );
+        }
+    }
+}
+
+/// Same discrete-event simulation, but with the REAL worker count
+/// decoupled from `n_virtual` -- probing whether fewer real concurrent
+/// dispatches than virtual buckets (the mirror image of the
+/// already-fixed oversubscription case, 86e658d) could explain premature
+/// maturity, e.g. if the host was under enough contention that this run
+/// never actually got all 64 scenario `cores:` workers concurrently busy.
+fn simulate_dispatch_tracked_n(
+    n_real_workers: usize,
+    n_virtual: usize,
+    checkpoint_time: f64,
+    cutoff_time: f64,
+    runtimes: &[f64],
+    seed: u64,
+) -> Option<(usize, usize, f64)> {
+    use rand::SeedableRng;
+    use rand::seq::SliceRandom;
+    use std::collections::BinaryHeap;
+
+    let n_total = runtimes.len();
+    let mut order: Vec<usize> = (0..n_total).collect();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    order.shuffle(&mut rng);
+
+    let mut tracker = CheckpointTracker::new(n_virtual, checkpoint_time, cutoff_time, n_total);
+
+    let mut heap: BinaryHeap<Busy> = BinaryHeap::new();
+    let mut next = 0usize;
+
+    for w in 0..n_real_workers.min(n_total) {
+        let idx = order[next] as i64;
+        let runtime = runtimes[order[next]];
+        next += 1;
+        tracker.record_dispatch(idx, 0.0);
+        heap.push(Busy {
+            finish: runtime,
+            worker: w,
+            instance_id: idx,
+            runtime,
+        });
+    }
+
+    while let Some(Busy {
+        finish,
+        worker,
+        instance_id,
+        runtime,
+    }) = heap.pop()
+    {
+        tracker.record(instance_id, runtime);
+        if tracker.ready {
+            return Some((tracker.n_seen, tracker.solved_count, finish));
+        }
+        if next < n_total {
+            let idx = order[next] as i64;
+            let new_runtime = runtimes[order[next]];
+            next += 1;
+            tracker.record_dispatch(idx, finish);
+            heap.push(Busy {
+                finish: finish + new_runtime,
+                worker,
+                instance_id: idx,
+                runtime: new_runtime,
+            });
+        }
+    }
+    None
+}
+
+#[test]
+fn checkpoint_tracker_dispatch_tracked_probe_undersubscription() {
+    let runtimes = parse_replay_fixture(REPLAY_RUN08_FUTELL_NOCACHE_INIT);
+    // n_virtual stays at the scenario's real 64 (futell_cores resolved
+    // from cores:), but the number of real concurrently-dispatched
+    // workers is much smaller, simulating machine contention leaving
+    // fewer than 64 scenario workers actually concurrently busy.
+    for n_real in [1usize, 2, 4, 8, 16, 27, 32, 48, 64] {
+        let outcome = simulate_dispatch_tracked_n(n_real, 64, 5.0, 5.0, &runtimes, 0);
+        eprintln!("n_real_workers={n_real}: {outcome:?}");
+    }
+}
