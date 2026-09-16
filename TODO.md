@@ -540,6 +540,10 @@ would (`ResourceOut` vs `GaveUp` vs `Timeout` all becoming the same
 `timeout` is a net loss of information for anyone reading `ramparils db
 status`). Two buckets — solved / not-solved — are enough.
 
+**Contested since 2026-09-16** — see *"Revisit 'two, not three buckets' under
+PAR-k"* above. The reasoning here holds only for a solved-count objective;
+under a PAR-k runtime objective the buckets do not score identically.
+
 **This also has a free-standing use beyond `run_obj: solved` itself**:
 future-telling's own checkpoint metric (`DONE.md`) independently needs
 a cheap "is this solved" signal, and settled on deriving it from the
@@ -568,8 +572,113 @@ touching RamParILS's source at all. Only worth building when a concrete
 domain outside TPTP/SMT-LIB actually needs it — the closed-list approach
 above is simpler and covers everything this project ships today.
 
+**Superseded 2026-09-16** by *"Report the outcome explicitly, rather than
+encoding it in `runtime`"* above, which wants the same field for a stronger
+reason: not just unknown domains, but correctness in the shipped ones.
+
+---
+
+# Proposed — explicit outcome in the wrapper protocol, and PAR-k scoring (2026-09-16)
+
+Today a wrapper reports **only** `status, runtime, quality`, where `status` is
+free text chosen by the wrapper and `runtime` carries the PAR1 penalty for
+anything that did not solve: a non-success outcome reports `cutoff_time`
+regardless of how long it really took (`examples/*/`'s wrappers, and
+`eval.rs`'s own crash path). That convention is settled and works for
+scoring — but it means **a duration and a penalty are the same number**, and
+nothing downstream can tell them apart without a domain-specific status list.
+
+This is not hypothetical. The checkpoint-horizon bug fixed in `cbe0775` was
+exactly this confusion: `CheckpointTracker` read a PAR1 penalty as if it were
+elapsed time, so one instance that failed in 50ms but reported the full
+cutoff convinced it that a whole horizon had passed, and its early-rejection
+verdicts collapsed onto a handful of instances. The fix there keeps the
+inference local (only a solved result's runtime is treated as a duration),
+but the ambiguity itself is still in the protocol, waiting for the next
+consumer to trip over it.
+
+## ⬜ Report the outcome explicitly, rather than encoding it in `runtime`
+
+Add a generic, solver-agnostic outcome to the protocol line — `solved` /
+`unsolved` / `failed`, and plausibly `timeout` as a distinct fourth value —
+alongside the existing free-text `status`, which stays exactly as it is
+(solver-specific, unconstrained, and better for reporting than any collapsed
+label). Then:
+
+- `runtime` can mean **real elapsed time, always**, and a consumer that wants
+  a duration can have one.
+- PAR1 becomes something the *consumer* derives from the outcome, instead of
+  something every wrapper has to bake in identically and correctly.
+- `run_obj: solved` (below) and `futell`'s checkpoint metric stop needing
+  either a hardcoded status vocabulary (`SOLVED_STATUSES`) or the
+  `runtime < cutoff_time` proxy — both of which are workarounds for the
+  missing field, arrived at independently from opposite directions.
+
+This supersedes the deferred *"generic wrapper-reported `solved`/`unsolved`
+status"* idea below, which was parked as "only worth building when a concrete
+domain outside TPTP/SMT-LIB needs it". The motivation is no longer only about
+unknown domains: the field is needed for correctness in the domains already
+shipped.
+
+## ⬜ `penalty` in the scenario: PAR2 and beyond
+
+With an explicit outcome, the penalty stops being hardwired at PAR1 and
+becomes a scenario setting — `penalty: 2` scoring an unsolved run as
+`2 * cutoff_time` (PAR2), and so on for any k. This is currently impossible
+to express: since the wrapper has already folded PAR1 into `runtime`, the
+tuner cannot recover "did not solve" to re-weight it, and the entire cache is
+full of numbers that mean PAR1-at-the-cutoff-it-was-measured-at and nothing
+else.
+
+PAR2 is the standard in much of the configuration/competition literature, and
+a heavier penalty is often exactly what a timeout-heavy tuning run needs to
+stop treating "almost solved it" and "hopeless" as equally bad.
+
+## ⬜ Make the cache's timeout handling depend on the outcome, not a status string
+
+`adapt_cached_result` (`src/cache.rs`) already tries to reuse a cached result
+at a *different* cutoff than it was measured at, and that is exactly the
+right idea: a timeout at cutoff X tells you nothing about cutoff Y > X (it
+must be re-run), while a genuine solve in 3s is valid at any cutoff ≥ 3s, and
+a solve in 7s re-requested at cutoff 5 is a synthetic timeout.
+
+But it decides which case it is with `status.eq_ignore_ascii_case("timeout")`
+— a literal string **no shipped wrapper actually emits**. The eprover wrapper
+passes through `ResourceOut` / `GaveUp` / `UNKNOWN`; the only producer of
+literal `TIMEOUT` is that same function's own synthetic path. The SMT side may
+match by coincidence of vocabulary, which is worse than not matching at all,
+since it makes the behaviour differ per domain.
+
+The observable consequence: a real timeout stored at cutoff 5 and re-requested
+at cutoff 10 fails the status test, fails `runtime > requested_cutoff`, and is
+served **verbatim as though it were a genuine 5-second solve**. The `put`
+upgrade policy (`keep existing unless the existing row is a timeout being
+upgraded`) rests on the same string and is equally inert for that wrapper.
+Within one scenario the cutoff is fixed so this stays hidden; it bites exactly
+when a cache is reused across cutoffs, which is the case the function exists
+to serve.
+
+An explicit outcome field makes all of this sound, and makes PAR-k rescoring
+of cached results possible at all: store the outcome and the cutoff it was
+measured at, and any k can be applied afterwards without re-running anything.
+
+## ⬜ Revisit "two, not three buckets" under PAR-k
+
+The `run_obj: solved` section below rejected a three-way
+`solved`/`failed`/`timeout` split on the grounds that *"`failed` and `timeout`
+would score identically under any solved-count objective, so a third bucket
+adds no scoring information"*. That premise is sound for solved-count
+scoring and false under PAR-k: a timeout genuinely consumed the cutoff, a
+crash consumed almost nothing, and whether those two should carry the same
+penalty is a real modelling choice a scenario might want to make (and one the
+checkpoint simulation, which models an unsolved instance as occupying its
+worker for the full cutoff, would read differently for each). Worth deciding
+deliberately rather than inheriting the earlier decision, which was made for
+a different objective.
+
 ---
 
 **The wrapper failure-reporting contract (UNKNOWN sentinel + PAR1 for crashes),
 established 2026-08-21, has moved to `DONE.md`** — it's a settled convention
-now followed by both example wrappers, not an open task.
+now followed by both example wrappers, not an open task. The section above
+proposes revising it; until that happens the convention stands as documented.
