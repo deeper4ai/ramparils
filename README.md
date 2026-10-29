@@ -36,18 +36,20 @@ spending the full cutoff on configurations that are already losing.
 
 | | Original Ruby ParamILS | RamParILS |
 |---|---|---|
-| Candidate evaluation | Sequential | **Parallel** over all `(neighbour, instance)` pairs |
-| Result cache | In-memory, per run | **Persistent SQLite**, shared across runs, self-describing |
-| Cache inspection | — | `ramparils db solved \| status \| confs` |
+| Candidate evaluation | Sequential (a cluster mode exists, tied to the authors' own database and hosts) | **Parallel** over all `(neighbour, instance)` pairs |
+| Result cache | In memory, per run | **Persistent SQLite**, shared across runs, self-describing |
+| Cache inspection | — | `ramparils db solved \| status \| confs \| runhashes` |
 | Integration | Command line | Command line and **native Python extension** (PyO3) |
-| Search modes | BasicILS, FocusedILS | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`) |
-| Escaping a local optimum | Random restart at fixed probability (`p_restart`), `R` random probes | Both, **plus soft acceptance within a tolerance and stagnation-triggered restarts** |
+| Search modes | BasicILS, FocusedILS, pure random search, and `pert_rand` (a random configuration instead of a perturbation) | BasicILS, FocusedILS, `random` (ParamILS's `pert_rand`); no pure random search |
+| Escaping a local optimum | Random restart at fixed probability (`p_restart`, default 0.01), `R` random probes (default 10) | Both (off by default), **plus soft acceptance within a tolerance and stagnation-triggered restarts** |
 | Restart target | Uniformly random configuration | Random, **or a bounded perturbation of the incumbent** |
 | Comparing across fidelities | Score vector per configuration, compared at a common level | **Single score, re-measured** for the incumbent and the home base at every fidelity increase |
-| Multi-phase schedules | — | **Iterative deepening**: geometric growth of instances, cutoff and deadline |
-| Adaptive capping | Yes | Yes, with the ceiling rule documented — see [Algorithm](docs/reference/algorithm.md) |
+| Iterative deepening | Yes: geometric growth of instances, cutoff and budget (`lambda_n`, `lambda_c`, `lambda_t`) | The same schedule; **a cached longer-cutoff result also answers a shorter-cutoff phase** |
+| Adaptive capping | Yes (`boundMultiplier`, default 2) | Yes, **exact** cumulative-sum test, mean only — see [Algorithm](docs/reference/algorithm.md) |
+| Tuning budget | Summed target-algorithm runtime, maximum evaluations or iterations, or a target quality | Wall clock (`tuner_timeout`) |
+| Test-set validation | Final configuration re-scored on test instances (`-validN`) | Not yet (`test_instance_file` is reserved); score separately, e.g. with SolverPy |
 | Provenance | — | Source revision in `--version` and in every log header; full scenario echoed at startup |
-| Multiple random seeds | Supported | Not currently supported |
+| Multiple random seeds | Supported (instance–seed files) | Not currently supported |
 
 Parallel evaluation is the primary motivation for the rewrite. The actual
 speedup depends on worker count, neighbourhood width, current fidelity, solver
