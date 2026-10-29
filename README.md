@@ -102,6 +102,12 @@ The executable is written to:
 target/release/ramparils
 ```
 
+Or install the current release into `~/.cargo/bin` straight from GitHub:
+
+```sh
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked
+```
+
 Install Rust with [rustup](https://rustup.rs/) if `cargo` is not available.
 
 ### 🐍 Python extension

@@ -16,7 +16,13 @@ cd ramparils
 cargo install --path . --locked
 ```
 
-This installs the `ramparils` binary into Cargo's binary directory,
+Or install a release straight from GitHub, without cloning:
+
+```bash
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked
+```
+
+Either installs the `ramparils` binary into Cargo's binary directory,
 normally `~/.cargo/bin`. Make sure that directory is on `PATH`.
 
 For a repository-local build instead:

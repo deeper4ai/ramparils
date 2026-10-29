@@ -9,6 +9,8 @@ they describe what changed rather than what was announced at the time.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-29
+
 ### Added
 
 - **Agent skills under `skills/`** for running a tuning campaign: `tune-solver`
@@ -26,20 +28,20 @@ they describe what changed rather than what was announced at the time.
   a later re-run's differing number; only a timeout can be replaced) applies
   exactly as before. Added to let a cache-hit-heavy run be re-run with
   caching off as a clean A/B check for whether cache hits (whose "runtime"
-  contributes to a virtual-worker simulation like `future_telling`'s
+  contributes to a virtual-worker simulation like `futell`'s
   checkpoint at a very different wall-clock cost than a real dispatch) are
   skewing something.
 
-- **`future_telling`: opt-in checkpoint-based early rejection of BLS
+- **`futell`: opt-in checkpoint-based early rejection of BLS
   neighbours**, alongside the existing (exact) adaptive-capping prune. While a
   neighbour's real per-instance results stream in, a simulated N-worker replay
-  is checkpointed at `future_telling_checkpoint × cutoff_time`
-  (`future_telling_cores` virtual workers, decoupled from real `cores:`), and
+  is checkpointed at `futell_checkpoint × cutoff_time`
+  (`futell_cores` virtual workers, decoupled from real `cores:`), and
   the neighbour is rejected outright once that checkpoint is significantly
-  worse than the incumbent's own (`future_telling_tolerance`). Unlike capping
+  worse than the incumbent's own (`futell_tolerance`). Unlike capping
   this is a heuristic, not a proof — it can reject a configuration that would
   have gone on to win — so it defaults to off; a rejection is counted
-  separately in the run summary's new `future_telling_rejected`. A rejection
+  separately in the run summary's new `futell_rejected`. A rejection
   (capping's or future-telling's) now also actually stops that neighbour's
   own solver dispatch via the new `Scheduler::cancel_neighbor` — without it,
   a rejected neighbour's already-queued instances kept running to completion
@@ -55,15 +57,15 @@ they describe what changed rather than what was announced at the time.
   any difficulty ordering already present in the instance file. **This
   changes real evaluation order for every scenario that doesn't explicitly
   set `instance_shuffle: false`**, including ones that never touch
-  `future_telling` — a deliberate default-behavior change, not only new
+  `futell` — a deliberate default-behavior change, not only new
   opt-in surface area, though a deterministic one (a given scenario + seed
   still reproduces identically across reruns). Never affects which
-  `instance_id` a path is assigned in the cache. `future_telling: true` with
+  `instance_id` a path is assigned in the cache. `futell: true` with
   `instance_shuffle: false` prints a startup warning, not an error, since a
   pre-randomized instance file is a legitimate reason for the combination.
 - An end-of-run `ils: summary` line reporting
   `rounds / searched / gated / incumbents / evals / capped /
-  future_telling_rejected`. A *gated* round is
+  futell_rejected`. A *gated* round is
   one whose starting configuration was capped and which then accepted no move,
   so the bound hid its whole neighbourhood and it produced no search. Comparing
   two approaches on final score alone can hide that one of them was pruned out
@@ -150,6 +152,11 @@ they describe what changed rather than what was announced at the time.
 
 ### Fixed
 
+- **`examples/llm2smt` works again.** Its wrapper had no `--version`
+  branch, so the new startup probe made `ramparils run` refuse that example's
+  scenario. It now answers the probe (exiting non-zero when `llm2smt` is not
+  on `PATH`), and reports a run with no status as `UNKNOWN` instead of an
+  invented, cacheable `error`.
 - **One fast-failing instance collapsed `futell`'s whole checkpoint horizon.**
   `CheckpointTracker::record` fed `dispatch_rel + runtime` to `refresh` as a
   stand-in for "now", on the assumption that a completion can only be observed
@@ -405,7 +412,8 @@ BasicILS and FocusedILS, parallel evaluation over `(neighbour, instance)`
 pairs, an SQLite result cache, a PyO3 extension exposing `specialize`, and the
 ParamILS-compatible parameter-file syntax.
 
-[Unreleased]: https://github.com/deeper4ai/ramparils/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/deeper4ai/ramparils/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/deeper4ai/ramparils/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/deeper4ai/ramparils/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/deeper4ai/ramparils/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/deeper4ai/ramparils/compare/v0.1.0...v0.1.2

@@ -6,16 +6,46 @@ automated algorithm configuration via Iterated Local Search.
 Used as the inner tuner in [Grackle](https://github.com/ai4reason/grackle), a strategy portfolio
 invention system for automated reasoning solvers.
 
-**Current release: v0.2.0** (2026-08-19) · [changelog](changelog.md) ·
+**Current release: v0.3.0** (2026-10-29) · [changelog](changelog.md) ·
 [sources and issues on GitHub](https://github.com/deeper4ai/ramparils) ·
 [installation](installation.md)
 
 ```bash
 pip install ramparils                                          # Python extension
-cargo install --git https://github.com/deeper4ai/ramparils --tag v0.2.0   # CLI
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked   # CLI
 ```
 
-## 📦 What's new in 0.2.0
+## 📦 What's new in 0.3.0
+
+- **Exact adaptive capping.** The cap now tests the cumulative sum against the
+  budget beating the incumbent allows, so it never discards a configuration
+  that would have been accepted, and one slow instance can no longer cap a
+  configuration outright. Capped scores are logged as lower bounds,
+  `>2.698475 (312/473)`. `bound_multiplier` keeps its meaning.
+  See [Algorithm](reference/algorithm.md).
+- **Wrapper startup check and `runhash`.** `ramparils` runs `<algo> --version`
+  before the first evaluation and refuses to start unless the wrapper can reach
+  its solver; the answer is logged, so a run records which solver build it
+  used. Wrappers may also report a `runhash`, a fingerprint of the solver's
+  own work, exported by the new `ramparils db runhashes` to find parameters
+  that change nothing. **Wrappers without `--version` must add it.**
+  See [Solver protocol](reference/protocol.md).
+- **`futell`, an opt-in early rejection** of losing neighbours from a
+  checkpoint partway through their evaluation. Heuristic and off by default.
+- **`instance_shuffle`**, on by default: the instance list is shuffled once,
+  deterministically, before dispatch, so evaluation order changes for
+  existing scenarios. Set `instance_shuffle: false` to keep the file's order.
+- **`cache_disable`** forces every evaluation to run, for checking whether
+  cache hits skew a result.
+- **Fixes:** an incomplete (capped) evaluation can no longer win an
+  acceptance comparison and corrupt the incumbent; debug and error logs append
+  instead of truncating on a rerun; the error log only appears when something
+  crashed; the example wrappers report crashes as `UNKNOWN` with the full
+  cutoff, never as a cheap cacheable result.
+- **Agent skills** under `skills/` for running a whole tuning campaign:
+  domain, wrapper, scenario, analysis and evaluation with solverpy.
+
+## 📦 What was new in 0.2.0
 
 - **One command-line tool, two sub-commands.** `ramparils run scenario.yaml`
   tunes; `ramparils db cache.dbcache` exports what a result cache holds. This
