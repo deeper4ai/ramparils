@@ -6,6 +6,7 @@ from __future__ import annotations
 from functools import partial
 import os
 import resource
+import shutil
 import signal
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from pathlib import Path
 
 
 FAILURE_QUALITY = 10_000_000.0
+WRAPPER_VERSION = "0.2.0"
+SUPPORTS = ["version"]
 DEFAULT_MEMORY_LIMIT_MB = 4096
 solver_process: subprocess.Popen[str] | None = None
 
@@ -161,10 +164,40 @@ def run(
 
     if stderr:
         print(stderr, file=sys.stderr, end="")
-    return status or "error", cutoff, FAILURE_QUALITY
+    # No status line at all means the wrapper got no answer: UNKNOWN (logged,
+    # never cached). A real non-success status keeps its name.
+    return status or "UNKNOWN", cutoff, FAILURE_QUALITY
+
+
+def executable_name() -> str:
+    return os.environ.get("LLM2SMT", "llm2smt")
+
+
+def print_version() -> int:
+    """Answer RamParILS's startup probe; exit 1 when llm2smt is unreachable."""
+    executable = executable_name()
+    print(f"{Path(sys.argv[0]).name} {WRAPPER_VERSION}")
+    ok = shutil.which(executable) is not None
+    if not ok:
+        print(f"llm2smt wrapper error: {executable!r} not found", file=sys.stderr)
+        print("llm2smt MISSING")
+    else:
+        try:
+            inner = subprocess.run(
+                [executable, "--version"], capture_output=True, text=True, timeout=30
+            )
+            text = inner.stdout.strip() if inner.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            text = ""
+        print(text or f"llm2smt ({shutil.which(executable)}, version not reported)")
+    print(f"supports: {' '.join(SUPPORTS)}")
+    return 0 if ok else 1
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--version":
+        return print_version()
+
     signal.signal(signal.SIGINT, handle_termination)
     signal.signal(signal.SIGTERM, handle_termination)
 
@@ -181,7 +214,7 @@ def main() -> int:
         if cutoff <= 0:
             raise ValueError("cutoff must be positive")
         parameters = parse_parameters(sys.argv[3:])
-        executable = os.environ.get("LLM2SMT", "llm2smt")
+        executable = executable_name()
         command = build_command(executable, instance, parameters)
         status, runtime, quality = run(
             command, cutoff, memory_limit_bytes()
@@ -189,7 +222,7 @@ def main() -> int:
     except (KeyError, OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"llm2smt wrapper error: {error}", file=sys.stderr)
         status, runtime, quality = (
-            "error",
+            "UNKNOWN",
             locals().get("cutoff", 0.0),
             FAILURE_QUALITY,
         )

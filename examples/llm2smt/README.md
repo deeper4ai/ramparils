@@ -56,3 +56,7 @@ and is followed by its complete YAML configuration.
 The wrapper reports `sat` and `unsat` as successful. `unknown`, process errors,
 and timeouts receive the full cutoff runtime and a large quality penalty, so a
 fast failed run cannot win the runtime objective.
+A run that produced no status at all (wrapper error, crash) is reported as
+`UNKNOWN`, which RamParILS logs to the error log and keeps out of the cache.
+`llm2smt_wrapper.py --version` answers RamParILS's startup probe and exits
+non-zero when `llm2smt` (or `$LLM2SMT`) is not on `PATH`.
