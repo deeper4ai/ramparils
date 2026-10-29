@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "../searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -225,16 +225,16 @@ sub-space to a single entry. A conf file is therefore a record of what ran rathe
 configuration, and <a href="#initial-configuration"><code>initial_config_file</code></a> will reject it unless every
 parameter in the space happened to be active.</p>
 <pre><code class="language-console">$ ramparils --version
-ramparils 0.2.0
+ramparils 0.3.0
 git:   6d967a5
 build: release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
 </code></pre>
-<p>The revision is baked in at build time, and it matters more than the version: <code>0.2.0</code> covers every
+<p>The revision is baked in at build time, and it matters more than the version: <code>0.3.0</code> covers every
 commit since that tag, so the version alone does not say which code ran. A <code>-dirty</code> suffix means
 the worktree had uncommitted changes and the revision therefore does not identify the build. Where
 the crate is built without git — an sdist, a source tarball — the revision reads <code>unknown</code> rather
 than failing the build. The same lines open every debug log:</p>
-<pre><code class="language-text">[    0.00s] binary:  ramparils v0.2.0
+<pre><code class="language-text">[    0.00s] binary:  ramparils v0.3.0
 [    0.00s] git:     6d967a5
 [    0.00s] build:   release, rustc 1.97.1 (8bab26f4f 2026-07-14), x86_64-unknown-linux-gnu
 </code></pre>
@@ -273,7 +273,14 @@ lambda_c:              0.5
 lambda_t:              0.5
 cores:                 0         # 0 = all available
 num_run:               0
+instance_shuffle:      true      # shuffle instances once before dispatch
+instance_shuffle_seed: 0
+futell:            false   # checkpoint-based early rejection of BLS neighbours
+futell_checkpoint: 1.0     # horizon, as a multiple of cutoff_time
+futell_cores:      ~       # virtual worker count; null = same as `cores`
+futell_tolerance:  0.0
 cache_db:              ":memory:"    # use a file path to persist across runs
+cache_disable:         false    # true: never read a cache hit (writes still happen)
 debug:                 false
 debug_wrapper:         false
 debug_solver:          false
@@ -353,9 +360,8 @@ started.</p>
 </tbody>
 </table>
 </div>
-<p>FocusedILS uses the first N entries from <code>instance_file</code>, not a random sample.
-Order the file deliberately or shuffle it before a run when early prefixes
-should represent the full training set.</p>
+<p>FocusedILS uses the first N entries from the (shuffled, by default —
+see <code>instance_shuffle</code> below) instance list, not a random sample each round.</p>
 <h3 id="-iterative-deepening"><a class="header" href="#-iterative-deepening">📈 Iterative deepening</a></h3>
 <p>Runs multiple ILS phases with an exponential schedule.  Early phases use fewer instances and a
 shorter cutoff to rapidly explore the space; later phases refine the best region with the full
@@ -383,10 +389,40 @@ See <a href="../reference/algorithm.html#iterative-deepening">Iterative deepenin
 <tbody>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Number of parallel worker threads. <code>0</code> uses all available CPU cores. Set to a specific number to limit parallelism on shared machines.</td></tr>
 <tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache file. Defaults to an in-memory cache (not persisted). Set to a file path to share cached results across runs on the same benchmark. Cache rows include the execution cutoff, allowing safe reuse across iterative-deepening phases.</td></tr>
+<tr><td><code>cache_disable</code></td><td><code>false</code></td><td>Disable cache <em>lookups</em>: every task is treated as a miss and actually run, no matter what <code>cache_db</code> already holds. Writes still happen — a result still lands in the cache via the normal keep-existing-unless-upgrading-a-timeout write policy, so a repeated <code>(strategy, instance)</code> pair keeps its first solved result rather than being overwritten by a later re-run’s differing number. For isolating whether cache hits are skewing something, not for routine use.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index, reserved for future use as a random seed. Has no effect currently.</td></tr>
+<tr><td><code>instance_shuffle</code></td><td><code>true</code></td><td>Shuffle the instance list once, deterministically, before dispatch — decorrelates FocusedILS’s fidelity-growth prefix from any difficulty ordering already present in the instance file. Changes real evaluation order for <em>every</em> scenario that doesn’t opt out, including ones that never touch <code>futell</code>. Turn it off if the instance list is already randomized (a second shuffle would be redundant) or a specific literal order must be preserved. Never affects which <code>instance_id</code> a path is assigned in the cache — it only reorders an already-assigned list.</td></tr>
+<tr><td><code>instance_shuffle_seed</code></td><td><code>0</code></td><td>Seed for <code>instance_shuffle</code>.</td></tr>
 </tbody>
 </table>
 </div>
+<h3 id="-future-telling"><a class="header" href="#-future-telling">🔮 Future-telling</a></h3>
+<p>An opt-in, second, <em>heuristic</em> early-rejection prune for <code>basic_local_search</code>’s
+neighbour evaluation, alongside the existing (exact) adaptive-capping prune.
+While a neighbour’s real per-instance results stream in, a simulated N-worker
+replay of what has arrived so far predicts, from a checkpoint partway through,
+whether the neighbour is on track to beat the incumbent — and rejects it
+outright if it clearly is not. Unlike capping, this <strong>can</strong> reject a
+configuration that would have gone on to win; it is off by default for
+exactly that reason.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>futell</code></td><td><code>false</code></td><td>Enable checkpoint-based early rejection. Gated internally so it is provably inert (never rejects anything) whenever a round’s instance count does not exceed <code>futell_cores</code> — there is nothing to gain from running it there.</td></tr>
+<tr><td><code>futell_checkpoint</code></td><td><code>1.0</code></td><td>Checkpoint horizon, as a multiple of <code>cutoff_time</code>. <code>1.0</code> is deliberately conservative: maturity depends on the <em>summed</em> runtime of instances processed so far crossing <code>futell_cores × futell_checkpoint × cutoff_time</code>, so for a scenario whose instances mostly solve well under <code>cutoff_time</code>, expect the checkpoint to rarely mature at the default — lower this for a sharper, earlier signal once <code>futell</code> has been validated on a real scenario.</td></tr>
+<tr><td><code>futell_cores</code></td><td><code>null</code></td><td>Virtual worker count for the simulated replay, decoupled from <code>cores</code>. <code>null</code> resolves to whatever <code>cores</code> resolved to for this run. A larger value sharpens the signal but also raises the bar for <code>futell_checkpoint</code>’s gate.</td></tr>
+<tr><td><code>futell_tolerance</code></td><td><code>0.0</code></td><td>Relative margin, same shape as <code>acceptance_tolerance</code>, within which a challenger’s checkpoint is still tolerated despite being worse than the incumbent’s. <code>0.0</code> rejects on any checkpoint disagreement, which is likely too aggressive for a first run — checkpoint disagreement is measurably sharper for large gaps than for close ones.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A rejected neighbour is counted in the end-of-run summary’s <code>futell_rejected</code>,
+separate from <code>capped</code> — capping is a proof (a capped score is always a valid
+lower bound); a checkpoint rejection is a statistical heuristic measured on
+one dataset, not a guarantee. If a run’s outcome looks suspicious, re-run it
+with <code>futell: false</code> to check whether the feature changed anything.</p>
 <p>Cache entries are keyed by the active configuration and instance path, with the
 execution cutoff stored on each result. A timeout can satisfy only requests
 with an equal or shorter cutoff. A completed result that exceeds a shorter

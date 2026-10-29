@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -186,21 +186,86 @@
 <a href="https://semver.org/spec/v2.0.0.html">semantic versioning</a>.</p>
 <p>Dates are commit dates. Entries were reconstructed from the git history, so
 they describe what changed rather than what was announced at the time.</p>
-<h2 id="unreleased"><a class="header" href="#unreleased"><a href="https://github.com/deeper4ai/ramparils/compare/v0.2.0...HEAD">Unreleased</a></a></h2>
+<h2 id="unreleased"><a class="header" href="#unreleased"><a href="https://github.com/deeper4ai/ramparils/compare/v0.3.0...HEAD">Unreleased</a></a></h2>
+<h2 id="030--2026-10-29"><a class="header" href="#030--2026-10-29"><a href="https://github.com/deeper4ai/ramparils/compare/v0.2.0...v0.3.0">0.3.0</a> — 2026-10-29</a></h2>
 <h3 id="added"><a class="header" href="#added">Added</a></h3>
 <ul>
-<li>An end-of-run <code>ils: summary</code> line reporting
-<code>rounds / searched / gated / incumbents / evals / capped</code>. A <em>gated</em> round is
+<li>
+<p><strong>Agent skills under <code>skills/</code></strong> for running a tuning campaign: <code>tune-solver</code>
+(the loop, scenario settings, experiment diary), <code>tune-solver-domain</code>
+(building, verifying and compacting a parameter space), <code>tune-solver-wrapper</code>
+(the wrapper protocol, with a standard-library <code>wrapper_template.py</code>),
+<code>tune-solver-analysis</code> (log, error log and cache analysis, with
+<code>greedy_cover.py</code> and <code>conf_to_strat.py</code>) and <code>tune-solver-eval</code> (scoring
+strategies on a test benchmark with solverpy).</p>
+</li>
+<li>
+<p><strong><code>cache_disable</code> scenario option</strong>: when set, <code>Scheduler::submit</code> skips
+<code>cache.get_batch()</code> entirely and treats every task as a miss, so every
+instance actually runs regardless of what <code>cache_db</code> already holds.
+Writes are unaffected — <code>cache.put()</code>’s existing keep-existing-unless-
+upgrading-a-timeout policy (a genuine solved result is never clobbered by
+a later re-run’s differing number; only a timeout can be replaced) applies
+exactly as before. Added to let a cache-hit-heavy run be re-run with
+caching off as a clean A/B check for whether cache hits (whose “runtime”
+contributes to a virtual-worker simulation like <code>futell</code>’s
+checkpoint at a very different wall-clock cost than a real dispatch) are
+skewing something.</p>
+</li>
+<li>
+<p><strong><code>futell</code>: opt-in checkpoint-based early rejection of BLS
+neighbours</strong>, alongside the existing (exact) adaptive-capping prune. While a
+neighbour’s real per-instance results stream in, a simulated N-worker replay
+is checkpointed at <code>futell_checkpoint × cutoff_time</code>
+(<code>futell_cores</code> virtual workers, decoupled from real <code>cores:</code>), and
+the neighbour is rejected outright once that checkpoint is significantly
+worse than the incumbent’s own (<code>futell_tolerance</code>). Unlike capping
+this is a heuristic, not a proof — it can reject a configuration that would
+have gone on to win — so it defaults to off; a rejection is counted
+separately in the run summary’s new <code>futell_rejected</code>. A rejection
+(capping’s or future-telling’s) now also actually stops that neighbour’s
+own solver dispatch via the new <code>Scheduler::cancel_neighbor</code> — without it,
+a rejected neighbour’s already-queued instances kept running to completion
+in the background regardless, so early rejection bought no real wall-clock
+savings. The simulated replay assigns each real result to a virtual worker
+in the order results actually arrive, not a fixed instance order — an
+earlier fixed-order design could stall for a long time waiting on one slow
+straggler while much newer data sat unused. See
+<a href="docs/reference/algorithm.html#future-telling">docs/reference/algorithm.md#future-telling</a>.</p>
+</li>
+<li>
+<p><strong><code>instance_shuffle</code> (default <code>true</code>) shuffles the instance list once,
+deterministically, before dispatch</strong> (<code>instance_shuffle_seed</code> for
+reproducibility) — decorrelates FocusedILS’s fidelity-growth prefix from
+any difficulty ordering already present in the instance file. <strong>This
+changes real evaluation order for every scenario that doesn’t explicitly
+set <code>instance_shuffle: false</code></strong>, including ones that never touch
+<code>futell</code> — a deliberate default-behavior change, not only new
+opt-in surface area, though a deterministic one (a given scenario + seed
+still reproduces identically across reruns). Never affects which
+<code>instance_id</code> a path is assigned in the cache. <code>futell: true</code> with
+<code>instance_shuffle: false</code> prints a startup warning, not an error, since a
+pre-randomized instance file is a legitimate reason for the combination.</p>
+</li>
+<li>
+<p>An end-of-run <code>ils: summary</code> line reporting
+<code>rounds / searched / gated / incumbents / evals / capped / futell_rejected</code>. A <em>gated</em> round is
 one whose starting configuration was capped and which then accepted no move,
 so the bound hid its whole neighbourhood and it produced no search. Comparing
 two approaches on final score alone can hide that one of them was pruned out
-of most of its rounds.</li>
-<li>The changelog is published with the documentation, at
+of most of its rounds.</p>
+</li>
+<li>
+<p>The changelog is published with the documentation, at
 <code>deeper4ai.github.io/ramparils</code>. <code>docs/changelog.md</code> is a one-line mdBook
-include of this file, so there is still one source of truth.</li>
-<li>The landing page carries the current release, an install one-liner pinned to
-the tag, a “What’s new” section and a link to the GitHub repository.</li>
-<li><strong>A <code>--version</code> probe before the first evaluation.</strong> <code>ramparils</code> now runs
+include of this file, so there is still one source of truth.</p>
+</li>
+<li>
+<p>The landing page carries the current release, an install one-liner pinned to
+the tag, a “What’s new” section and a link to the GitHub repository.</p>
+</li>
+<li>
+<p><strong>A <code>--version</code> probe before the first evaluation.</strong> <code>ramparils</code> now runs
 <code>&lt;algo&gt; --version</code> at startup and refuses to start unless it exits <code>0</code> and
 its last stdout line is <code>supports: … version …</code>; the wrapper’s whole
 response is logged as its own block, separated from the run’s other startup
@@ -211,8 +276,10 @@ answered every evaluation with a well-formed but meaningless result line
 instead of failing to launch. A wrapper that can’t reach its solver prints a
 <code>&lt;solver&gt; MISSING</code> placeholder line in the version block but must still
 exit non-zero. <code>examples/primo</code> and <code>examples/eprover</code> both implement the
-convention; see docs/reference/protocol.md.</li>
-<li><strong>A <code>runhash</code> fingerprint, threaded end to end.</strong> A wrapper’s result line
+convention; see docs/reference/protocol.md.</p>
+</li>
+<li>
+<p><strong>A <code>runhash</code> fingerprint, threaded end to end.</strong> A wrapper’s result line
 may carry an optional fourth field: a hash of the solver’s own internal
 counters, independent of runtime, that lets two configurations be compared
 for having done byte-identical work. <code>results.runhash</code> is a new nullable
@@ -225,14 +292,17 @@ whole hash; <code>n</code> counts every attempted instance, so <code>n == instan
 fully evaluated). Given a cache and no sub-command, <code>ramparils db</code> now
 exports all four (<code>solved</code>, <code>status</code>, <code>confs</code>, <code>runhashes</code>). Two strategies
 sharing a runhash did identical internal work, which is the signal a
-structurally dead parameter needs and nothing else can catch.</li>
-<li><strong><code>examples/eprover</code> rewritten as a grackle-free wrapper</strong> via solverpy’s
+structurally dead parameter needs and nothing else can catch.</p>
+</li>
+<li>
+<p><strong><code>examples/eprover</code> rewritten as a grackle-free wrapper</strong> via solverpy’s
 <code>E</code>, replacing the old grackle-dependent example. A deliberately small
 domain — core proof-search switches, term ordering, and up to 4
 independently-tunable clause-selection heuristic slots with their own
 frequencies — rather than grackle’s full combinatorial space. Three
 scenarios (<code>eprover-basic</code>/<code>-random</code>/<code>-focused</code>) share one cache, differing
-only in search approach and fidelity schedule.</li>
+only in search approach and fidelity schedule.</p>
+</li>
 </ul>
 <h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
 <ul>
@@ -267,9 +337,64 @@ solverpy’s own binary resolution — point a different build at <code>PATH</co
 the expected name instead. Also gains the <code>--version</code>/<code>supports:</code> protocol
 above and a <code>--params</code> dry-run flag that resolves a parameter set to a
 command line without running anything.</li>
+<li><strong><code>future_telling</code>/<code>future_telling_checkpoint</code>/<code>future_telling_cores</code>/
+<code>future_telling_tolerance</code> renamed to <code>futell</code>/<code>futell_checkpoint</code>/
+<code>futell_cores</code>/<code>futell_tolerance</code></strong>, matching the <code>ils::futell</code> module
+name. The old spelling briefly parsed as an alias for scenarios already
+run against it; that alias is now removed — <code>futell*</code> is the only
+spelling <code>Scenario</code>, the Python bindings, and the run summary’s
+<code>futell_rejected</code> counter accept.</li>
 </ul>
 <h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
 <ul>
+<li><strong><code>examples/llm2smt</code> works again.</strong> Its wrapper had no <code>--version</code>
+branch, so the new startup probe made <code>ramparils run</code> refuse that example’s
+scenario. It now answers the probe (exiting non-zero when <code>llm2smt</code> is not
+on <code>PATH</code>), and reports a run with no status as <code>UNKNOWN</code> instead of an
+invented, cacheable <code>error</code>.</li>
+<li><strong>One fast-failing instance collapsed <code>futell</code>’s whole checkpoint horizon.</strong>
+<code>CheckpointTracker::record</code> fed <code>dispatch_rel + runtime</code> to <code>refresh</code> as a
+stand-in for “now”, on the assumption that a completion can only be observed
+once its own finish time has really elapsed. That holds for a genuine solve,
+whose reported runtime is its measured duration — but not for an unsolved
+one, which reports <code>cutoff_time</code> however fast the process actually exited
+(the PAR1 contract, <code>docs/reference/protocol.md</code>; a segfault, a <code>GaveUp</code> or
+a memory-limit abort all report a full cutoff within milliseconds). A single
+such result therefore handed <code>refresh</code> a whole cutoff’s worth of time that
+never passed, and the pending-bucket test (<code>now_rel &gt; checkpoint_time</code>,
+added with D11) wrote off <em>every</em> still-pending virtual worker as busy past
+the horizon in one shot. The checkpoint then matured on whatever handful of
+instances had finished by then instead of on a horizon’s worth of work —
+measured in production as a 5.0s horizon maturing after 0.41s of real wall
+clock, having seen 27 of 500 instances. Only a solved result’s finish is now
+taken as an elapsed-time bound; for an unsolved one only its dispatch is
+known to have happened. Latent since D11 (<code>22518c9</code>) and invisible whenever
+the first cutoff-reporting arrival happened to be a genuine timeout, which
+is why earlier <code>futell</code> runs matured at plausible-looking times.</li>
+<li><strong>An incomplete evaluation could win an acceptance comparison and corrupt
+the incumbent.</strong> A capped/checkpoint-rejected evaluation’s score is a mean
+over whichever instances happened to finish first — an optimistic lower
+bound, not a real measurement — but nothing checked <code>complete</code> before
+comparing scores. A <code>futell</code>-capped restart/perturbation could out-score a
+real, fully-evaluated incumbent purely by having run on fewer, faster
+instances. <code>try_promote_incumbent</code>/<code>accept_or_reject_home_base</code>/
+<code>set_home_base</code> now refuse an incomplete evaluation outright; inside a
+single descent, a gated/incomplete starting point can no longer block a
+genuine neighbour from being accepted either, since no real evaluation
+could ever be proven to dominate an untrustworthy one.</li>
+<li><strong><code>futell</code>’s checkpoint fallback could silently discard a pending real
+dispatch’s busy-time.</strong> <code>CheckpointTracker::record</code>’s fallback bucket
+selection (a completion with no matching <code>record_dispatch</code>, e.g. a cache
+hit) picked the globally least-busy virtual bucket without excluding
+buckets still occupied by a pending dispatch, unlike
+<code>least_busy_free_bucket()</code>. Landing on such a bucket overwrote its
+busy-until with the fallback job’s timeline, which the real pending
+dispatch’s own eventual <code>record</code> call would then overwrite right back —
+understating total simulated load and risking an early false-positive
+checkpoint maturity. Only reachable when concurrent real dispatches
+exceed <code>futell_cores</code> (oversubscription); every scenario run against this
+feature so far kept <code>futell_cores == cores</code>, so it was dormant in
+practice.</li>
 <li><strong>Debug and error logs no longer truncate on a rerun.</strong> Both were opened
 with <code>File::create</code>, so a second <code>ramparils run</code> (or <code>specialize()</code> call)
 against the same paths silently discarded the previous run’s history. They

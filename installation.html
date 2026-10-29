@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -190,7 +190,10 @@
 cd ramparils
 cargo install --path . --locked
 </code></pre>
-<p>This installs the <code>ramparils</code> binary into Cargo’s binary directory,
+<p>Or install a release straight from GitHub, without cloning:</p>
+<pre><code class="language-bash">cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked
+</code></pre>
+<p>Either installs the <code>ramparils</code> binary into Cargo’s binary directory,
 normally <code>~/.cargo/bin</code>. Make sure that directory is on <code>PATH</code>.</p>
 <p>For a repository-local build instead:</p>
 <pre><code class="language-bash">cargo build --release --locked

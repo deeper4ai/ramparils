@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "../searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -311,12 +311,44 @@ Never compare two capped scores with each other: each covers a different, differ
 <p><strong>Under <code>overall_obj: median</code> the cap tests a statistic the run does not score</strong> — it always sums.
 Prefer <code>pruning: false</code> there.</p>
 <p>A run ends with an account of what the search actually got to do:</p>
-<pre><code class="language-text">ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489
+<pre><code class="language-text">ils: summary rounds=79 searched=8 gated=71 incumbents=2 evals=2612 capped=2489 future_telling_rejected=0
 </code></pre>
 <p>A <em>gated</em> round is one whose starting configuration was capped and which then accepted no move: the
 bound hid every neighbour, so the round produced no search. Worth reporting whenever two approaches
 are compared — the bound is relative to the incumbent, so it prunes a small perturbation and a fresh
 random draw at very different rates, and a final-score comparison alone hides that.</p>
+<hr>
+<p><a id="future-telling"></a></p>
+<h2 id="-future-telling"><a class="header" href="#-future-telling">🔮 Future-telling</a></h2>
+<p>An opt-in (<code>future_telling: true</code>) second, <em>heuristic</em> prune, alongside capping: while a
+neighbour’s real per-instance results stream in, a simulated N-worker replay of what has arrived so
+far checkpoints its progress at <code>future_telling_checkpoint × cutoff_time</code>, and the neighbour is
+rejected outright once that checkpoint is significantly worse than the incumbent’s own.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Adaptive capping</th><th>Future-telling</th></tr>
+</thead>
+<tbody>
+<tr><td>Nature</td><td>mathematical proof (costs are non-negative and non-decreasing)</td><td>statistical heuristic, measured on one dataset</td></tr>
+<tr><td>Can it be wrong?</td><td>No — a capped score is a valid lower bound</td><td><strong>Yes</strong> — can reject a configuration that would have gone on to win</td></tr>
+<tr><td>Typically fires</td><td>once enough real cost has accrued</td><td>potentially very early, as soon as enough <em>fast</em> results have streamed in</td></tr>
+</tbody>
+</table>
+</div>
+<p>The simulation is deliberately decoupled from real wall-clock time and real <code>cores:</code> — it replays
+per-instance results against <code>future_telling_cores</code> <em>virtual</em> workers (list-scheduling: each result
+goes to whichever virtual worker is currently least busy, in the order real results actually arrive),
+so the checkpoint’s sharpness is a free parameter independent of how many real workers this run
+happens to use. Note that a <em>sharper</em> signal (a larger <code>future_telling_cores</code>) is not free in wall
+time: every virtual worker has to individually accumulate <code>future_telling_checkpoint × cutoff_time</code>
+of assigned work before the checkpoint matures, and the supply of real results feeding that is capped
+by real <code>cores:</code> — doubling <code>future_telling_cores</code> roughly doubles how many real results are needed,
+and so how long maturity actually takes.</p>
+<p>A checkpoint rejection is counted in the run summary’s <code>future_telling_rejected</code>, separate from
+<code>capped</code> (above) — unlike a capped score, a rejected neighbour leaves no “the good one might have
+been here” trace, so treat a suspicious-looking result as a reason to re-run with
+<code>future_telling: false</code> before trusting it.</p>
 <hr>
 <p><a id="iterative-deepening"></a></p>
 <h2 id="-iterative-deepening"><a class="header" href="#-iterative-deepening">📈 Iterative deepening</a></h2>

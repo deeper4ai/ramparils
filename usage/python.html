@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "../searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -263,7 +263,14 @@ instance-list file.</p>
 <tr><td><code>lambda_t</code></td><td><code>0.5</code></td><td>Iterative deepening timeout factor.</td></tr>
 <tr><td><code>cores</code></td><td><code>0</code></td><td>Parallel workers; <code>0</code> uses all available cores.</td></tr>
 <tr><td><code>num_run</code></td><td><code>0</code></td><td>Run index / random seed (reserved).</td></tr>
+<tr><td><code>instance_shuffle</code></td><td><code>True</code></td><td>Shuffle instances once, deterministically, before dispatch. Changes real evaluation order for any scenario that doesn’t opt out; set <code>False</code> if the instance list is already randomized.</td></tr>
+<tr><td><code>instance_shuffle_seed</code></td><td><code>0</code></td><td>Seed for <code>instance_shuffle</code>.</td></tr>
+<tr><td><code>futell</code></td><td><code>False</code></td><td>Reject a BLS neighbour early once a simulated N-worker replay of its real per-instance results is significantly worse, at an early checkpoint, than the incumbent’s own. A heuristic prune (can reject a config that would have gone on to win), off by default.</td></tr>
+<tr><td><code>futell_checkpoint</code></td><td><code>1.0</code></td><td>Checkpoint horizon, as a multiple of <code>cutoff_time</code>.</td></tr>
+<tr><td><code>futell_cores</code></td><td><code>None</code></td><td>Virtual worker count for the checkpoint simulation; <code>None</code> uses whatever <code>cores</code> resolved to.</td></tr>
+<tr><td><code>futell_tolerance</code></td><td><code>0.0</code></td><td>Relative margin, same shape as <code>acceptance_tolerance</code>, within which a worse checkpoint is still tolerated.</td></tr>
 <tr><td><code>cache_db</code></td><td><code>":memory:"</code></td><td>Path to the SQLite cache. Defaults to in-memory (not persisted). Set to a file path to share results across calls. Results retain their execution cutoff for safe reuse across iterative-deepening phases.</td></tr>
+<tr><td><code>cache_disable</code></td><td><code>False</code></td><td>Disable cache <em>lookups</em>: every task is treated as a miss and actually run, no matter what <code>cache_db</code> already holds. Writes still happen, subject to the usual keep-existing-unless-upgrading-a-timeout policy. For isolating whether cache hits are skewing something, not for routine use.</td></tr>
 <tr><td><code>debug</code></td><td><code>False</code></td><td>Print new incumbents, scores, and accepted argument changes to stderr.</td></tr>
 <tr><td><code>debug_wrapper</code></td><td><code>False</code></td><td>Print every solver invocation.</td></tr>
 <tr><td><code>debug_solver</code></td><td><code>False</code></td><td>Print every solver result.</td></tr>
@@ -274,8 +281,8 @@ instance-list file.</p>
 </table>
 </div>
 <p>FocusedILS uses the first N entries from <code>instances</code> or <code>instance_file</code> while
-fidelity grows. Put a representative ordering in the list; RamParILS does not
-shuffle it automatically.</p>
+fidelity grows, after <code>instance_shuffle</code> (on by default) reorders the list
+once, deterministically.</p>
 <h3 id="-returns"><a class="header" href="#-returns">📤 Returns</a></h3>
 <p><code>dict[str, str]</code> — The best configuration found.  Only <em>active</em> parameters are included
 (inactive conditional parameters are omitted).</p>

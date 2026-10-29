@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "../searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-8d39ea3d.js"></script>
@@ -200,6 +200,15 @@ not a measurement. Logged with a leading <code>&gt;</code> and the count it cove
 Two capped scores cover different, differently biased prefixes and must not be compared to
 each other.</p>
 <hr>
+<p><strong>Checkpoint</strong> (see also: <em>future-telling</em>)
+An early, simulated read of a neighbour’s progress, taken at
+<code>future_telling_checkpoint × cutoff_time</code> of virtual replay time across <code>future_telling_cores</code>
+virtual workers. Scored as a count: how many of the round’s instances are <em>not yet confirmed
+solved</em> (<code>runtime &lt; cutoff_time</code>) by that horizon — lower is better, like every other score in
+RamParILS. Only computed once the round’s instance count exceeds <code>future_telling_cores</code>; below
+that, every virtual worker sits idle and the checkpoint can never mature before the real
+evaluation is already complete, so nothing is built at all.</p>
+<hr>
 <p><strong>Configuration</strong>
 A complete assignment of values to all parameters in the parameter space.
 Also called a <em>strategy</em> in the context of solver portfolios.
@@ -237,13 +246,22 @@ from a fixed ball however the incumbent behaves — which is what the log lets y
 <p><strong>Fidelity</strong>
 The number of leading training instances used to score each configuration. FocusedILS starts
 at <code>initial_fidelity</code> and grows by <code>fidelity_step</code> when the incumbent survives a challenge.
-Instances are taken in list order and are not shuffled.</p>
+Instances are taken in list order, after <code>instance_shuffle</code> (on by default) reorders the list
+once at the start of the run. See also: <em>instance shuffle</em>.</p>
 <hr>
 <p><strong>Forbidden combination</strong>
 A joint assignment of parameter values that is excluded from the search.
 Declared in the <code>.params</code> file as <code>{param1=val1, param2=val2}</code>.
 Any configuration containing a forbidden combination is skipped during neighbourhood
 exploration.</p>
+<hr>
+<p><strong>Future-telling</strong> (see also: <em>checkpoint</em>, <em>adaptive capping</em>)
+An opt-in (<code>future_telling: true</code>), heuristic early rejection of a BLS neighbour: while its real
+per-instance results stream in, a simulated N-worker replay is checkpointed at
+<code>future_telling_checkpoint × cutoff_time</code>, and the neighbour is rejected outright once that
+checkpoint is significantly worse than the incumbent’s own. Unlike adaptive capping, this is not a
+proof — it can reject a configuration that would have gone on to win — which is why it defaults to
+off. See <a href="algorithm.html#future-telling">Algorithm</a>.</p>
 <hr>
 <p><strong>Gated round</strong>
 A round whose starting configuration was capped and which then accepted no move: every
@@ -262,6 +280,13 @@ A benchmark problem on which the target algorithm is evaluated.
 Passed as a file path to the solver wrapper.
 RamParILS evaluates configurations across the training instance set to estimate
 generalisation performance.</p>
+<hr>
+<p><strong>Instance shuffle</strong> (<code>instance_shuffle</code>, <code>instance_shuffle_seed</code>)
+A one-time, deterministic reordering of the instance list, applied right after instance IDs are
+assigned and before anything else runs. On (<code>true</code>) by default, which changes real evaluation
+order for every scenario that doesn’t opt out — not just ones using <em>future-telling</em>. Decorrelates
+FocusedILS’s fidelity-growth prefix from any difficulty ordering already present in the instance
+file; never affects which instance ID a path is assigned.</p>
 <hr>
 <p><strong>Iterated Local Search (ILS)</strong>
 The search algorithm at the core of RamParILS.

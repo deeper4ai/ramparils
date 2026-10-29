@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-85a43fb3.js";
+            window.path_to_searchindex_js = "searchindex-d3f8fb9d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -185,13 +185,43 @@
 automated algorithm configuration via Iterated Local Search.</p>
 <p>Used as the inner tuner in <a href="https://github.com/ai4reason/grackle">Grackle</a>, a strategy portfolio
 invention system for automated reasoning solvers.</p>
-<p><strong>Current release: v0.2.0</strong> (2026-08-19) · <a href="changelog.html">changelog</a> ·
+<p><strong>Current release: v0.3.0</strong> (2026-10-29) · <a href="changelog.html">changelog</a> ·
 <a href="https://github.com/deeper4ai/ramparils">sources and issues on GitHub</a> ·
 <a href="installation.html">installation</a></p>
 <pre><code class="language-bash">pip install ramparils                                          # Python extension
-cargo install --git https://github.com/deeper4ai/ramparils --tag v0.2.0   # CLI
+cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked   # CLI
 </code></pre>
-<h2 id="-whats-new-in-020"><a class="header" href="#-whats-new-in-020">📦 What’s new in 0.2.0</a></h2>
+<h2 id="-whats-new-in-030"><a class="header" href="#-whats-new-in-030">📦 What’s new in 0.3.0</a></h2>
+<ul>
+<li><strong>Exact adaptive capping.</strong> The cap now tests the cumulative sum against the
+budget beating the incumbent allows, so it never discards a configuration
+that would have been accepted, and one slow instance can no longer cap a
+configuration outright. Capped scores are logged as lower bounds,
+<code>&gt;2.698475 (312/473)</code>. <code>bound_multiplier</code> keeps its meaning.
+See <a href="reference/algorithm.html">Algorithm</a>.</li>
+<li><strong>Wrapper startup check and <code>runhash</code>.</strong> <code>ramparils</code> runs <code>&lt;algo&gt; --version</code>
+before the first evaluation and refuses to start unless the wrapper can reach
+its solver; the answer is logged, so a run records which solver build it
+used. Wrappers may also report a <code>runhash</code>, a fingerprint of the solver’s
+own work, exported by the new <code>ramparils db runhashes</code> to find parameters
+that change nothing. <strong>Wrappers without <code>--version</code> must add it.</strong>
+See <a href="reference/protocol.html">Solver protocol</a>.</li>
+<li><strong><code>futell</code>, an opt-in early rejection</strong> of losing neighbours from a
+checkpoint partway through their evaluation. Heuristic and off by default.</li>
+<li><strong><code>instance_shuffle</code></strong>, on by default: the instance list is shuffled once,
+deterministically, before dispatch, so evaluation order changes for
+existing scenarios. Set <code>instance_shuffle: false</code> to keep the file’s order.</li>
+<li><strong><code>cache_disable</code></strong> forces every evaluation to run, for checking whether
+cache hits skew a result.</li>
+<li><strong>Fixes:</strong> an incomplete (capped) evaluation can no longer win an
+acceptance comparison and corrupt the incumbent; debug and error logs append
+instead of truncating on a rerun; the error log only appears when something
+crashed; the example wrappers report crashes as <code>UNKNOWN</code> with the full
+cutoff, never as a cheap cacheable result.</li>
+<li><strong>Agent skills</strong> under <code>skills/</code> for running a whole tuning campaign:
+domain, wrapper, scenario, analysis and evaluation with solverpy.</li>
+</ul>
+<h2 id="-what-was-new-in-020"><a class="header" href="#-what-was-new-in-020">📦 What was new in 0.2.0</a></h2>
 <ul>
 <li><strong>One command-line tool, two sub-commands.</strong> <code>ramparils run scenario.yaml</code>
 tunes; <code>ramparils db cache.dbcache</code> exports what a result cache holds. This
