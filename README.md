@@ -377,6 +377,8 @@ parameter space to scoring the strategies found:
 - [`tune-solver-eval`](skills/tune-solver-eval/SKILL.md): score strategies on
   a test benchmark with [SolverPy](https://github.com/ai4reason/solverpy)
 
+Installation and usage: [LLM skills](docs/usage/skills.md).
+
 ## 🛠️ Development
 
 ```sh

@@ -24,10 +24,14 @@ own have their own skills:
 The reference docs live in this repository: `docs/usage/cli.md` (every
 scenario field), `docs/reference/params.md` (parameter file and space design),
 `docs/reference/protocol.md` (wrapper protocol), `docs/reference/algorithm.md`
-(the search). `examples/eprover/` and `examples/primo/` are complete worked
-setups. Read the relevant doc rather than guessing a field name — **neither
-RamParILS nor solverpy rejects an unknown key**; a misspelled or misplaced key
-parses and is silently ignored.
+(the search), also published at https://deeper4ai.github.io/ramparils/.
+`examples/eprover/` and `examples/primo/` are complete worked setups
+(https://github.com/deeper4ai/ramparils/tree/main/examples). When the skills
+are installed outside a clone of the repository, read them there.
+
+Read the relevant doc rather than guessing a field name — **neither RamParILS
+nor solverpy rejects an unknown key**; a misspelled or misplaced key parses and
+is silently ignored.
 
 ## The campaign loop
 

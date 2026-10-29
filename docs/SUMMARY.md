@@ -7,6 +7,7 @@
 - [Usage]()
   - [CLI](usage/cli.md)
   - [Python API](usage/python.md)
+  - [LLM skills](usage/skills.md)
 - [Reference]()
   - [Algorithm](reference/algorithm.md)
   - [Parameter file](reference/params.md)

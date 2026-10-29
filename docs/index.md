@@ -42,6 +42,18 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 
 Details for this and earlier releases are in the [changelog](changelog.md).
 
+## 🤖 LLM skills
+
+The repository ships skills for LLM coding agents such as Claude Code, which
+walk an agent through a whole tuning campaign: building and verifying the
+parameter space, writing the wrapper, setting up the scenario, running and
+analysing RamParILS, and scoring the strategies found on a test benchmark
+with SolverPy — with an experiment diary and predictions written before each
+run. Copy [`skills/`](https://github.com/deeper4ai/ramparils/tree/main/skills)
+into the agent's skills directory (`~/.claude/skills/` for Claude Code) and
+ask it, in plain words, to tune your solver.
+See [LLM skills](usage/skills.md) for the list, installation and usage.
+
 ## 🚀 Key differences from Ruby ParamILS
 
 | | Original Ruby ParamILS | RamParILS |
@@ -83,7 +95,7 @@ for what each box does and for the FocusedILS fidelity schedule.
 - [Algorithm](reference/algorithm.md)
 - [Parameter file format](reference/params.md)
 - [Solver wrapper protocol](reference/protocol.md)
-- [Agent skills for tuning campaigns](https://github.com/deeper4ai/ramparils/tree/main/skills)
+- [LLM skills](usage/skills.md)
 - [Changelog](changelog.md)
 - [GitHub repository](https://github.com/deeper4ai/ramparils)
 
