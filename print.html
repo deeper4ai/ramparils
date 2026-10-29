@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6796e875.js";
+            window.path_to_searchindex_js = "searchindex-442fd2bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -216,20 +216,23 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th></th><th>Ruby ParamILS</th><th>RamParILS</th></tr>
+<tr><th></th><th>Original Ruby ParamILS</th><th>RamParILS</th></tr>
 </thead>
 <tbody>
-<tr><td>Evaluation</td><td>Sequential</td><td><strong>Parallel</strong> over all <code>(neighbour, instance)</code> pairs</td></tr>
-<tr><td>Cache</td><td>In-memory, per-run</td><td><strong>Persistent SQLite</strong>, shared across runs, self-describing</td></tr>
-<tr><td>Cache inspection</td><td>—</td><td><code>ramparils db solved | status | confs</code></td></tr>
-<tr><td>Python API</td><td>subprocess call</td><td><strong>Native extension</strong> via PyO3</td></tr>
-<tr><td>Search modes</td><td>BasicILS, FocusedILS</td><td>BasicILS, FocusedILS, <code>random</code> (ParamILS’s <code>pert_rand</code>)</td></tr>
-<tr><td>Escaping a local optimum</td><td>Random restart at fixed probability (<code>p_restart</code>), <code>R</code> random probes</td><td>Both, <strong>plus soft acceptance within a tolerance and stagnation-triggered restarts</strong></td></tr>
+<tr><td>Candidate evaluation</td><td>Sequential (a cluster mode exists, tied to the authors’ own database and hosts)</td><td><strong>Parallel</strong> over all <code>(neighbour, instance)</code> pairs</td></tr>
+<tr><td>Result cache</td><td>In memory, per run</td><td><strong>Persistent SQLite</strong>, shared across runs, self-describing</td></tr>
+<tr><td>Cache inspection</td><td>—</td><td><code>ramparils db solved | status | confs | runhashes</code></td></tr>
+<tr><td>Integration</td><td>Command line</td><td>Command line and <strong>native Python extension</strong> (PyO3)</td></tr>
+<tr><td>Search modes</td><td>BasicILS, FocusedILS, pure random search, and <code>pert_rand</code> (a random configuration instead of a perturbation)</td><td>BasicILS, FocusedILS, <code>random</code> (ParamILS’s <code>pert_rand</code>); no pure random search</td></tr>
+<tr><td>Escaping a local optimum</td><td>Random restart at fixed probability (<code>p_restart</code>, default 0.01), <code>R</code> random probes (default 10)</td><td>Both (off by default), <strong>plus soft acceptance within a tolerance and stagnation-triggered restarts</strong></td></tr>
 <tr><td>Restart target</td><td>Uniformly random configuration</td><td>Random, <strong>or a bounded perturbation of the incumbent</strong></td></tr>
 <tr><td>Comparing across fidelities</td><td>Score vector per configuration, compared at a common level</td><td><strong>Single score, re-measured</strong> for the incumbent and the home base at every fidelity increase</td></tr>
-<tr><td>Multi-phase schedules</td><td>—</td><td><strong>Iterative deepening</strong>: geometric growth of instances, cutoff and deadline</td></tr>
-<tr><td>Provenance</td><td>—</td><td>Source revision in <code>--version</code> and every log header; full scenario echoed at startup</td></tr>
-<tr><td>Non-deterministic algorithms (multiple seeds)</td><td>Supported</td><td>Not (yet) supported</td></tr>
+<tr><td>Iterative deepening</td><td>Yes: geometric growth of instances, cutoff and budget (<code>lambda_n</code>, <code>lambda_c</code>, <code>lambda_t</code>)</td><td>The same schedule; <strong>a cached longer-cutoff result also answers a shorter-cutoff phase</strong></td></tr>
+<tr><td>Adaptive capping</td><td>Yes (<code>boundMultiplier</code>, default 2)</td><td>Yes, <strong>exact</strong> cumulative-sum test, mean only — see <a href="#-algorithm-1">Algorithm</a></td></tr>
+<tr><td>Tuning budget</td><td>Summed target-algorithm runtime, maximum evaluations or iterations, or a target quality</td><td>Wall clock (<code>tuner_timeout</code>)</td></tr>
+<tr><td>Test-set validation</td><td>Final configuration re-scored on test instances (<code>-validN</code>)</td><td>Not yet (<code>test_instance_file</code> is reserved); score separately, e.g. with SolverPy</td></tr>
+<tr><td>Provenance</td><td>—</td><td>Source revision in <code>--version</code> and in every log header; full scenario echoed at startup</td></tr>
+<tr><td>Multiple random seeds</td><td>Supported (instance–seed files)</td><td>Not currently supported</td></tr>
 </tbody>
 </table>
 </div>
