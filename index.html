@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-442fd2bf.js";
+            window.path_to_searchindex_js = "searchindex-a3d55c78.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8d39ea3d.js"></script>
+        <script src="toc-8debb082.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -214,6 +214,16 @@ seed changes. Reusing a cache across incompatible scenarios can silently return 
 <li>Agent skills for running a tuning campaign</li>
 </ul>
 <p>Details for this and earlier releases are in the <a href="changelog.html">changelog</a>.</p>
+<h2 id="-llm-skills"><a class="header" href="#-llm-skills">🤖 LLM skills</a></h2>
+<p>The repository ships skills for LLM coding agents such as Claude Code, which
+walk an agent through a whole tuning campaign: building and verifying the
+parameter space, writing the wrapper, setting up the scenario, running and
+analysing RamParILS, and scoring the strategies found on a test benchmark
+with SolverPy — with an experiment diary and predictions written before each
+run. Copy <a href="https://github.com/deeper4ai/ramparils/tree/main/skills"><code>skills/</code></a>
+into the agent’s skills directory (<code>~/.claude/skills/</code> for Claude Code) and
+ask it, in plain words, to tune your solver.
+See <a href="usage/skills.html">LLM skills</a> for the list, installation and usage.</p>
 <h2 id="-key-differences-from-ruby-paramils"><a class="header" href="#-key-differences-from-ruby-paramils">🚀 Key differences from Ruby ParamILS</a></h2>
 <div class="table-wrapper">
 <table>
@@ -257,7 +267,7 @@ for what each box does and for the FocusedILS fidelity schedule.</p>
 <li><a href="reference/algorithm.html">Algorithm</a></li>
 <li><a href="reference/params.html">Parameter file format</a></li>
 <li><a href="reference/protocol.html">Solver wrapper protocol</a></li>
-<li><a href="https://github.com/deeper4ai/ramparils/tree/main/skills">Agent skills for tuning campaigns</a></li>
+<li><a href="usage/skills.html">LLM skills</a></li>
 <li><a href="changelog.html">Changelog</a></li>
 <li><a href="https://github.com/deeper4ai/ramparils">GitHub repository</a></li>
 </ul>
