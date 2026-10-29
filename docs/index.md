@@ -15,19 +15,6 @@ pip install ramparils                                          # Python extensio
 cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked   # CLI
 ```
 
-## 📦 What's new in 0.3.0
-
-- Exact adaptive capping
-- Wrapper `--version` check at startup (wrappers must implement it)
-- `runhash` fingerprints and `ramparils db runhashes`
-- `futell`: opt-in checkpoint-based early rejection
-- `instance_shuffle`, on by default
-- `cache_disable` scenario option
-- Fixes in acceptance, logging and the example wrappers
-- Agent skills for running a tuning campaign
-
-Details for this and earlier releases are in the [changelog](changelog.md).
-
 ## 💡 What it does
 
 Given a target algorithm with configurable parameters, RamParILS searches for the parameter
@@ -41,6 +28,19 @@ compatible tuning runs.
 Cache entries are keyed only by the active configuration and instance path. Use a separate
 cache when the algorithm command, cutoff, objective, solver version, wrapper behavior, or random
 seed changes. Reusing a cache across incompatible scenarios can silently return stale results.
+
+## 📦 What's new in 0.3.0
+
+- Exact adaptive capping
+- Wrapper `--version` check at startup (wrappers must implement it)
+- `runhash` fingerprints and `ramparils db runhashes`
+- `futell`: opt-in checkpoint-based early rejection
+- `instance_shuffle`, on by default
+- `cache_disable` scenario option
+- Fixes in acceptance, logging and the example wrappers
+- Agent skills for running a tuning campaign
+
+Details for this and earlier releases are in the [changelog](changelog.md).
 
 ## 🚀 Key differences from Ruby ParamILS
 
@@ -80,6 +80,7 @@ for what each box does and for the FocusedILS fidelity schedule.
 - [Algorithm](reference/algorithm.md)
 - [Parameter file format](reference/params.md)
 - [Solver wrapper protocol](reference/protocol.md)
+- [Agent skills for tuning campaigns](https://github.com/deeper4ai/ramparils/tree/main/skills)
 - [Changelog](changelog.md)
 - [GitHub repository](https://github.com/deeper4ai/ramparils)
 

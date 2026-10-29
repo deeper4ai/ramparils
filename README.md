@@ -357,6 +357,24 @@ changes.
 - [`examples/saps_python.py`](examples/saps_python.py): call RamParILS through
   Python
 
+## 🤖 Agent skills
+
+[`skills/`](skills) holds skills for coding agents (one `SKILL.md` per
+directory) that walk through a whole tuning campaign, from building the
+parameter space to scoring the strategies found:
+
+- [`tune-solver`](skills/tune-solver/SKILL.md): the campaign loop, scenario
+  settings that have worked, and an experiment diary with predictions written
+  before each run
+- [`tune-solver-domain`](skills/tune-solver-domain/SKILL.md): build, verify,
+  compact and prune a parameter space
+- [`tune-solver-wrapper`](skills/tune-solver-wrapper/SKILL.md): write a
+  wrapper that follows the solver protocol, with a standard-library template
+- [`tune-solver-analysis`](skills/tune-solver-analysis/SKILL.md): read the log
+  and the cache, pick strategies worth evaluating, find inert parameters
+- [`tune-solver-eval`](skills/tune-solver-eval/SKILL.md): score strategies on
+  a test benchmark with [SolverPy](https://github.com/ai4reason/solverpy)
+
 ## 🛠️ Development
 
 ```sh
