@@ -7,7 +7,7 @@
 # Pruning is off here, deliberately, unlike eprover-basic.yaml: the bound is
 # 1.2x the incumbent frozen at the start of the round, and a uniform draw
 # lands above it far more often than a perturbation does (see
-# ramparils-primo-cont's RUN 10 in the work26/expericon AGENTS.md for the
+# ramparils-primo-cont's RUN 10 for the
 # measured effect on primo -- about one round in ten gets through gated).
 # Pruned here, this arm would mostly measure how often draws clear the gate,
 # not how the random-restart search itself performs.

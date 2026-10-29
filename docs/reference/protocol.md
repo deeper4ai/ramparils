@@ -169,7 +169,7 @@ Rules for emitting it:
 
 `ramparils` stores it per result (nullable, so old caches without it still open) and XORs it
 across a descent's evaluated neighbours for a per-round fingerprint; `ramparils db status` and
-`ramparils db runhashes` export it for offline analysis (`work26/expericon/scripts/group-runhashes.py` groups
+`ramparils db runhashes` export it for offline analysis (an external `group-runhashes.py` script groups
 strategies that produced the same runhash).
 
 ## 🆚 `--version`

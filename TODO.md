@@ -9,7 +9,7 @@ split out 2026-08-21 so this file stays a list of what's actually open.
 
 # Proposed — provenance and inert-parameter detection (2026-08-12)
 
-Four items from the `expericon/ramparils-primo` experiment, which has now hit
+Four items from the `ramparils-primo` experiment, which has now hit
 the same class of failure three times: **a parameter that parses, reaches the
 solver's command line, and changes nothing.** It never errors. The symptom is
 whole neighbourhoods scoring identically, which reads as a plateau rather than
@@ -21,7 +21,7 @@ The three occurrences so far:
    the CLI and read by nobody until primo `0d73973` (2026-08-10). Runs 5 and 6
    carried them as four dead dimensions for 24 hours of tuning.
 2. Any parameter absent from the wrapper's `VALUE_OPTIONS` dict is silently
-   dropped. `air-03` held a pre-`819a582` wrapper for a day while its host
+   dropped. One host held a pre-`819a582` wrapper for a day while its host
    survey reported a fully up-to-date `ramparils --version`.
 3. `--cadical-option seed` is inert under primo's external propagator: seeds 1,
    7 and 99 give byte-identical decisions (8420) and conflicts (726).
@@ -78,7 +78,7 @@ stores it per result (`cache.rs`'s nullable `results.runhash` column,
 neighbours and logs it beside each incumbent), and `ramparils db runhashes`
 exports a per-strategy `ram-<hash> <runhash> <n>` line so two configurations
 that produced byte-identical solver behaviour can be spotted after the fact
-(`work26/expericon/scripts/group-runhashes.py` groups them). What is still
+(an external `group-runhashes.py` script groups them). What is still
 missing is exactly the "at startup, run one variant per extreme domain value
 and compare automatically" loop this item describes — today the comparison is
 a manual post-hoc `ramparils db` + script pass over a completed run, not a
@@ -176,9 +176,9 @@ the subset under-samples.
 # Proposed — random configuration sampling (2026-08-20)
 
 Items raised while checking whether `approach: random` is usable as a
-random-restart baseline for the `expericon/ramparils-primo-cont` work. It is
+random-restart baseline for the `ramparils-primo-cont` work. It is
 implemented and it works — a 45 s smoke run over 21 instances
-(`work26/ramparils/primo/scenario-random.yml`, 2026-08-20) logged 17
+(`primo/scenario-random.yml`, 2026-08-20) logged 17
 `ils: random restart` lines, 18 `ils: new home base` lines and 0 `ils: restart:`
 lines, which is exactly the intended shape. The first four items are about
 `random_config` (`src/ils.rs:1261`), whose sampler is uniform over the **full
@@ -254,7 +254,7 @@ neighbourhood and `perturbation` simply breaks out (`ils.rs:644`).
 
 Drawing every parameter independently and projecting afterwards means an active
 configuration is sampled with probability proportional to the size of the
-sub-tree its guard switches off. In `expericon`'s
+sub-tree its guard switches off. In the primo experiment's
 `params-primo-v3-prop.txt`, where `lra_bidirectional_row_propagation` guards two
 4-valued children:
 
@@ -357,7 +357,7 @@ approach is known.
 
 # Proposed — fail fast when the run cannot possibly work (2026-08-20)
 
-A 24 h tuning run was launched on dai-07 **with no primo binary on PATH and no
+A 24 h tuning run was launched on a remote host **with no primo binary on PATH and no
 instance files in place**. It ran. It reported nothing wrong, and
 `ramparils-errors-random.log` stayed **empty**. That is the whole bug: the
 budget was spent producing a number, and only a human noticing the missing

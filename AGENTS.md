@@ -43,6 +43,10 @@ include a random seed.
   reports the wrong revision is worse than one that reports none, so treat
   this as behaviour, not build glue.
 - `tests/`: integration tests; module-level unit tests live beside the code.
+- `skills/`: agent skills (`SKILL.md` per directory) describing how to *use*
+  RamParILS for a tuning campaign; keep them generic (no hosts, local paths or
+  experiment names) and in step with `docs/` when scenario or protocol
+  behaviour changes.
 - `docs/figures/`: each figure keeps its source beside it and the command to
   regenerate it in that source's header.
 
@@ -119,7 +123,7 @@ scenario. Default naming — deviate only when asked.
 
 For a function that's the entry point to a nontrivial algorithm (the kind
 worth calling out as "the main algorithm" in review), follow
-`work26/plots/cactus/AGENTS.md`'s Python convention, carried over into Rust:
+the Python convention of the cactus-plot project's `AGENTS.md`, carried over into Rust:
 the function holds only the pipeline itself — one call per stage, no inline
 logic — with each block factored into its own named function or method.
 Applies to new code from here on; existing functions get this treatment

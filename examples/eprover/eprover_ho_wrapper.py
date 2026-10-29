@@ -11,7 +11,7 @@ single index into a fixed (freq, CEF) pair table (see HEURISTIC_PAIRS below).
 See `params-eprover-ho.txt`'s header comment for
 what is genuinely new versus carried over unchanged, and its E-source
 citations for where each flag is verified
-(`/home/yan/repos/cbboyan/eprover`, checked out locally).
+(E's own source tree, checked out locally).
 
 `--delete-bad-limit` is fixed at 2000000000 (e-nb7's own value) rather than
 exposed as a parameter -- see params-eprover-ho.txt's header for why.

@@ -20,8 +20,7 @@
 #
 # Domains and E defaults verified against solverpy_grackle's
 # trainer/eprover/{core,ho,ordering,heuristic}.py and cross-checked directly
-# against E sources (this repo, checked out at
-# /home/yan/repos/cbboyan/eprover): PROVER/e_options.h for every flag's
+# against E's own source tree: PROVER/e_options.h for every flag's
 # ArgType and E-side default, PROVER/eprover.c for the case handlers, and
 # CLAUSES/ccl_satinterface.c for the full GroundingStratNames list `satcheck`
 # draws from. Two additions beyond what solverpy_grackle's HoDomain offers:

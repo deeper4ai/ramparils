@@ -11,6 +11,13 @@ they describe what changed rather than what was announced at the time.
 
 ### Added
 
+- **Agent skills under `skills/`** for running a tuning campaign: `tune-solver`
+  (the loop, scenario settings, experiment diary), `tune-solver-domain`
+  (building, verifying and compacting a parameter space), `tune-solver-wrapper`
+  (the wrapper protocol, with a standard-library `wrapper_template.py`),
+  `tune-solver-analysis` (log, error log and cache analysis, with
+  `greedy_cover.py` and `conf_to_strat.py`) and `tune-solver-eval` (scoring
+  strategies on a test benchmark with solverpy).
 - **`cache_disable` scenario option**: when set, `Scheduler::submit` skips
   `cache.get_batch()` entirely and treats every task as a miss, so every
   instance actually runs regardless of what `cache_db` already holds.
