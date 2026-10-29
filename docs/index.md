@@ -17,55 +17,16 @@ cargo install --git https://github.com/deeper4ai/ramparils --tag v0.3.0 --locked
 
 ## 📦 What's new in 0.3.0
 
-- **Exact adaptive capping.** The cap now tests the cumulative sum against the
-  budget beating the incumbent allows, so it never discards a configuration
-  that would have been accepted, and one slow instance can no longer cap a
-  configuration outright. Capped scores are logged as lower bounds,
-  `>2.698475 (312/473)`. `bound_multiplier` keeps its meaning.
-  See [Algorithm](reference/algorithm.md).
-- **Wrapper startup check and `runhash`.** `ramparils` runs `<algo> --version`
-  before the first evaluation and refuses to start unless the wrapper can reach
-  its solver; the answer is logged, so a run records which solver build it
-  used. Wrappers may also report a `runhash`, a fingerprint of the solver's
-  own work, exported by the new `ramparils db runhashes` to find parameters
-  that change nothing. **Wrappers without `--version` must add it.**
-  See [Solver protocol](reference/protocol.md).
-- **`futell`, an opt-in early rejection** of losing neighbours from a
-  checkpoint partway through their evaluation. Heuristic and off by default.
-- **`instance_shuffle`**, on by default: the instance list is shuffled once,
-  deterministically, before dispatch, so evaluation order changes for
-  existing scenarios. Set `instance_shuffle: false` to keep the file's order.
-- **`cache_disable`** forces every evaluation to run, for checking whether
-  cache hits skew a result.
-- **Fixes:** an incomplete (capped) evaluation can no longer win an
-  acceptance comparison and corrupt the incumbent; debug and error logs append
-  instead of truncating on a rerun; the error log only appears when something
-  crashed; the example wrappers report crashes as `UNKNOWN` with the full
-  cutoff, never as a cheap cacheable result.
-- **Agent skills** under `skills/` for running a whole tuning campaign:
-  domain, wrapper, scenario, analysis and evaluation with solverpy.
+- Exact adaptive capping
+- Wrapper `--version` check at startup (wrappers must implement it)
+- `runhash` fingerprints and `ramparils db runhashes`
+- `futell`: opt-in checkpoint-based early rejection
+- `instance_shuffle`, on by default
+- `cache_disable` scenario option
+- Fixes in acceptance, logging and the example wrappers
+- Agent skills for running a tuning campaign
 
-## 📦 What was new in 0.2.0
-
-- **One command-line tool, two sub-commands.** `ramparils run scenario.yaml`
-  tunes; `ramparils db cache.dbcache` exports what a result cache holds. This
-  replaces `--scenariofile` and the separate `ramparils-db` binary, so **0.2.0
-  is not CLI-compatible with 0.1.x** — scenario files, parameter files, caches
-  and the Python API are unchanged, only the invocation moves.
-  See [CLI](usage/cli.md).
-- **A search that can climb out of a local optimum.** The acceptance criterion
-  alone could only ever move downhill, so a strong local optimum ended the
-  useful part of a run. Soft acceptance within a tolerance, stagnation-triggered
-  restarts, a choice of restart target, and ParamILS's random probes now
-  address it — all off by default.
-  See [Algorithm](reference/algorithm.md#escaping).
-- **Provenance.** `ramparils --version` and the header of every debug log carry
-  the git revision the binary was built from, with a `-dirty` marker when the
-  worktree was not clean. A version number alone never said which code ran.
-- **`ramparils db confs`** recovers the configuration behind each strategy hash
-  in a cache, so a `.dbcache` is no longer a pile of opaque hashes.
-
-Full detail, including the earlier releases, is in the [changelog](changelog.md).
+Details for this and earlier releases are in the [changelog](changelog.md).
 
 ## 💡 What it does
 
