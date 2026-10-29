@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "ayu";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d3f8fb9d.js";
+            window.path_to_searchindex_js = "searchindex-2a96084f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-8d39ea3d.js"></script>
@@ -188,6 +188,42 @@
 they describe what changed rather than what was announced at the time.</p>
 <h2 id="unreleased"><a class="header" href="#unreleased"><a href="https://github.com/deeper4ai/ramparils/compare/v0.3.0...HEAD">Unreleased</a></a></h2>
 <h2 id="030--2026-10-29"><a class="header" href="#030--2026-10-29"><a href="https://github.com/deeper4ai/ramparils/compare/v0.2.0...v0.3.0">0.3.0</a> — 2026-10-29</a></h2>
+<p>Exact capping, a wrapper startup check, runhash fingerprints and opt-in
+checkpoint early rejection.</p>
+<p><strong>Upgrading</strong>: every wrapper must now answer <code>--version</code> (see the solver
+protocol), <code>instance_shuffle</code> is on by default so existing scenarios evaluate
+instances in a different order, and capping uses a different rule, so the
+same scenario explores different configurations than under 0.2.0.</p>
+<h3 id="highlights"><a class="header" href="#highlights">Highlights</a></h3>
+<ul>
+<li><strong>Exact adaptive capping.</strong> The cap now tests the cumulative sum against the
+budget beating the incumbent allows, so it never discards a configuration
+that would have been accepted, and one slow instance can no longer cap a
+configuration outright. Capped scores are logged as lower bounds,
+<code>&gt;2.698475 (312/473)</code>. <code>bound_multiplier</code> keeps its meaning.
+See <a href="https://deeper4ai.github.io/ramparils/reference/algorithm.html">Algorithm</a>.</li>
+<li><strong>Wrapper startup check and <code>runhash</code>.</strong> <code>ramparils</code> runs <code>&lt;algo&gt; --version</code>
+before the first evaluation and refuses to start unless the wrapper can reach
+its solver; the answer is logged, so a run records which solver build it
+used. Wrappers may also report a <code>runhash</code>, a fingerprint of the solver’s
+own work, exported by the new <code>ramparils db runhashes</code> to find parameters
+that change nothing. <strong>Wrappers without <code>--version</code> must add it.</strong>
+See <a href="https://deeper4ai.github.io/ramparils/reference/protocol.html">Solver protocol</a>.</li>
+<li><strong><code>futell</code>, an opt-in early rejection</strong> of losing neighbours from a
+checkpoint partway through their evaluation. Heuristic and off by default.</li>
+<li><strong><code>instance_shuffle</code></strong>, on by default: the instance list is shuffled once,
+deterministically, before dispatch, so evaluation order changes for
+existing scenarios. Set <code>instance_shuffle: false</code> to keep the file’s order.</li>
+<li><strong><code>cache_disable</code></strong> forces every evaluation to run, for checking whether
+cache hits skew a result.</li>
+<li><strong>Fixes:</strong> an incomplete (capped) evaluation can no longer win an
+acceptance comparison and corrupt the incumbent; debug and error logs append
+instead of truncating on a rerun; the error log only appears when something
+crashed; the example wrappers report crashes as <code>UNKNOWN</code> with the full
+cutoff, never as a cheap cacheable result.</li>
+<li><strong>Agent skills</strong> under <code>skills/</code> for running a whole tuning campaign:
+domain, wrapper, scenario, analysis and evaluation with solverpy.</li>
+</ul>
 <h3 id="added"><a class="header" href="#added">Added</a></h3>
 <ul>
 <li>
@@ -422,6 +458,26 @@ set of documents.</p>
 <p><strong>Upgrading</strong>: the CLI is not compatible with 0.1.x. <code>ramparils run &lt;scenario.yaml&gt;</code> replaces <code>ramparils --scenariofile &lt;scenario.yaml&gt;</code>, and the
 <code>ramparils-db</code> binary is now <code>ramparils db</code>. Scenario files, parameter files,
 caches and the Python API are unchanged, so only the invocation moves.</p>
+<h3 id="highlights-1"><a class="header" href="#highlights-1">Highlights</a></h3>
+<ul>
+<li><strong>One command-line tool, two sub-commands.</strong> <code>ramparils run scenario.yaml</code>
+tunes; <code>ramparils db cache.dbcache</code> exports what a result cache holds. This
+replaces <code>--scenariofile</code> and the separate <code>ramparils-db</code> binary, so <strong>0.2.0
+is not CLI-compatible with 0.1.x</strong> — scenario files, parameter files, caches
+and the Python API are unchanged, only the invocation moves.
+See <a href="https://deeper4ai.github.io/ramparils/usage/cli.html">CLI</a>.</li>
+<li><strong>A search that can climb out of a local optimum.</strong> The acceptance criterion
+alone could only ever move downhill, so a strong local optimum ended the
+useful part of a run. Soft acceptance within a tolerance, stagnation-triggered
+restarts, a choice of restart target, and ParamILS’s random probes now
+address it — all off by default.
+See <a href="https://deeper4ai.github.io/ramparils/reference/algorithm.html#escaping">Algorithm</a>.</li>
+<li><strong>Provenance.</strong> <code>ramparils --version</code> and the header of every debug log carry
+the git revision the binary was built from, with a <code>-dirty</code> marker when the
+worktree was not clean. A version number alone never said which code ran.</li>
+<li><strong><code>ramparils db confs</code></strong> recovers the configuration behind each strategy hash
+in a cache, so a <code>.dbcache</code> is no longer a pile of opaque hashes.</li>
+</ul>
 <h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>
 <ul>
 <li>
